@@ -53,6 +53,18 @@ namespace video
     // for another one (a redraw after a resize) or clamped to 4:3.
     PictureFit PlacePicture(uint32_t screenW, uint32_t screenH, float frameW, float frameH, float scaleX, float scaleY);
 
+    // The 16:9 band of a frame image of width x height texels (any internal
+    // resolution) rendered with the view scales (scaleX, scaleY): what a
+    // 16:9 screen shows, the columns [x0, x1) and rows [y0, y1) whose
+    // centres lie inside clip +-scaleX and +-scaleY, by gpu::bars::Edge's
+    // rule, so the presenter splits a frame where the renderer's band clip
+    // and edge-bar fills do. The whole image at 1, 1.
+    struct FrameBand
+    {
+        int32_t x0 = 0, x1 = 0, y0 = 0, y1 = 0;
+    };
+    FrameBand BandOf(uint32_t width, uint32_t height, float scaleX, float scaleY);
+
     // Auto internal resolution: the render scale (sx x sy host pixels per
     // guest pixel, 1-3 each) for a picture covering regionW x regionH of the
     // screen (video::FrameRegion), within `budget` host pixels per guest

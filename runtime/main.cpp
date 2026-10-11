@@ -10,6 +10,7 @@
 
 #include "stdafx.h"
 #include "kernel/arena.h"
+#include "kernel/memory_status.h"
 #include "kernel/module.h"
 #include "kernel/write_watch.h"
 #include "kernel/dispatcher.h"
@@ -277,12 +278,23 @@ int main(int argc, char** argv)
     if (const char* home = std::getenv("HOME"))
         chdir((std::string(home) + "/Documents").c_str());
 #endif
-    // Before anything uses the per-user folders: nfsmw-recomp's become
-    // SpeedBreaker's (user/paths.h).
-    std::string migrated = MigrateUserFolders();
     // Which folder the game runs from, before anything changes directory:
-    // the installer never puts the game inside it (install/placement.h).
+    // the installer never puts the game inside it (install/placement.h), and
+    // a portable.txt there keeps all of SpeedBreaker's data in it
+    // (user/portable.h).
     install::SetProgramPath(argc > 0 ? argv[0] : nullptr);
+    // Before anything uses the per-user folders: portable mode or not, and
+    // then (not in portable mode) nfsmw-recomp's folders become
+    // SpeedBreaker's (user/paths.h). A portable folder that can't be written
+    // (a read-only drive, a locked card) is still used: the game plays, and
+    // the player is told settings and saves won't be kept; never a quiet
+    // switch to the home folder, which would split saves between two places.
+    const portable::Layout& portableLayout = portable::Detect(install::BundleFolder());
+    const int portableError = portable::CheckWritable(portableLayout);
+    std::string migrated = MigrateUserFolders() + portable::Describe(portableLayout);
+    if (portableError)
+        migrated += std::format("[paths] portable mode: {} can't be written ({}): settings and saves won't be kept\n",
+            portableLayout.data.string(), strerror(portableError));
     // The name volume mixers and the desktop show (before SDL starts).
     SDL_SetAppMetadata("SpeedBreaker", report::BuildString(), nullptr);
     if (std::optional<int> code = install::RunInstallCommand(argc, argv))
@@ -299,9 +311,41 @@ int main(int argc, char** argv)
     report::StartLogWriter();
     report::RegisterThread("main (window)");
 
+    // The guest's 4 GB (kernel/memory.cpp, reserved before main): where it
+    // went, or why it couldn't, and on iOS what the app's signature allows
+    // (kernel/memory_status.h). For the log, the system summary and, when
+    // the game can't start, the page that says why.
+    memstatus::Status memory;
+    memory.base = reinterpret_cast<uintptr_t>(g_memory.base);
+    memory.failure = memstatus::Failure(g_memory.base ? 0 : std::max(g_memory.failedStep, 1));
+    memory.error = g_memory.failedError;
+    memstatus::Gather(memory);
+    fprintf(stderr, "%s\n", memstatus::LogLine(memory).c_str());
+    report::SetSystemItem("Memory", memstatus::SummaryItem(memory));
     if (g_memory.base == nullptr)
     {
-        fprintf(stderr, "[runtime] could not reserve 4 GB of guest address space\n");
+        // An iOS copy signed without Extended Virtual Addressing (a free
+        // Apple Account's sideload) ends up here: say so on screen rather
+        // than vanish. Before the game's code runs at all.
+        memstatus::Message message = memstatus::StartupFailure(memory);
+        fprintf(stderr, "[runtime] could not reserve 4 GB of guest address space: %s\n", message.title.c_str());
+        for (const std::string& p : message.paragraphs)
+            fprintf(stderr, "[runtime]   %s\n", p.c_str());
+        settings::Load();
+        if (video::Initialize())
+        {
+            ui::RunStartupError(message.title, message.paragraphs, message.details, [] { return video::RunFrame(); });
+            video::Shutdown();
+        }
+        else if (const char* h = std::getenv("NFSMW_HEADLESS"); !h || h[0] != '1')
+        {
+            // No window for the page: the system's own message box.
+            std::string text;
+            for (const std::string& p : message.paragraphs)
+                text += p + "\n\n";
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, message.title.c_str(), (text + message.details).c_str(), nullptr);
+        }
+        report::FlushLog();
         return 1;
     }
 
@@ -363,6 +407,16 @@ int main(int argc, char** argv)
     bool windowed = video::Initialize();
     if (!settingsLoaded)
         ui::Toast(settings::LastError(), 12.0);  // a mistake in settings.toml: it was kept as .bad
+    if (portableError)
+        ui::Toast(std::format("SpeedBreaker's folder can't be written ({}): settings and saves won't be kept this time. "
+            "Move the folder to a drive it can write to.", strerror(portableError)), 12.0);
+    // iOS: a copy without Increased Memory Limit (a free Apple Account's
+    // sideload) starts, but iOS may close it in a busy scene: say so once.
+    if (std::string notice = memstatus::LowMemoryNotice(memory); !notice.empty())
+    {
+        fprintf(stderr, "[memory] %s\n", notice.c_str());
+        ui::Toast(notice, 12.0);
+    }
     report::NoticePreviousCrash();
 
     // NFSMW_LIFELINE_PID (scripts/steamos/speedbreaker.sh): the launcher's PID. The

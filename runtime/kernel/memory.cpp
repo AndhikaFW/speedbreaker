@@ -4,6 +4,8 @@
 #include "memory.h"
 
 #ifndef _WIN32
+#include <cerrno>
+#include <cstdlib>
 #include <fcntl.h>
 #include <unistd.h>
 #ifdef __APPLE__
@@ -23,6 +25,7 @@ bool Memory::MapPhysicalMirrors()
     if (kr != KERN_SUCCESS)
     {
         fprintf(stderr, "[memory] mach_make_memory_entry_64: %s\n", mach_error_string(kr));
+        failedError = kr;
         return false;
     }
     bool ok = true;
@@ -32,11 +35,14 @@ bool Memory::MapPhysicalMirrors()
     int fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
     if (fd < 0)
     {
+        failedError = errno;
         perror("[memory] shm_open");
         return false;
     }
     shm_unlink(name);  // the mappings keep it alive
     bool ok = ftruncate(fd, PHYSICAL_SIZE) == 0;
+    if (!ok)
+        failedError = errno;
 #endif
 
     struct View { uint32_t guest; size_t offset; size_t length; };
@@ -67,11 +73,13 @@ bool Memory::MapPhysicalMirrors()
         if (kr != KERN_SUCCESS)
         {
             fprintf(stderr, "[memory] vm_map physical view: %s\n", mach_error_string(kr));
+            failedError = kr;
             ok = false;
         }
 #else
         if (mmap(at, v.length, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, off_t(offset)) == MAP_FAILED)
         {
+            failedError = errno;
             perror("[memory] mmap physical view");
             ok = false;
         }
@@ -100,13 +108,28 @@ Memory::Memory()
     DWORD oldProtect;
     VirtualProtect(base, 4096, PAGE_NOACCESS, &oldProtect);
 #else
-    base = (uint8_t*)mmap((void*)0x100000000ull, PPC_MEMORY_SIZE, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+    // NFSMW_TEST_RESERVE_FAIL=1|2: fail the reservation or the mirrors as an
+    // iOS without room would (memory_status.h), to see the startup message
+    // anywhere.
+    const char* testFail = std::getenv("NFSMW_TEST_RESERVE_FAIL");
+    int failStep = testFail ? std::atoi(testFail) : 0;
 
-    if (base == (uint8_t*)MAP_FAILED)
+    // SpeedBreaker: one contiguous 4 GB, since guest addresses are offsets
+    // from base. iOS makes room for it with Extended Virtual Addressing or
+    // Increased Memory Limit (scripts/ios/SpeedBreaker/SpeedBreaker.entitlements,
+    // kernel/memory_status.h); without them only about 5 GB is free in one
+    // piece, so this runs in static initialization, before anything else
+    // takes address space. If it fails (ENOMEM), main.cpp says so on screen.
+    base = failStep == 1 ? (uint8_t*)MAP_FAILED
+        : (uint8_t*)mmap((void*)0x100000000ull, PPC_MEMORY_SIZE, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+
+    if (base == (uint8_t*)MAP_FAILED && failStep != 1)
         base = (uint8_t*)mmap(NULL, PPC_MEMORY_SIZE, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
 
     if (base == (uint8_t*)MAP_FAILED)
     {
+        failedStep = 1;
+        failedError = failStep == 1 ? ENOMEM : errno;
         base = nullptr;
         return;
     }
@@ -118,8 +141,17 @@ Memory::Memory()
     // 0xE0000000 maps physical +0x1000 (Xenia's map_info). D3D writes records
     // through one window and reads them through another, so all three must be
     // the same host memory: one shared object, mapped three times.
-    if (!MapPhysicalMirrors())
+    if (failStep == 2 || !MapPhysicalMirrors())
     {
+        failedStep = 2;
+        if (failStep == 2)
+        {
+#ifdef __APPLE__
+            failedError = KERN_NO_SPACE;
+#else
+            failedError = ENOMEM;
+#endif
+        }
         munmap(base, PPC_MEMORY_SIZE);
         base = nullptr;
         return;

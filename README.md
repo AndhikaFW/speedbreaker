@@ -60,8 +60,8 @@ and a settings menu you can open mid-race.
 
 ## Highlights
 
-- **Up to 4K.** The 3D scene renders at 1x, 2x or 3x the console's 720p (3x is 3840x2160).
-  *Auto* picks a scale for your screen and device.
+- **Up to 4K.** The 3D scene renders at 1x, 1.5x, 2x or 3x the console's 720p (1.5x is 1080p,
+  3x is 3840x2160). *Auto* picks a scale for your screen and device.
 - **Ultrawide done right.** On 21:9 screens the view gets wider instead of stretched, and the
   HUD and the rear-view mirror stay in place. A 4:3 iPad, a 3:2 screen or the 16:10 screens of
   the Steam Deck and many Macs show more above and below instead, and fill the screen.
@@ -111,9 +111,9 @@ belongs to its owners.</sub>
 |---|---|---|
 | **Steam Deck** and **Steam Machine** (SteamOS) | [Download][dl-steamos-x86_64]<br>`SpeedBreaker-steamos-x86_64.tar.xz` | Steam Deck OLED (SteamOS 3.9.2). Steam Machine (SteamOS 3.8) on a 3440x1440 ultrawide. The Steam Deck LCD hasn't been tested yet. |
 | **Steam Frame** (SteamOS, arm64) | [Download][dl-steamos-arm64]<br>`SpeedBreaker-steamos-arm64.tar.xz` | Steam Frame (SteamOS 0.3.0). It plays as a big flat screen in the headset; it is not a VR mode. |
-| **Linux** (x86-64) | [Download][dl-steamos-x86_64] the x86-64 SteamOS build, `SpeedBreaker-steamos-x86_64.tar.xz`, or [build from source](#building-from-source) | SteamOS only so far. Other distributions and NVIDIA or Intel GPUs are untested: reports welcome. |
-| **Mac** (Apple silicon) | [Download][dl-macos]<br>`SpeedBreaker-macos.dmg` | MacBook Pro (M1 Pro) and Mac Studio (M4 Max), on macOS 26; macOS 15.6 (Sequoia) in a virtual machine. There is no Intel Mac build. |
-| **iPhone** and **iPad** | [Build it yourself](#iphone-and-ipad) with Xcode | iPhone 15 Pro Max (iOS 27). iPad Pro 12.9-inch (M2, iPadOS 27) with a Backbone Pro. Not on the App Store. |
+| **Linux** (x86-64) | [Download][dl-steamos-x86_64] the x86-64 SteamOS build, `SpeedBreaker-steamos-x86_64.tar.xz`, or [build from source](#building-from-source) | SteamOS here. Players report it working on Fedora 44 (GeForce GTX 1080 Ti) and Ubuntu 24.04 (Intel Arc 140T). Other setups: reports welcome. |
+| **Mac** (Apple silicon) | [Download][dl-macos]<br>`SpeedBreaker-macos.dmg` | MacBook Pro (M1 Pro) on macOS 27 and Mac Studio (M4 Max) on macOS 26; macOS 15.6 (Sequoia) in a virtual machine. There is no Intel Mac build. |
+| **iPhone** and **iPad** | [Sideload the IPA](#iphone-and-ipad) (experimental), `SpeedBreaker-<version>-ios.ipa` on the [release page][releases], or [build it yourself](#iphone-and-ipad) with Xcode | iPhone 15 Pro Max and iPhone 18 Pro Max (iOS 27). iPad Pro 12.9-inch (M2, iPadOS 27) with a Backbone Pro. Not on the App Store. The IPA hasn't been tested with a free Apple Account yet. |
 | **Windows** | Coming soon | |
 | **Android** | Coming soon | |
 
@@ -146,7 +146,8 @@ should say OK. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
    the extracted disc files. No title update is needed. SpeedBreaker doesn't provide game files
    or disc images, or link to them.
 2. **Get SpeedBreaker.** [Download it](#download) for Steam Deck, Steam Machine and Steam Frame
-   (SteamOS), Linux or Mac. On iPhone and iPad you build it yourself. Then follow the
+   (SteamOS), Linux or Mac. On iPhone and iPad you sideload the experimental IPA or build it
+   yourself. Then follow the
    [setup for your platform](#setup-by-platform).
 3. **Start it and install.** On first run, SpeedBreaker looks for your disc image, checks that
    it is the right game and version, then copies and verifies every file. This takes a few
@@ -212,6 +213,13 @@ right of the screen).
 **Uninstall:** delete `~/Games/SpeedBreaker/`, `~/.local/share/speedbreaker/` (this deletes your
 saves too) and `~/.cache/speedbreaker/`, and remove the shortcut from Steam.
 
+**Portable mode:** to keep everything in the SpeedBreaker folder (saves, settings, logs, shader
+caches and the installed game), so the whole folder can be moved or copied to another Steam Deck,
+Steam Machine or Linux PC, make an empty file named `portable.txt` next to `speedbreaker.sh`. That
+starts fresh; to bring your current settings, saves and game along, run
+`~/Games/SpeedBreaker/speedbreaker.sh --portable on` in Konsole instead, and `--portable off` to
+go back. Both copy and never delete. The folder's README says more.
+
 ### Steam Frame
 
 The Steam Frame has its own download. You set it up on the Frame's desktop: open the
@@ -261,6 +269,11 @@ screen. The installer puts the game in `~/.local/share/speedbreaker/game`, or on
 any folder you pick with *Choose a folder...* (it needs a file chooser portal or zenity; without
 one, use `--dest`, below).
 
+On a laptop with two GPUs, SpeedBreaker uses the dedicated one (NVIDIA or AMD); with NVIDIA's
+driver the launcher also turns on PRIME render offload. The log's `[video] Vulkan devices:` line
+says which GPU it chose and why. To pick another, start it with `NFSMW_GPU=<its number or part of
+its name>`, e.g. `NFSMW_GPU=intel %command%` in Steam's launch options.
+
 ### Mac
 
 1. **Download and install.** Download [`SpeedBreaker-macos.dmg`][dl-macos], open it, and drag
@@ -286,9 +299,18 @@ Display > Fullscreen switches to full screen. SpeedBreaker needs macOS 15 (Sequo
 
 ### iPhone and iPad
 
-There's no download for iPhone and iPad, and SpeedBreaker isn't on the App Store. You build it
-yourself with Xcode on a Mac and install it on your own device, signed with your own Apple
-developer account: [scripts/ios/README.md](scripts/ios/README.md) walks you through it.
+SpeedBreaker isn't on the App Store. There are two ways to get it onto your iPhone or iPad:
+
+- **Sideload the IPA (experimental).** Each release has an IPA, `SpeedBreaker-<version>-ios.ipa`,
+  on the [release page][releases]. A sideloading tool such as AltStore signs it with your own Apple
+  Account and installs it. The game asks iOS for more memory than most apps, and a free Apple
+  Account can't give all of it, so with a free account it may not start, or iOS may close it in
+  busy scenes. When iOS refuses the memory, the game says so on screen. It hasn't been tested with
+  a free Apple Account yet: read
+  [Sideloading the IPA](scripts/ios/README.md#sideloading-the-ipa-experimental) first, and please
+  report how it goes.
+- **Build it yourself** with Xcode on a Mac, signed with your own Apple developer account:
+  [scripts/ios/README.md](scripts/ios/README.md) walks you through it.
 
 Once SpeedBreaker is on your device:
 
@@ -370,7 +392,7 @@ Each page has a *Reset page* button.
 | Sharpening | 0.00 to 1.00 | 0.30 (0 turns it off) |
 | Anisotropic Filtering | Auto / Off / 2x / 4x / 8x / 16x / Original | Auto: 16x on dedicated graphics cards and M-series iPads, 4x elsewhere. Original uses each texture's own setting, as on the 360. |
 | Mipmaps | On / Off | On, so distant textures don't shimmer |
-| Internal Resolution | Auto / 1x (720p) / 2x (1440p) / 3x (2160p) | Auto: enough to cover your screen, within what the device can afford. On iPhone and iPad, Auto always picks 1x. |
+| Internal Resolution | Auto / 1x (720p) / 1.5x (1080p) / 2x (1440p) / 3x (2160p) | Auto: enough to cover your screen, within what the device can afford (1x, 2x or 3x). On iPhone and iPad, Auto always picks 1x. |
 
 **Audio:** Master Volume (100%), Mute (Off), and Mute in Background (Off), which silences the
 game while its window isn't in front.
@@ -393,8 +415,11 @@ online, and only when you press it). The page also shows which build you're runn
   let Frame Rate *Auto* fall back to a steady 30.
 - **30 fps is a real option.** It's a steady 30 at full game speed, and the smooth choice in the
   Steam Frame headset.
+- **Between 1x and 2x,** try 1.5x (1080p): much sharper than 1x for a little over half the work
+  of 2x.
 - **On iPhone and iPad,** keep Internal Resolution at Auto (1x). On the tested iPad Pro (M2), 2x
-  is too slow for races. Screen Resolution 75% saves more.
+  is too slow for races. The iPhone 18 Pro Max mostly holds 60 fps at 1.5x, but gets hot within
+  about ten minutes, and Frame Rate Auto then drops to 30. Screen Resolution 75% saves more.
 - **Docked Deck or Steam Machine:** set the shortcut's Game Resolution to Native.
 - **See what's happening:** Settings > Advanced > Performance Overlay.
 
@@ -441,6 +466,10 @@ or later on Apple silicon.
 **The game stutters on my Steam Deck OLED.** Set the screen to 60 Hz (see
 [Steam Deck setup](#steam-deck-and-steam-machine)).
 
+**My laptop runs the game on the slow built-in graphics.** Since v0.1.2 SpeedBreaker picks the
+dedicated GPU by itself. If it still doesn't, see the `[video] Vulkan devices:` line in
+`last-run.log` and set `NFSMW_GPU` (see [Linux](#linux)).
+
 **The picture is small or stretched on my TV or monitor in Game Mode.** Set the shortcut's
 Properties > General > Game Resolution to Native.
 
@@ -474,7 +503,9 @@ Touch only works in SpeedBreaker's own screens; a three-finger tap opens the set
 | Shader caches (safe to delete) | `~/.cache/speedbreaker/` | `~/Library/Caches/SpeedBreaker/` | Inside the app |
 
 Deleting that folder, or deleting the iPhone or iPad app, deletes your saves. A game you
-installed in a folder of your own stays there until you delete that folder.
+installed in a folder of your own stays there until you delete that folder. In
+[portable mode](#steam-deck-and-steam-machine) (SteamOS and Linux) all of it is in the
+SpeedBreaker folder instead: `data/`, `data/game` and `cache/`.
 
 ### Reporting a bug
 
@@ -482,7 +513,7 @@ installed in a folder of your own stays there until you delete that folder.
 2. A notice says where the zip file went: your **Desktop** (on SteamOS, pick it up in Desktop
    Mode, or in the Desktop app on a Steam Frame), the **SpeedBreaker** folder in the Files app on
    iPhone and iPad, or the data folder above when there is no Desktop. Its name says which
-   version you were running, for example `speedbreaker-bug-report-v0.1.1-<date>_<time>.zip`.
+   version you were running, for example `speedbreaker-bug-report-v0.1.2-<date>_<time>.zip`.
 3. Open an [issue][issues], attach the zip, and say what you were doing, what you expected, what
    happened, and roughly how long into the session it happened.
 
@@ -516,7 +547,7 @@ native program for x86-64 or arm64. A runtime written for this project stands in
   overlay are drawn with Dear ImGui.
 - **Audio:** XMA decoding done the way the hardware does it, frame by frame, with a patched,
   decoder-only FFmpeg.
-- **Resolution:** the 3D scene renders at 1x, 2x or 3x; the bloom and haze stay at the original
+- **Resolution:** the 3D scene renders at 1x, 1.5x, 2x or 3x; the bloom and haze stay at the original
   resolution, so the game keeps its colour grade.
 - **Frame pacing:** the game's clock locks to the display's measured refresh (58.5 to 61.5 Hz),
   one game step per refresh. 30 fps runs two game steps per frame.
@@ -537,6 +568,7 @@ SpeedBreaker --install <image or folder> [--dest <dir>]   # install (into exactl
 SpeedBreaker --verify <image or folder>                   # check every file without copying
 SpeedBreaker --find-images                                # list the disc images it can find
 SpeedBreaker --where                                      # show where the game is installed
+speedbreaker.sh --portable on|off                         # SteamOS and Linux: portable mode (copies, never deletes)
 ```
 
 Without `--dest` the game goes to the default folder, as from the installer screen. `--dest`

@@ -5,7 +5,9 @@
 //   SpeedBreaker --install <image|folder> [--dest <dir>]   copy and verify (default dest: GetUserPath()/game)
 //   SpeedBreaker --verify <image|folder>                   hash-check every file without copying
 //   SpeedBreaker --find-images [folder...]                 list disc images in the usual places (or these)
-//   SpeedBreaker --where                                   print where the game install was found
+//   SpeedBreaker --where                                   print where the game install was found, and the data folders
+//   SpeedBreaker --portable on|off                         copy the data and the game into SpeedBreaker's folder and keep
+//                                                          them there (portable mode), or back (install/portable_switch.h)
 // Ctrl-C cancels an install cleanly (the partial copy is removed).
 #pragma once
 #include <optional>

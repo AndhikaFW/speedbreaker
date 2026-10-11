@@ -1,6 +1,8 @@
 // SpeedBreaker runtime. GPL-3.0-or-later (see COPYING). See picture_fit.h.
 #include "picture_fit.h"
 
+#include <gpu/edge_bars.h>
+
 #include <algorithm>
 #include <cmath>
 
@@ -56,6 +58,22 @@ namespace video
             fit.height = int32_t(screenH);
         }
         return fit;
+    }
+
+    FrameBand BandOf(uint32_t width, uint32_t height, float scaleX, float scaleY)
+    {
+        FrameBand band{ 0, int32_t(width), 0, int32_t(height) };
+        if (scaleX < 1.0f)
+        {
+            band.x0 = gpu::bars::Edge(-scaleX, float(width));
+            band.x1 = gpu::bars::Edge(scaleX, float(width));
+        }
+        if (scaleY < 1.0f)
+        {
+            band.y0 = gpu::bars::Edge(-scaleY, float(height));
+            band.y1 = gpu::bars::Edge(scaleY, float(height));
+        }
+        return band;
     }
 
     void AutoRenderScale(uint32_t regionW, uint32_t regionH, uint32_t budget, uint32_t& sx, uint32_t& sy)

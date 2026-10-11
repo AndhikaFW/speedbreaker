@@ -24,6 +24,7 @@
 //     press still comes through once.
 #include "ios_ui.h"
 
+#include <SDL3/SDL_hints.h>
 #include <SDL3/SDL_keyboard.h>
 #include <SDL3/SDL_properties.h>
 #include <SDL3/SDL_video.h>
@@ -33,9 +34,13 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
+#include <report/report.h>
+
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <string>
+#include <utility>
 
 namespace
 {
@@ -69,6 +74,40 @@ namespace
     bool s_noViewLogged = false, s_logged = false;
     int s_retakes = 0;
     constexpr int kRetakesLogged = 10;
+
+    UIWindow* UiWindow(SDL_Window* window)
+    {
+        return window ? static_cast<UIWindow*>(SDL_GetPointerProperty(SDL_GetWindowProperties(window),
+            SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, nullptr)) : nil;
+    }
+
+    const char* InterfaceName(UIInterfaceOrientation o)
+    {
+        switch (o)
+        {
+        case UIInterfaceOrientationPortrait:
+            return "portrait";
+        case UIInterfaceOrientationPortraitUpsideDown:
+            return "portrait upside down";
+        case UIInterfaceOrientationLandscapeLeft:
+            return "landscape left";
+        case UIInterfaceOrientationLandscapeRight:
+            return "landscape right";
+        default:
+            return "unknown";
+        }
+    }
+
+    bool SameSize(CGSize a, CGSize b)
+    {
+        return std::fabs(a.width - b.width) < 0.5 && std::fabs(a.height - b.height) < 0.5;
+    }
+
+    // Keyboard notifications reach SDL's view controller, which sets the
+    // view's frame on each (see ios_ui.h): the log says when, and whose.
+    int s_keyboardNotes = 0;
+    constexpr int kKeyboardNotesLogged = 20;
+    SDL_Window* s_window = nullptr;  // the game's, once it exists (FitViewToWindow)
 }
 
 namespace platform::ios
@@ -191,5 +230,204 @@ namespace platform::ios
     bool IsPhone()
     {
         return UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone;
+    }
+
+    bool LandscapeOnly()
+    {
+        static const bool only = [] {
+            @autoreleasepool
+            {
+                if (!IsPhone())
+                    return false;
+                // NSBundle hands over the device's own variant of the key.
+                id list = [NSBundle.mainBundle objectForInfoDictionaryKey:@"UISupportedInterfaceOrientations"];
+                if (![list isKindOfClass:[NSArray class]] || [(NSArray*)list count] == 0)
+                    return false;
+                for (id o in (NSArray*)list)
+                    if (![o isKindOfClass:[NSString class]] || ![(NSString*)o hasPrefix:@"UIInterfaceOrientationLandscape"])
+                        return false;
+                return true;
+            }
+        }();
+        return only;
+    }
+
+    void PrepareOrientation()
+    {
+        @autoreleasepool
+        {
+            if (LandscapeOnly())
+            {
+                if (const char* set = SDL_GetHint(SDL_HINT_ORIENTATIONS))
+                    fprintf(stderr, "[video] orientation: SDL_HINT_ORIENTATIONS is \"%s\" already: left as it is\n", set);
+                else
+                {
+                    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+                    fprintf(stderr, "[video] orientation: landscape only (iPhone): SDL_HINT_ORIENTATIONS = \"LandscapeLeft LandscapeRight\", "
+                                    "so SDL never turns its view portrait\n");
+                }
+            }
+        }
+    }
+
+    void WatchKeyboards(SDL_Window* window)
+    {
+        @autoreleasepool
+        {
+            s_window = window;
+            static bool watching = false;
+            if (std::exchange(watching, true))
+                return;
+            for (NSString* name in @[ UIKeyboardWillShowNotification, UIKeyboardWillHideNotification ])
+                [NSNotificationCenter.defaultCenter addObserverForName:name object:nil queue:nil usingBlock:^(NSNotification* note) {
+                    if (s_keyboardNotes >= kKeyboardNotesLogged)
+                        return;
+                    s_keyboardNotes++;
+                    NSNumber* local = note.userInfo[UIKeyboardIsLocalUserInfoKey];
+                    fprintf(stderr, "[ui] a keyboard will %s (%s)%s: %s\n", [note.name isEqualToString:UIKeyboardWillShowNotification] ? "show" : "hide",
+                        local == nil ? "whose not said" : local.boolValue ? "this app's" : "another app's",
+                        s_keyboardNotes == kKeyboardNotesLogged ? " (no more of these logged)" : "", DescribeGeometry(s_window).c_str());
+                }];
+        }
+    }
+
+    video::Orientation InterfaceOrientation(SDL_Window* window)
+    {
+        @autoreleasepool
+        {
+            UIWindow* uiWindow = UiWindow(window);
+            if (!uiWindow)
+                return video::Orientation::Unknown;
+            UIInterfaceOrientation o = uiWindow.windowScene ? uiWindow.windowScene.effectiveGeometry.interfaceOrientation
+                                                            : UIInterfaceOrientationUnknown;
+            if (UIInterfaceOrientationIsLandscape(o))
+                return video::Orientation::Landscape;
+            if (UIInterfaceOrientationIsPortrait(o))
+                return video::Orientation::Portrait;
+            const CGSize size = uiWindow.bounds.size;
+            return size.width <= 0 || size.height <= 0 ? video::Orientation::Unknown
+                : size.width >= size.height             ? video::Orientation::Landscape
+                                                        : video::Orientation::Portrait;
+        }
+    }
+
+    bool ViewFitsWindow(SDL_Window* window)
+    {
+        @autoreleasepool
+        {
+            UIWindow* uiWindow = UiWindow(window);
+            UIView* view = uiWindow.rootViewController.viewIfLoaded;
+            return !view || SameSize(view.bounds.size, uiWindow.bounds.size);
+        }
+    }
+
+    bool FitViewToWindow(SDL_Window* window)
+    {
+        @autoreleasepool
+        {
+            UIWindow* uiWindow = UiWindow(window);
+            UIView* view = uiWindow.rootViewController.viewIfLoaded;
+            if (!view)
+                return false;
+            const CGRect before = view.frame;
+            if (SameSize(view.bounds.size, uiWindow.bounds.size))
+            {
+                fprintf(stderr, "[video] the view already fills its window: %s\n", DescribeGeometry(window).c_str());
+                return false;
+            }
+            view.frame = uiWindow.bounds;
+            [view setNeedsLayout];
+            [view layoutIfNeeded];
+            fprintf(stderr, "[video] the view was %.0fx%.0f points in a %.0fx%.0f window: fitted back to it (%s)\n", before.size.width,
+                before.size.height, uiWindow.bounds.size.width, uiWindow.bounds.size.height, DescribeGeometry(window).c_str());
+            return true;
+        }
+    }
+
+    const char* SceneOrientationName(SDL_Window* window)
+    {
+        @autoreleasepool
+        {
+            UIWindow* uiWindow = UiWindow(window);
+            return InterfaceName(uiWindow.windowScene ? uiWindow.windowScene.effectiveGeometry.interfaceOrientation
+                                                      : UIInterfaceOrientationUnknown);
+        }
+    }
+
+    std::string DescribeGeometry(SDL_Window* window)
+    {
+        @autoreleasepool
+        {
+            UIWindow* uiWindow = UiWindow(window);
+            UIView* view = uiWindow.rootViewController.viewIfLoaded;
+            if (!view)
+                return "no view";
+            UIInterfaceOrientation scene = uiWindow.windowScene ? uiWindow.windowScene.effectiveGeometry.interfaceOrientation
+                                                                : UIInterfaceOrientationUnknown;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            UIInterfaceOrientation bar = UIApplication.sharedApplication.statusBarOrientation;
+#pragma clang diagnostic pop
+            const char* state = "active";
+            switch (UIApplication.sharedApplication.applicationState)
+            {
+            case UIApplicationStateInactive:
+                state = "inactive";
+                break;
+            case UIApplicationStateBackground:
+                state = "in the background";
+                break;
+            default:
+                break;
+            }
+            CGSize drawables = [view.layer isKindOfClass:[CAMetalLayer class]] ? ((CAMetalLayer*)view.layer).drawableSize : CGSizeZero;
+            char text[320];
+            snprintf(text, sizeof text,
+                "view %.0fx%.0f at %.0f,%.0f in a %.0fx%.0f window; drawables %.0fx%.0f at scale %.3f; scene %s, status bar %s; app %s",
+                view.frame.size.width, view.frame.size.height, view.frame.origin.x, view.frame.origin.y, uiWindow.bounds.size.width,
+                uiWindow.bounds.size.height, drawables.width, drawables.height, double(view.layer.contentsScale), InterfaceName(scene),
+                InterfaceName(bar), state);
+            return text;
+        }
+    }
+
+    void PollBattery()
+    {
+        static double next = 0.0;
+        static int lastPercent = -1;
+        static const char* lastState = nullptr;  // nullptr: nothing logged yet
+        const double now = report::SessionSeconds();
+        if (now < next)
+            return;
+        next = now + 5.0;
+        @autoreleasepool
+        {
+            UIDevice* device = UIDevice.currentDevice;
+            if (!device.batteryMonitoringEnabled)
+                device.batteryMonitoringEnabled = YES;  // left on: SDL's power API isn't used
+            const float level = device.batteryLevel;   // -1 while unknown
+            const int percent = level < 0.0f ? -1 : int(std::lround(double(level) * 100.0));
+            const char* state = "unknown";
+            switch (device.batteryState)
+            {
+            case UIDeviceBatteryStateUnplugged: state = "on battery"; break;
+            case UIDeviceBatteryStateCharging: state = "charging"; break;
+            case UIDeviceBatteryStateFull: state = "full, on a charger"; break;
+            default: break;
+            }
+            if (percent < 0)
+                return;  // monitoring just turned on (or no battery): next time
+            if (!lastState)
+                fprintf(stderr, "[power] battery %d%%, %s, at %.1f s\n", percent, state, now);
+            else if (percent != lastPercent || std::strcmp(state, lastState) != 0)
+            {
+                if (percent != lastPercent)
+                    fprintf(stderr, "[power] battery %d%% -> %d%%, %s, at %.1f s\n", lastPercent, percent, state, now);
+                else
+                    fprintf(stderr, "[power] battery %d%%, %s -> %s, at %.1f s\n", percent, lastState, state, now);
+            }
+            lastPercent = percent;
+            lastState = state;
+        }
     }
 }

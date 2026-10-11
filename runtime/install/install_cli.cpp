@@ -3,6 +3,9 @@
 #include "installer.h"
 #include "locate.h"
 #include "placement.h"
+#include "portable_switch.h"
+
+#include <user/paths.h>
 
 #ifdef __APPLE__
 #include <TargetConditionals.h>
@@ -120,7 +123,8 @@ namespace install
                 "usage: SpeedBreaker --install <image|folder> [--dest <dir>]\n"
                 "       SpeedBreaker --verify <image|folder>\n"
                 "       SpeedBreaker --find-images [folder...]\n"
-                "       SpeedBreaker --where\n", message);
+                "       SpeedBreaker --where\n"
+                "       SpeedBreaker --portable on|off\n", message);
             return 2;
         }
 
@@ -211,6 +215,17 @@ namespace install
             return images.empty() ? 1 : 0;
         }
 
+        // Where settings, saves and caches are, and whether that's portable mode.
+        void PrintDataFolders()
+        {
+            const portable::Layout& layout = portable::Current();
+            if (layout.Active())
+                printf("Portable mode (%s in %s): data in %s, caches in %s\n", portable::kMarker, layout.root.c_str(),
+                    GetUserPath().c_str(), GetCachePath().c_str());
+            else
+                printf("Data in %s, caches in %s\n", GetUserPath().c_str(), GetCachePath().c_str());
+        }
+
         int RunWhere()
         {
             std::optional<GameInstall> game = FindGameInstall();
@@ -226,11 +241,46 @@ namespace install
                 if (!notice.empty())
                     printf("%s\n", notice.c_str());
                 printf("No game install found. Install one with --install <image|folder> [--dest <dir>].\n");
+                PrintDataFolders();
                 return 1;
             }
             const char* origin = game->origin == InstallOrigin::Environment ? "NFSMW_GAME_DIR"
                 : game->origin == InstallOrigin::Development ? "development checkout" : "installed";
             printf("%s (%s%s)\n", game->path.c_str(), origin, game->marker ? ", verified by the installer" : "");
+            PrintDataFolders();
+            return 0;
+        }
+
+        // --portable on|off (install/portable_switch.h): the copy, with the
+        // game's copy shown as --install shows it.
+        int RunPortable(bool on)
+        {
+            if (!portable::kSupported)
+            {
+                fprintf(stderr, "Portable mode isn't available on macOS or iOS: SpeedBreaker keeps its data in the system's "
+                                "folder for apps there.\n");
+                return 1;
+            }
+            InterruptGuard guard;
+            GameCopier copier = [](const fs::path& from, const fs::path& to) -> Result
+            {
+                std::unique_ptr<DiscSource> source;
+                if (Result r = OpenDiscSource(from, source); !r.Ok())
+                    return r;
+                printf("Copying the game from %s (%s), checking every file:\n", from.c_str(),
+                    FormatSize(GameManifest().totalBytes).c_str());
+                ProgressPrinter printer;
+                Result r = Install(*source, to, std::ref(printer), &s_cancel);
+                printer.Finish();
+                return r;
+            };
+            std::vector<std::string> said;
+            Result r = on ? MakePortable(BundleFolder(), HomeUserPath(), copier, said)
+                          : LeavePortable(portable::Current(), HomeUserPath(), copier, said);
+            for (const std::string& line : said)
+                printf("%s\n", line.c_str());
+            if (!r.Ok())
+                return Failed(r);
             return 0;
         }
     }
@@ -269,6 +319,14 @@ namespace install
                 return RunFindImages(std::vector<fs::path>(argv + i + 1, argv + argc));
             if (arg == "--where")
                 return RunWhere();
+            if (arg == "--portable")
+            {
+                std::string_view what = i + 1 < argc ? std::string_view(argv[i + 1]) : std::string_view();
+                if ((what != "on" && what != "off") || i + 2 < argc)
+                    return Usage("--portable takes on (copy this computer's SpeedBreaker data and game into SpeedBreaker's "
+                                 "folder, and keep them there from now on) or off (copy them back).");
+                return RunPortable(what == "on");
+            }
         }
         return std::nullopt;
     }

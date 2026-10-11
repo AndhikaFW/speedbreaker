@@ -45,7 +45,8 @@ game can't start from there.
 To update later, unpack the newer download over the same folder (the same
 command, or Extract archive here, letting it overwrite). Your Steam shortcut
 keeps working, and your saves, settings and the installed game are kept
-(they're elsewhere, below), so no disc image is needed. Over v0.1.0, which
+(they're elsewhere, below, or in this folder's `data/` in portable mode,
+which an update leaves alone), so no disc image is needed. Over v0.1.0, which
 kept the program at the top of this folder, the first start removes that old
 copy. Settings menu > Advanced > **Check for Updates** says whether a newer
 one is out. Nothing is checked online unless you press Check for Updates.
@@ -125,6 +126,14 @@ own resolution; the busiest scenes can dip below. A Steam Machine holds 60 at
 menu > Advanced > Performance Overlay, or Steam's own performance overlay
 (Quick Access > Performance).
 
+On a laptop with two GPUs (one built into the processor, and an NVIDIA or
+AMD graphics card), the game runs on the graphics card. `last-run.log` lists
+the GPUs it found and the one it uses (the `[video] Vulkan devices:` line).
+To use another, add `NFSMW_GPU=<its number or part of its name>` to the
+launch options, e.g. `NFSMW_GPU=intel %command%`. With NVIDIA's driver, the
+launcher also turns on NVIDIA's PRIME render offload
+(`__NV_PRIME_RENDER_OFFLOAD=1`; a value you set yourself is kept).
+
 ## Reporting problems
 
 Settings menu > Advanced > **Save Bug Report** puts the recent logs, any
@@ -146,9 +155,57 @@ ends with where in the program it was.
   `speedbreaker/game`, or the folder you chose. The game remembers where it
   is; if that card or drive isn't there when it starts, it says so.
 - Shader caches (safe to delete): `~/.cache/speedbreaker/`.
+- In portable mode (below), all of these are in this folder instead.
+- `speedbreaker.sh --where` prints where the game, your data and the caches are.
 - To uninstall: delete this folder, `~/.local/share/speedbreaker/` (that
   deletes your saves too), `~/.cache/speedbreaker/` and the game's folder
   if you chose one, and remove the shortcut from Steam.
+
+## Portable mode
+
+To keep everything in this folder (your saves and settings, the logs, the
+shader caches and the installed game), so the whole folder can be moved or
+copied to another Steam Deck, Steam Machine or Linux PC and played there,
+make an empty file named `portable.txt` here, next to `speedbreaker.sh`
+(Dolphin: right-click > Create New > Text File; or `touch portable.txt` in
+Konsole). From then on:
+
+- Saves, `settings.toml` and logs (with crash reports and what Save Bug
+  Report collects) are in `data/` here, and the game installs into
+  `data/game`. Shader caches go in `cache/` (safe to delete; another
+  machine's graphics card rebuilds its own).
+- Nothing is read from or written to `~/.local/share/speedbreaker` or
+  `~/.cache/speedbreaker`.
+- The installer's To row offers this folder (and Choose a folder..., which
+  still takes any folder; one outside this folder won't move with it).
+- Unpacking an update over the folder keeps `portable.txt`, `data/` and
+  `cache/`.
+
+Making the file starts fresh: the first start installs the game into
+`data/game` and settings start at their defaults. To bring what you have now
+along instead (settings, saves and the installed game), don't make the file
+yourself; run this in Konsole:
+
+    ~/Games/SpeedBreaker/speedbreaker.sh --portable on
+
+It copies `~/.local/share/speedbreaker` into `data/` and the game into
+`data/game` (checking every file, a few minutes), then makes `portable.txt`.
+Nothing is deleted: the old copies stay until you delete them. To go back,
+`speedbreaker.sh --portable off` copies `data/` back to
+`~/.local/share/speedbreaker` (anything already there is kept, renamed to
+`speedbreaker.before-portable-off-<date>-<time>`) and removes
+`portable.txt`. Deleting `portable.txt` by hand goes back too, to whatever
+`~/.local/share/speedbreaker` held before, with nothing copied.
+
+To move it: copy or move the whole folder (with `data/`, which holds the
+game: about 7 GB), then add `speedbreaker.sh` to Steam again on the other
+machine (step 2). The game finds itself wherever the folder is. Keep the
+folder on internal storage or on a card or drive formatted by SteamOS
+(ext4): on one formatted for Windows (exFAT, FAT32, NTFS) the program can't
+start, though such a drive is fine for carrying a copy of the folder. On a
+read-only drive the game plays but says it can't keep settings or saves.
+Portable mode is for SteamOS and Linux; the Mac app keeps its data in the
+Mac's own folders.
 
 ## Licenses
 

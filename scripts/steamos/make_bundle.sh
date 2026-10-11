@@ -94,6 +94,12 @@ if [ -e "$STAGE" ] && { [ -e "$STAGE/.git" ] || [ ! -f "$STAGE/speedbreaker.sh" 
     echo "make_bundle.sh: $STAGE exists and isn't a bundle folder; not replacing it (give another output folder)" >&2
     exit 1
 fi
+# A bundle folder someone played from in portable mode holds their saves (and
+# maybe the game) in data/: never deleted here.
+if [ -e "$STAGE/portable.txt" ] || [ -e "$STAGE/data" ]; then
+    echo "make_bundle.sh: $STAGE is a portable folder (portable.txt or data/: saves); not replacing it (give another output folder)" >&2
+    exit 1
+fi
 rm -rf "$STAGE"
 mkdir -p "$STAGE/lib" "$STAGE/licenses"
 [ "$RUNTIMES" = bundled ] && mkdir -p "$STAGE/lib/cxx" "$STAGE/lib/glibc"
@@ -256,6 +262,12 @@ for pkg in "${!packages[@]}"; do
     for id in $(pacman -Qi "$pkg" | sed -n 's/^Licenses *: //p' | sed 's/ WITH [^ ]*//g'); do
         [ -f "/usr/share/licenses/spdx/$id.txt" ] && mkdir -p "$STAGE/licenses/$pkg" && cp "/usr/share/licenses/spdx/$id.txt" "$STAGE/licenses/$pkg/"
     done
+done
+
+# Never a portable-mode switch or data folder (README.md, "Portable mode"):
+# unpacked over a player's folder, the download must leave theirs as it is.
+for f in portable.txt data cache; do
+    [ -e "$STAGE/$f" ] && { echo "make_bundle.sh: $STAGE/$f: portable mode's, never part of the download" >&2; exit 1; }
 done
 
 # Never game data (the installer brings it from the player's own disc).

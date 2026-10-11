@@ -41,6 +41,7 @@
 // of the build failing on an undefined symbol.
 #include <stdafx.h>
 #include "ultrawide.h"
+#include "glare.h"
 
 #include <kernel/function.h>
 
@@ -88,11 +89,12 @@ namespace
         fprintf(stderr, "[uw] view %u: target %ux%u%s\n", id, w, h, widened ? ", widened" : "");
     }
 
-    // The view at `view` (guest address) is one the game widens for 16:9.
+    // The view at `view` (guest address) is one the game widens for 16:9
+    // (game/glare.h keeps the set: the sun's glow is fitted in the same views).
     bool WidenedView(uint32_t view)
     {
         uint32_t id = ByteSwap(*static_cast<const uint32_t*>(g_memory.Translate(view + 4)));
-        bool widen = id == 1 || id == 2 || id == 4 || id == 5 || id == 17;
+        bool widen = game::glare::WidenedViewId(id);
         LogView(id, widen);
         return widen;
     }

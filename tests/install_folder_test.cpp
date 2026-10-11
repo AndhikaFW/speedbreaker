@@ -4,7 +4,7 @@
 // (PlaceInPicked, PlaceExact, DescribeRecordedInstall) on planted facts, then
 // the same through the disk (ProbeFolder, CheckPickedFolder, FindGameInstall)
 // in a scratch folder with a sandbox HOME. From the repo root:
-//   clang++ -std=c++20 -O2 -Iruntime tests/install_folder_test.cpp runtime/install/{placement,installer,locate,manifest,result,disc_source,sha256}.cpp -o build/install_folder_test
+//   clang++ -std=c++20 -O2 -Iruntime tests/install_folder_test.cpp runtime/install/{placement,installer,locate,manifest,result,disc_source,sha256}.cpp runtime/user/portable.cpp -o build/install_folder_test
 //   (on macOS add -framework CoreFoundation)
 //   build/install_folder_test [folder]
 // The disk checks run in a new folder made inside [folder] (default: the

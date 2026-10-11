@@ -24,6 +24,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_video.h>
@@ -47,9 +48,11 @@ namespace ui
     bool Initialize(SDL_Window* window, const VulkanTarget& target);
     // The swapchain was recreated in another format.
     void SetFormat(VkFormat format);
-    // The swapchain's size when it isn't the window's pixels (iOS's present
-    // scale: Screen Resolution or NFSMW_PRESENT_SCALE); 0, 0: the window's
-    // (the default).
+    // The swapchain's size (each time it is built). The UI's framebuffer
+    // scale follows it (iOS's present scale: Screen Resolution or
+    // NFSMW_PRESENT_SCALE makes it smaller than the window's pixels), and
+    // its layout too should the window's size disagree with it in shape
+    // (video/swapchain_policy.h: FitUiDisplay). 0, 0: the window's.
     void SetFramebufferSize(uint32_t width, uint32_t height);
     // Main thread, with the device idle.
     void Shutdown();
@@ -112,6 +115,13 @@ namespace ui
     // and WhatsNewEntry()) as a modal panel over the game until the player
     // closes it (A, B, Start, Esc or OK). Nothing without an entry.
     void ShowWhatsNew(std::string_view version);
+
+    // Main thread, before the game starts (main.cpp): a page saying why the
+    // game can't start (memory_status.h's StartupFailure), drawn until it is
+    // closed (Quit, B, Start, Esc; on iOS only by closing the app) or the
+    // window closes. `runFrame` is video::RunFrame. Nothing without a UI.
+    void RunStartupError(const std::string& title, const std::vector<std::string>& paragraphs, const std::string& details,
+        const std::function<bool()>& runFrame);
 
     void OpenSettings();
     void CloseSettings();  // saves any change

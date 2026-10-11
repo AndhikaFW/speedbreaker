@@ -57,7 +57,8 @@ date and time it started, next to any `crash-*.txt` and `hang-*.txt`
 reports:
 
 - Linux / SteamOS: `~/.local/share/speedbreaker/logs/`
-  (`$XDG_DATA_HOME/speedbreaker/logs/` if that is set)
+  (`$XDG_DATA_HOME/speedbreaker/logs/` if that is set; in portable mode,
+  `data/logs/` in the game's folder, next to `portable.txt`)
 - macOS: `~/Library/Application Support/SpeedBreaker/logs/`
 
 On SteamOS the launcher also leaves the latest session's output in

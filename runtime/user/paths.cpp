@@ -38,5 +38,7 @@ namespace
 
 std::string MigrateUserFolders()
 {
+    if (portable::Current().Active())
+        return {};  // the home folder's data isn't SpeedBreaker's in portable mode: leave it as it is
     return MigrateFolder(UserDataBase(), DataFolderName()) + MigrateFolder(CacheBase(), CacheFolderName());
 }

@@ -8,6 +8,8 @@
 #include "manifest.h"
 #include "result.h"
 
+#include <user/portable.h>
+
 #include <atomic>
 #include <filesystem>
 #include <optional>
@@ -53,9 +55,17 @@ namespace install
     // Where the player chose to install when it wasn't DefaultInstallPath()
     // (an SD card, a USB drive): recorded in GetUserPath()/game-location by
     // the installer, and searched by FindGameInstall after NFSMW_GAME_DIR and
-    // ./game/files. Recording the default path removes the record.
+    // ./game/files. Recording the default path removes the record. In
+    // portable mode a folder inside SpeedBreaker's own is recorded relative to
+    // it (user/portable.h), so the record moves with the folder.
     std::optional<std::filesystem::path> RecordedInstallPath();
     bool RecordInstallPath(const std::filesystem::path& dir);
+
+    // The same for any record file, read as `layout` says (a relative record
+    // only in portable mode), and a record's text written to one, atomically
+    // (install/portable_switch.h, which moves records between data folders).
+    std::optional<std::filesystem::path> ReadInstallRecord(const std::filesystem::path& file, const portable::Layout& layout);
+    bool WriteInstallRecord(const std::filesystem::path& file, const std::string& text);
 
     struct InstallDestination
     {
@@ -66,6 +76,7 @@ namespace install
 
     // Where the installer offers to put the game: DefaultInstallPath() first,
     // then a folder on each mounted removable drive (<drive>/speedbreaker/game; SpeedBreaker on macOS).
+    // In portable mode, only DefaultInstallPath() (in SpeedBreaker's folder).
     std::vector<InstallDestination> InstallDestinations();
 
     struct DiscImageCandidate

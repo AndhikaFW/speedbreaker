@@ -16,6 +16,13 @@ struct Memory
     // Physical offset of the 0xE0000000 window: 0x1000 on hardware, 0 on
     // hosts whose page size can't express it (see memory.cpp).
     uint32_t eWindowShift = 0;
+    // SpeedBreaker: base is null because a step failed (memory_status.h's
+    // Failure: 1, the 4 GB reservation; 2, the physical memory mirrors) with
+    // this error (errno; a kern_return_t for the Apple mirrors). main.cpp
+    // says so on screen. NFSMW_TEST_RESERVE_FAIL=1 or 2 fails that step on
+    // purpose (testing the message on any machine).
+    int failedStep = 0;
+    int failedError = 0;
 
     bool IsInMemoryRange(const void* host) const noexcept
     {

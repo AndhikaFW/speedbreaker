@@ -7,6 +7,8 @@
 #include <TargetConditionals.h>
 #endif
 
+#include "portable.h"
+
 // Extracted disc contents (default.xex, NFS/, Movies/): where startup found
 // or installed the game (install::FindGameInstall, SetGamePath); before
 // that, NFSMW_GAME_DIR or the repo layout.
@@ -54,7 +56,7 @@ inline const char*& CacheFolderName()
     return name;
 }
 
-// Where the per-user folders go.
+// Where the per-user folders go (outside portable mode: user/portable.h).
 //   macOS: ~/Library/Application Support, ~/Library/Caches
 //   iOS: the same in the app's container; $XDG_DATA_HOME and
 //        $XDG_CACHE_HOME when set (test runs: iOS sets HOME itself)
@@ -93,21 +95,41 @@ inline std::filesystem::path CacheBase()
 #endif
 }
 
-// Per-user data: saves, settings, logs and (by default) the installed game.
-inline std::filesystem::path GetUserPath()
+// This computer's own data and cache folders, portable mode or not
+// (install/portable_switch.h copies between them and SpeedBreaker's folder).
+inline std::filesystem::path HomeUserPath()
 {
     return UserDataBase() / DataFolderName();
 }
 
-// Caches that can be deleted any time (compiled shaders, pipelines).
-inline std::filesystem::path GetCachePath()
+inline std::filesystem::path HomeCachePath()
 {
     return CacheBase() / CacheFolderName();
 }
 
+// Per-user data: saves, settings, logs and (by default) the installed game.
+// In portable mode, the data folder in SpeedBreaker's own folder.
+inline std::filesystem::path GetUserPath()
+{
+    if (const portable::Layout& layout = portable::Current(); layout.Active())
+        return layout.data;
+    return HomeUserPath();
+}
+
+// Caches that can be deleted any time (compiled shaders, pipelines). In
+// portable mode, the cache folder in SpeedBreaker's own folder.
+inline std::filesystem::path GetCachePath()
+{
+    if (const portable::Layout& layout = portable::Current(); layout.Active())
+        return layout.cache;
+    return HomeCachePath();
+}
+
 // Renames nfsmw-recomp folders to the current name, leaving the old name as
 // a link to the new folder (for older builds and scripts). Call first thing
-// in main; returns what it did, for the log once that is open.
+// in main (after portable::Detect: in portable mode it does nothing, since
+// the home folder isn't SpeedBreaker's then); returns what it did, for the
+// log once that is open.
 std::string MigrateUserFolders();
 
 inline std::filesystem::path GetSavePath(bool)

@@ -4,6 +4,63 @@ What changed in each SpeedBreaker release, newest first. Each release's notes on
 its entry here, and the game shows the entry once, the first time a new version starts (offline:
 it's built into the game).
 
+## v0.1.2
+
+### What's new
+
+- Internal Resolution 1.5x (1080p), in Settings > Graphics: a much sharper picture than 1x, with
+  a little over half the pixels of 2x: for a GPU with room above 1x but not for 2x. Thanks to the
+  Reddit player who asked for it.
+- Laptops with two GPUs: the game now runs on the dedicated graphics card (NVIDIA or AMD), not on
+  the one built into the processor. On Linux with NVIDIA's driver, the launcher also turns on
+  NVIDIA's PRIME render offload: thanks to lydacious for the idea and the first version (GitHub
+  pull request #6).
+- Portable mode on Steam Deck, Steam Machine and Linux: put a file named `portable.txt` next to
+  `speedbreaker.sh`, and SpeedBreaker keeps your settings, saves, logs and caches in that folder,
+  and installs the game there too. Move or copy the whole folder to another machine and play on
+  (GitHub issue #1).
+- Taller and wider screens: the sun's glare is round again (it was stretched up to 1.33 times
+  taller on the Steam Deck, 4:3 and 3:2, and wider on ultrawides); no faint line of a letterboxed
+  movie shows in the black past the 16:9 picture; and the race results screen is black past its
+  16:9 picture, as on a 16:9 TV, instead of showing the road behind it.
+- iPhone: after a screenshot, the picture no longer shrinks into a corner of the screen with the
+  settings menu blown up.
+- Experimental: an IPA for iPhone and iPad, to sideload with your own Apple Account.
+
+### More about it
+
+- 1.5x renders 2.25 times the pixels of 1x, where 2x renders 4 times. Auto still chooses between
+  whole scales (1x, 2x or 3x) as before.
+- The game picks a dedicated (discrete) GPU over a built-in (integrated) one, and of two alike the
+  one with more video memory. The log's `[video] Vulkan devices:` line lists every GPU it found,
+  the one it uses, and why. To use another, put `NFSMW_GPU=<its number or part of its name>` in
+  the launch options, e.g. `NFSMW_GPU=intel %command%`. On the Steam Deck, Steam Machine, Steam
+  Frame, a Mac, an iPhone or an iPad (one GPU each) nothing changes. The launcher sets
+  `__NV_PRIME_RENDER_OFFLOAD=1` only on a PC where NVIDIA's driver runs one GPU beside another and
+  NVIDIA's Vulkan driver is installed, and keeps a value you set yourself.
+- `speedbreaker.sh --portable on` copies what you have now (settings, saves and the installed game)
+  into the folder and turns portable mode on; `--portable off` copies them back. Both copy and
+  never delete: your old files stay until you remove them. Not on the Mac, where an app can't keep
+  its data inside itself.
+- The IPA: the game asks iOS for two memory entitlements, and a free Apple Account can give at most
+  one of them, with some tools only: with a free account it may not start, or iOS may close it in
+  busy scenes. scripts/ios/README.md says which tools keep what. When iOS refuses the memory, the
+  game now says why on screen instead of closing.
+- iPhone and iPad: on iOS 27 the screenshot screen could leave the game laid out as if the phone
+  were held upright, until the game was closed. The game now checks its picture against the
+  screen after coming back from the screenshot screen, the app switcher or Control Center, and
+  puts it right if they disagree; an iPhone, which plays only in landscape, never draws upright.
+- iPhone and iPad: Internal Resolution's Auto now decides chip by chip, and the log says what it
+  chose and why. Every chip still gets 1x (720p) under Auto, the iPhone 18 Pro Max included: in a
+  long race on a charger it got hot even at 1x. 1.5x and 2x are in Settings > Graphics > Internal
+  Resolution. The log also records the battery level and charging state.
+- After a macOS, SteamOS or graphics driver update, the first drive can stutter for a moment while
+  the game rebuilds its shaders for the new system. It happens once, and the game's log now says
+  so.
+- Updating keeps your saves, settings and the installed game, and needs no disc image: on a Mac,
+  drag the new app into Applications and choose Replace, then Open Anyway once more; on SteamOS,
+  unpack the new download over the old folder.
+
 ## v0.1.1
 
 ### What's new

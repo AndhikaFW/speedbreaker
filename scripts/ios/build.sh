@@ -17,13 +17,24 @@
 #   IOS_BUNDLE_ID       the app's bundle identifier (unique to the team)
 #   IOS_DEVICE          the device to install on (`xcrun devicectl list
 #                       devices`; the only connected one by default)
+#   IOS_UNSIGNED=1      an app nobody signed, for make_ipa.sh (an IPA that
+#                       players sideload): no team, no account, no profile;
+#                       in build/ios/xcode-unsigned. IOS_BUNDLE_ID is then
+#                       optional (a generic one), and "install" refused.
 # No game data: the game installs from the player's disc image on the device.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
 : "${IOS_DEPS:?set IOS_DEPS: the folder scripts/ios/build_deps.sh made (scripts/ios/README.md)}"
-: "${DEVELOPMENT_TEAM:?set DEVELOPMENT_TEAM: your Apple developer team ID (scripts/ios/README.md)}"
-: "${IOS_BUNDLE_ID:?set IOS_BUNDLE_ID: a bundle identifier of your own, such as com.yourname.SpeedBreaker}"
+UNSIGNED=${IOS_UNSIGNED:-0}
+if [ "$UNSIGNED" = 1 ]; then
+    [ "${1:-}" = install ] && { echo "build.sh: IOS_UNSIGNED=1 makes an app nobody signed, which no device installs: make_ipa.sh packages it for sideloading" >&2; exit 2; }
+    # Sideloading tools give it an identifier of the player's own anyway.
+    IOS_BUNDLE_ID=${IOS_BUNDLE_ID:-io.github.speedbreakerproject.SpeedBreaker}
+else
+    : "${DEVELOPMENT_TEAM:?set DEVELOPMENT_TEAM: your Apple developer team ID (scripts/ios/README.md)}"
+    : "${IOS_BUNDLE_ID:?set IOS_BUNDLE_ID: a bundle identifier of your own, such as com.yourname.SpeedBreaker}"
+fi
 PREFIX=$IOS_DEPS/prefix
 MOLTENVK=$IOS_DEPS/MoltenVK
 BUILD=$ROOT/build/ios
@@ -67,12 +78,21 @@ LIBS+=(-weak_framework CoreHaptics)
 VERSION=$(sed -n 's/^CMAKE_PROJECT_VERSION:STATIC=//p' "$BUILD/CMakeCache.txt")
 BUILD_NUMBER=$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)
 
+# Signed for the team (Xcode's automatic signing makes the profile), or for
+# make_ipa.sh not at all: then no account is asked anything.
+if [ "$UNSIGNED" = 1 ]; then
+    DERIVED=$BUILD/xcode-unsigned
+    SIGNING=(CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= DEVELOPMENT_TEAM=)
+else
+    DERIVED=$BUILD/xcode
+    SIGNING=(-allowProvisioningUpdates DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM")
+fi
 xcodebuild -project "$ROOT/scripts/ios/SpeedBreaker.xcodeproj" -scheme SpeedBreaker -configuration Release \
-    -destination generic/platform=iOS -derivedDataPath "$BUILD/xcode" -allowProvisioningUpdates -quiet \
-    DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" PRODUCT_BUNDLE_IDENTIFIER="$IOS_BUNDLE_ID" \
+    -destination generic/platform=iOS -derivedDataPath "$DERIVED" -quiet "${SIGNING[@]}" \
+    PRODUCT_BUNDLE_IDENTIFIER="$IOS_BUNDLE_ID" \
     MARKETING_VERSION="${VERSION:-0.0.0}" CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
     OTHER_LDFLAGS="${LIBS[*]}" build
-APP=$BUILD/xcode/Build/Products/Release-iphoneos/SpeedBreaker.app
+APP=$DERIVED/Build/Products/Release-iphoneos/SpeedBreaker.app
 nm -gU "$APP/SpeedBreaker" | grep -q ' _vkGetInstanceProcAddr$' || { echo "build.sh: vkGetInstanceProcAddr was stripped" >&2; exit 1; }
 echo "$APP (v${VERSION:-?}, build $BUILD_NUMBER, $(du -sh "$APP" | cut -f1))"
 

@@ -186,24 +186,41 @@ namespace install
         }
     }
 
-    std::optional<std::filesystem::path> RecordedInstallPath()
+    std::optional<std::filesystem::path> ReadInstallRecord(const std::filesystem::path& file, const portable::Layout& layout)
     {
-        FILE* f = fopen(LocationFile().c_str(), "rb");
+        FILE* f = fopen(file.c_str(), "rb");
         if (!f)
             return std::nullopt;
         char buffer[4096];
         size_t n = fread(buffer, 1, sizeof(buffer) - 1, f);
         fclose(f);
-        std::string text(buffer, n);
-        while (!text.empty() && (text.back() == '\n' || text.back() == '\r'))
-            text.pop_back();
-        if (text.empty() || text.front() != '/')
-            return std::nullopt;
-        // No trailing separator (records before v0.1.1 kept `--dest dir/`'s).
-        fs::path path = fs::path(text).lexically_normal();
-        while (path.has_relative_path() && path.filename().empty())
-            path = path.parent_path();
-        return path;
+        // Absolute, or (portable mode) relative to SpeedBreaker's folder; no
+        // trailing separator (records before v0.1.1 kept `--dest dir/`'s).
+        return portable::ParseRecord(std::string_view(buffer, n), layout);
+    }
+
+    bool WriteInstallRecord(const std::filesystem::path& file, const std::string& text)
+    {
+        std::error_code ec;
+        fs::create_directories(file.parent_path(), ec);
+        fs::path temp = file;
+        temp += ".tmp";
+        FILE* f = fopen(temp.c_str(), "wb");
+        if (!f)
+            return false;
+        std::string line = text + "\n";
+        bool ok = fwrite(line.data(), 1, line.size(), f) == line.size();
+        ok = fflush(f) == 0 && ok;
+        fsync(fileno(f));
+        fclose(f);
+        if (ok)
+            fs::rename(temp, file, ec);
+        return ok && !ec;
+    }
+
+    std::optional<std::filesystem::path> RecordedInstallPath()
+    {
+        return ReadInstallRecord(LocationFile(), portable::Current());
     }
 
     bool RecordInstallPath(const std::filesystem::path& dir)
@@ -218,25 +235,22 @@ namespace install
             fs::remove(file, ec);
             return !ec;
         }
-        fs::create_directories(file.parent_path(), ec);
-        fs::path temp = file;
-        temp += ".tmp";
-        FILE* f = fopen(temp.c_str(), "wb");
-        if (!f)
-            return false;
-        std::string text = folder.string() + "\n";
-        bool ok = fwrite(text.data(), 1, text.size(), f) == text.size();
-        ok = fflush(f) == 0 && ok;
-        fsync(fileno(f));
-        fclose(f);
-        if (ok)
-            fs::rename(temp, file, ec);
-        return ok && !ec;
+        // In portable mode, a folder inside SpeedBreaker's is recorded
+        // relative to it, so the record still holds once the folder moves.
+        return WriteInstallRecord(file, portable::RecordText(folder, portable::Current()));
     }
 
     std::vector<InstallDestination> InstallDestinations()
     {
         std::vector<InstallDestination> out;
+        // Portable mode: SpeedBreaker's own folder (its data/game), and no
+        // drive's folder, which would leave the game behind when the folder
+        // moves. Choose a folder... still takes any folder.
+        if (portable::Current().Active())
+        {
+            out.push_back({ "SpeedBreaker's folder", DefaultInstallPath(), false });
+            return out;
+        }
         out.push_back({ "Internal storage", DefaultInstallPath(), false });
         auto addVolume = [&](const fs::path& volume)
         {

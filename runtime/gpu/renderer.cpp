@@ -11,9 +11,11 @@
 #include "block_ranges.h"
 #include "edge_bars.h"
 #include "memory_plan.h"
+#include "pipeline_cache_header.h"
 #include "shader_translator.h"
 #include "zpd_report.h"
 #include "depth24_glsl.h"
+#include "render_scale.h"
 #include "shared_memory_glsl.h"
 #include "xenos/registers.h"
 
@@ -21,6 +23,7 @@
 #include <kernel/write_watch.h>
 #include <video/presenter.h>
 #include <video/picture_fit.h>
+#include <video/scale_budget.h>
 #include <user/paths.h>
 #include <user/settings.h>
 #include <game/ultrawide.h>
@@ -1489,9 +1492,8 @@ namespace gpu::renderer
             return spirv;
         }
 
-        // Vulkan pipeline cache, persisted as GetCachePath()/pipelines.bin (the
-        // driver validates the header: another GPU or driver version starts
-        // empty). Saved every 600 frames when new pipelines appeared, and at exit.
+        // Vulkan pipeline cache, persisted as GetCachePath()/pipelines.bin.
+        // Saved every 600 frames when new pipelines appeared, and at exit.
         VkPipelineCache s_pipelineCache = VK_NULL_HANDLE;
         uint32_t s_pipelinesAtSave = 0;
 
@@ -1512,6 +1514,29 @@ namespace gpu::renderer
                     }
                     fclose(f);
                 }
+            // A cache another GPU, driver or OS version made is set aside by
+            // the driver without a word (MoltenVK's device ID carries the
+            // macOS version, so every macOS update does it), and the first
+            // drive afterwards stutters while the pipelines compile again.
+            // The header says so in advance (gpu/pipeline_cache_header.h): one
+            // line for the log, and the stale data isn't handed over. The
+            // next save writes this device's header, so it's said once. No
+            // toast: it isn't something to act on, it would come after every
+            // SteamOS and macOS update, and the stutter is a frame or two at
+            // the first world entry (a first run with no cache at all has
+            // more, and says nothing either).
+            {
+                VkPhysicalDeviceProperties props;
+                vkGetPhysicalDeviceProperties(s_vk->physical, &props);
+                gpu::pipeline_cache::Maker device{ props.vendorID, props.deviceID, {} };
+                std::memcpy(device.uuid.data(), props.pipelineCacheUUID, device.uuid.size());
+                const auto check = gpu::pipeline_cache::CheckHeader(data.data(), data.size(), device);
+                if (const std::string line = gpu::pipeline_cache::LogLine(check, device); !line.empty())
+                {
+                    fprintf(stderr, "%s\n", line.c_str());
+                    data.clear();
+                }
+            }
             VkPipelineCacheCreateInfo pcci{ VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
             pcci.initialDataSize = data.size();
             pcci.pInitialData = data.empty() ? nullptr : data.data();
@@ -1705,9 +1730,9 @@ namespace gpu::renderer
             uint32_t base, format, pitch;
             bool depth;
             bool wide;                         // side-by-side tiles drawn untiled (see GetTarget)
-            uint32_t width, height;            // host pixels (guest x scale)
+            uint32_t width, height;            // host pixels (guest x scale, rounded up)
             uint32_t guestWidth, guestHeight;  // guest pixels
-            uint32_t scaleX = 1, scaleY = 1;
+            gpu::RenderScale scale;            // host pixels per guest pixel (gpu/render_scale.h)
             VkFormat vkFormat;
             bool blendable;
             Image image;
@@ -1808,34 +1833,43 @@ namespace gpu::renderer
         // colour grade visibly changed with 320 scaled), and they are blurry
         // by design anyway. Draws keep the guest's viewport transform in guest pixels
         // and scale only the host viewport and scissor; resolves average each
-        // sx x sy block down into guest memory (depth takes one sample), so
-        // the game and the texture cache see 1x data as before.
-        // NFSMW_RENDER_SCALE=<n> or <sx>x<sy> (1-4; default 1).
+        // guest pixel's host pixels down into guest memory (depth takes one
+        // sample), so the game and the texture cache see 1x data as before.
+        // The scale is a ratio on each axis (gpu/render_scale.h): 1, 1.5
+        // (3 host pixels for every 2 guest ones: 1920x1080), 2, 3, 4.
+        // NFSMW_RENDER_SCALE=<n> or <sx>x<sy> (1, 1.5, 2, 3 or 4; default 1).
         // The setting applies live (ApplyLiveSettings): every scaled target,
         // the scaled resolve memory and the scaled textures are made again at
         // the new scale between two frames, and Auto follows the picture's
         // size (the window, fullscreen, the aspect ratio setting).
-        uint32_t s_renderScaleX = 1, s_renderScaleY = 1;
+        gpu::RenderScale s_renderScale;
         uint32_t s_scalePitchMin = 640, s_scalePitchMax = 1280;
         uint32_t s_scaleBudget = 6;  // Auto's most host pixels per guest pixel
         bool s_scaleFixed = false;   // NFSMW_RENDER_SCALE: no live changes
 
         // What the Internal Resolution setting asks for with the picture
         // covering `regionW` x `regionH` of the swapchain.
-        void WantedRenderScale(int32_t setting, uint32_t regionW, uint32_t regionH, uint32_t& sx, uint32_t& sy)
+        // The setting's value is the scale in half steps (settings.h: 2 is
+        // 1x, 3 is 1.5x, 4 is 2x, 6 is 3x). Auto (whole scales only, for
+        // now: video::AutoRenderScale) could pick 1.5x by returning one.
+        gpu::RenderScale WantedRenderScale(int32_t setting, uint32_t regionW, uint32_t regionH)
         {
             if (setting > 0)
             {
-                sx = sy = uint32_t(std::clamp(setting, 1, 3));
-                return;
+                gpu::AxisScale a = gpu::AxisFromHalves(uint32_t(std::clamp(setting, 2, 6)));
+                return { a, a };
             }
+            uint32_t sx = 1, sy = 1;
             // Auto: enough host pixels to cover the screen area the frame
             // fills (video/picture_fit: 3440x1440 filled: 3x2; a 1440p 16:9
             // box: 2x2; a Steam Deck's 1280x800 filled with Vert+: 1x1),
             // within a budget of sx x sy host pixels per guest pixel: 6 on a
             // discrete GPU, 4 on an integrated one (the M1 Pro holds a race
-            // at 2x2), 9 on a Mac with an M3 or later Max or Ultra.
+            // at 2x2), 9 on a Mac with an M3 or later Max or Ultra, and on an
+            // iPhone or iPad the chip's (video/scale_budget: 1 on every chip
+            // measured so far).
             video::AutoRenderScale(regionW, regionH, s_scaleBudget, sx, sy);
+            return gpu::RenderScale::Whole(sx, sy);
         }
 
         std::string ScaleReason(int32_t setting, uint32_t regionW, uint32_t regionH)
@@ -1853,10 +1887,18 @@ namespace gpu::renderer
             // (<n> or <sx>x<sy>, developer override) wins.
             s_scaleBudget = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 6 : 4;
 #if defined(__APPLE__) && TARGET_OS_IOS
-            // iPhones and iPads hold a race at 60 fps at 1x only. Scripted
-            // drive, GPU time a frame: iPhone 15 Pro Max (A17 Pro) 15 ms at
-            // 1x, 36-40 at 2x; iPad Pro M2 20 ms at 2x (43-50 fps).
-            s_scaleBudget = 1;
+            // iPhones and iPads: chip by chip (video/scale_budget), more than
+            // 1x1 only where a chip was measured to hold a race at 60 fps with
+            // it and stay out of serious thermal throttling (none yet: the A20
+            // Pro gets hot at 1x1 already), and 1x1 on a chip not measured.
+            // Scripted drive, GPU time a frame: iPhone 15 Pro Max (A17 Pro)
+            // 15 ms at 1x, 36-40 at 2x; iPad Pro M2 20 ms at 2x (43-50 fps).
+            {
+                const video::ScaleBudget mobile = video::MobileScaleBudget(props.deviceName);
+                s_scaleBudget = mobile.pixels;
+                fprintf(stderr, "[renderer] Auto internal resolution: at most %u host pixel%s per guest pixel on the %s (%s)\n",
+                    s_scaleBudget, s_scaleBudget == 1 ? "" : "s", props.deviceName, mobile.reason);
+            }
 #elif defined(__APPLE__)
             // Apple GPUs are all integrated, but a recent Max or Ultra has
             // the headroom for 3x3 (4K). Scripted race, GPU time a frame, M4
@@ -1880,24 +1922,21 @@ namespace gpu::renderer
 #endif
             int32_t setting = settings::GetInt(settings::Id::InternalResolution);
             uint32_t regionW = 0, regionH = 0;
-            if (const char* v = std::getenv("NFSMW_RENDER_SCALE"))
-            {
-                unsigned x = 1, y = 0;
-                if (sscanf(v, "%ux%u", &x, &y) < 2)
-                    y = x;
-                s_renderScaleX = std::clamp(x, 1u, 4u);
-                s_renderScaleY = std::clamp(y, 1u, 4u);
+            const char* fixed = std::getenv("NFSMW_RENDER_SCALE");
+            if (fixed && gpu::ParseRenderScale(fixed, s_renderScale))
                 s_scaleFixed = true;
-            }
             else
             {
+                if (fixed)
+                    fprintf(stderr, "[renderer] NFSMW_RENDER_SCALE=%s ignored: each axis takes 1, 1.5, 2, 3 or 4 (\"1.5\", \"3x2\")\n", fixed);
                 video::FrameRegion(regionW, regionH);
-                WantedRenderScale(setting, regionW, regionH, s_renderScaleX, s_renderScaleY);
+                s_renderScale = WantedRenderScale(setting, regionW, regionH);
             }
             if (const char* v = std::getenv("NFSMW_SCALE_PITCH"))
                 sscanf(v, "%u-%u", &s_scalePitchMin, &s_scalePitchMax);
-            fprintf(stderr, "[renderer] internal resolution %ux%u (%ux%u, %s; surface pitches %u-%u)\n", s_renderScaleX, s_renderScaleY,
-                1280 * s_renderScaleX, 720 * s_renderScaleY, ScaleReason(setting, regionW, regionH).c_str(), s_scalePitchMin, s_scalePitchMax);
+            fprintf(stderr, "[renderer] internal resolution %s (%ux%u, %s; surface pitches %u-%u)\n", gpu::ScaleName(s_renderScale).c_str(),
+                s_renderScale.x.Size(1280), s_renderScale.y.Size(720), ScaleReason(setting, regionW, regionH).c_str(), s_scalePitchMin,
+                s_scalePitchMax);
         }
 
         bool ScaledPitch(uint32_t pitch)
@@ -1935,12 +1974,11 @@ namespace gpu::renderer
             rt->guestWidth = wide ? kUntiledWidth : pitch;
             rt->guestHeight = rows;
             if (ScaledPitch(pitch))
-            {
-                rt->scaleX = s_renderScaleX;
-                rt->scaleY = s_renderScaleY;
-            }
-            rt->width = rt->guestWidth * rt->scaleX;
-            rt->height = rt->guestHeight * rt->scaleY;
+                rt->scale = s_renderScale;
+            // (Rounded up: a pitch that isn't whole blocks at 1.5x still
+            // has room for its last host column.)
+            rt->width = rt->scale.x.Size(rt->guestWidth);
+            rt->height = rt->scale.y.Size(rt->guestHeight);
             rt->vkFormat = depth ? VK_FORMAT_D32_SFLOAT_S8_UINT : ColorFormat(format);
             VkFormatProperties fp;
             vkGetPhysicalDeviceFormatProperties(s_vk->physical, rt->vkFormat, &fp);
@@ -1983,7 +2021,7 @@ namespace gpu::renderer
 
             fprintf(stderr, "[renderer] EDRAM target: base %u %s format %u pitch %u -> %ux%u%s\n",
                 base, depth ? "depth" : "color", format, pitch, rt->guestWidth, rt->guestHeight,
-                rt->scaleX * rt->scaleY > 1 ? std::format(" (host {}x{})", rt->width, rt->height).c_str() : "");
+                !rt->scale.IsOne() ? std::format(" (host {}x{})", rt->width, rt->height).c_str() : "");
             return rt;
         }
 
@@ -2038,6 +2076,15 @@ namespace gpu::renderer
                 vkCmdWriteTimestamp(s_cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, s_passQueries, s_passInfos.back().query + 1);
             PassEndBarrier();
             SignalWrites();
+        }
+
+        // Guest rectangle [x0, x1) x [y0, y1) in host pixels at `scale`: its
+        // edges' (gpu/render_scale.h; a negative edge is 0), so rectangles
+        // that share a guest edge share the host one.
+        VkRect2D HostRect(const gpu::RenderScale& scale, int32_t x0, int32_t y0, int32_t x1, int32_t y1)
+        {
+            const int32_t hx0 = scale.x.EdgeAt(x0), hy0 = scale.y.EdgeAt(y0), hx1 = scale.x.EdgeAt(x1), hy1 = scale.y.EdgeAt(y1);
+            return { { hx0, hy0 }, { uint32_t(std::max(hx1 - hx0, 0)), uint32_t(std::max(hy1 - hy0, 0)) } };
         }
 
         bool Contains(const VkRect2D& outer, const VkRect2D& inner)
@@ -3043,13 +3090,16 @@ namespace gpu::renderer
         // Scaled resolve memory (internal resolution above 1x)
         //
         // A resolve from a scaled render target writes each guest pixel's
-        // sx x sy host samples here, besides the 1x average into guest memory
+        // host samples here, besides the 1x average into guest memory
         // (which the CPU, 1x draws and the auto-exposure readback keep
         // using). Storage is per 4 KB guest page: a slot of 4096 x s bytes
-        // (s = sx x sy) in one pool buffer, found through a page table (a GPU
-        // buffer and its CPU copy), as MoltenVK has no sparse buffers. The
-        // samples of the 32-bit texel at guest byte address A are at
-        //   slot(A >> 12) x 4096 x s + (A & 4095) x s + (j x sx + i) x 4.
+        // (s = sx x sy host pixels per guest pixel: 9/4 at 1.5x) in one pool
+        // buffer, found through a page table (a GPU buffer and its CPU copy),
+        // as MoltenVK has no sparse buffers. At a whole scale the samples of
+        // the 32-bit texel at guest byte address A are at
+        //   slot(A >> 12) x 4096 x s + (A & 4095) x s + (j x sx + i) x 4;
+        // at 1.5x a 2x2 block of texels keeps its 3x3 samples together
+        // (gpu/render_scale.h, sbSampleWord, has the layout).
         // A page's scaled copy is current while the last write to the page
         // was a scaled resolve: its write sequence is still the one recorded
         // right after that resolve (a CPU write, a 1x resolve or any other
@@ -3067,7 +3117,8 @@ namespace gpu::renderer
         struct ScaledMemory
         {
             bool tried = false, enabled = false, direct = false, coalesce = false;
-            uint32_t sx = 1, sy = 1, s = 1, slotWords = 0, slots = 0;
+            gpu::RenderScale scale;  // the scale its samples are at
+            uint32_t slotWords = 0, slots = 0;
             VkBuffer pool = VK_NULL_HANDLE, table = VK_NULL_HANDLE, scratch = VK_NULL_HANDLE;
             VkDeviceMemory poolMemory = VK_NULL_HANDLE, tableMemory = VK_NULL_HANDLE, scratchMemory = VK_NULL_HANDLE;
             VkDeviceSize scratchSize = 0;  // also the largest scaled texture (no buffer when direct)
@@ -3808,9 +3859,11 @@ void main()
             // (and nothing since) is sampled at host resolution, base level
             // only (resolved surfaces have no mips).
             // (Mipmapped textures keep their levels on the 1x path.)
+            // At 1.5x only a texture of whole 2x2 blocks (even width and
+            // height; gpu/render_scale.h).
             bool scaledCandidate = !cube && !volume && f.tiled && layers == 1 && !f.stacked &&
-                ScaledFormat(fi) && offX == 0 && offY == 0 && maxLevel == 0 &&
-                uint64_t(width) * height * s_scaled.s * 4 <= s_scaled.scratchSize;
+                ScaledFormat(fi) && offX == 0 && offY == 0 && maxLevel == 0 && s_scaled.scale.Exact(width, height) &&
+                s_scaled.scale.HostPixels(width, height) * 4 <= s_scaled.scratchSize;
             bool scaled = s_drawScaled && s_scaled.enabled && scaledCandidate && ScaledTextureValid(base, size);
             sampler = GetSampler(f, maxLevel);
             if (out)
@@ -3841,8 +3894,8 @@ void main()
                 t.scaled = scaled;
                 if (scaled)
                 {
-                    t.width = width * s_scaled.sx;
-                    t.height = height * s_scaled.sy;
+                    t.width = s_scaled.scale.x.Size(width);
+                    t.height = s_scaled.scale.y.Size(height);
                     s_scaled.textures++;
                 }
                 // A 1x texture the untile can store directly (see
@@ -4296,6 +4349,34 @@ void main()
 
         VkPipeline s_resolvePipeline = VK_NULL_HANDLE;
         VkPipeline s_resolveCoalescedPipeline = VK_NULL_HANDLE;  // scaled resolves (see COALESCED in the shader)
+        // The same for a source of another scale denominator ([coalesced][den x - 1][den y - 1]: 1.5x is 3/2), made
+        // at the first resolve that needs it (ResolvePipeline); [..][0][0] are the two above.
+        VkPipeline s_resolveDenPipelines[2][2][2] = {};
+        VkPipeline ResolvePipeline(bool coalesced, const gpu::RenderScale& scale);
+
+        // Coalesced scaled resolves: 2.8 -> 1.1 ms of scaled resolves a frame
+        // on the Steam Machine (RADV), but 2.6-3.4 -> 4.1-4.4 ms on an M1 Pro
+        // (MoltenVK), so not on Apple GPUs unless NFSMW_SCALED_COALESCE=1.
+        bool ScaledCoalesce(const VkPhysicalDeviceProperties& props)
+        {
+            const char* coalesce = std::getenv("NFSMW_SCALED_COALESCE");
+            return coalesce ? coalesce[0] != '0' : props.vendorID != 0x106B;
+        }
+
+        // The resolve pipelines a scale will use, made now (at start or at a
+        // live change, with the menu open) rather than at its first resolve
+        // mid-frame: a new one costs ~0.4 s on MoltenVK (once; the pipeline
+        // cache keeps it), 23 ms on RADV.
+        void PrewarmResolvePipelines(const gpu::RenderScale& scale)
+        {
+            if (scale.x.den == 1 && scale.y.den == 1)
+                return;
+            VkPhysicalDeviceProperties props;
+            vkGetPhysicalDeviceProperties(s_vk->physical, &props);
+            ResolvePipeline(false, scale);
+            if (ScaledCoalesce(props))
+                ResolvePipeline(true, scale);
+        }
         VkPipelineLayout s_resolveLayout = VK_NULL_HANDLE;
         VkDescriptorSetLayout s_resolveSetLayout = VK_NULL_HANDLE;
 
@@ -4309,7 +4390,7 @@ void main()
             float expScale;
             uint32_t srcWidth, srcHeight;
             int32_t srcOriginX, srcOriginY;  // host pixels
-            uint32_t scaleX, scaleY;         // host pixels per guest pixel in the source
+            uint32_t scaleX, scaleY;         // host pixels per guest pixel in the source (/ the pipeline's SB_DEN_X, SB_DEN_Y)
             uint32_t scaledWrite, slotWords; // also write the samples to the scaled memory
             // Also store into a cached direct texture (binding 4), as its
             // untile would have from the words (see Resolve); texX, texY:
@@ -4339,13 +4420,25 @@ layout(push_constant) uniform P
     float expScale;
     uvec2 srcSize;
     ivec2 srcOrigin;    // where the rectangle is in the host target (see untiled rendering), host pixels
-    uvec2 scale;        // host pixels per guest pixel (internal resolution)
+    uvec2 scale;        // host pixels per guest pixel (internal resolution): scale / kDen
     uint scaledWrite, slotWords;
     uint texWrite, texEndian, texConvert, texWidth, texHeight;  // also into a cached texture (binding 4)
 #ifdef TEX_OFFSET
     uint texX, texY;    // the destination's texel 0,0 in it (whole tiles)
 #endif
 } p;
+)" GLSL_SCALE_CODE R"(
+// The scale's denominators are the pipeline's own (CreateResolvePipeline: a
+// pair of pipelines for each, made at the first resolve that needs it), not
+// push constants: at a whole scale (1, 1) every block and weight expression
+// folds back to the arithmetic from before 1.5x, with no integer division.
+#ifndef SB_DEN_X
+#define SB_DEN_X 1u
+#endif
+#ifndef SB_DEN_Y
+#define SB_DEN_Y 1u
+#endif
+const uvec2 kDen = uvec2(SB_DEN_X, SB_DEN_Y);
 
 uint tiled2D(uint x, uint y, uint pitch, uint bppLog2)
 {
@@ -4374,10 +4467,33 @@ uint bppLog2(uint f)
     return 2u;
 }
 
+// px() at 1.5x (a den of 2): the host pixels the guest pixel covers, each
+// weighted by how much of it lies inside (gpu/render_scale.h's box filter:
+// 2/3 and 1/3, in 1/den of a pixel, num of them a whole guest pixel), or
+// (depth) the one holding its centre. The rectangle's origin is whole blocks
+// (even), so its pixels' host coordinates count from srcOrigin.
+vec4 pxFraction(uint x, uint y)
+{
+    if ((p.flags & 2u) != 0u)
+        return texelFetch(src, clamp(p.srcOrigin + ivec2(sbCenterHost(x, p.scale.x, kDen.x), sbCenterHost(y, p.scale.y, kDen.y)),
+            ivec2(0), ivec2(p.srcSize) - 1), 0);
+    vec4 v = vec4(0.0);
+    uint x1 = sbHostSize(x + 1u, p.scale.x, kDen.x), y1 = sbHostSize(y + 1u, p.scale.y, kDen.y);
+    for (uint j = sbHostEdge(y, p.scale.y, kDen.y); j < y1; j++)
+        for (uint i = sbHostEdge(x, p.scale.x, kDen.x); i < x1; i++)
+            v += float(sbOverlap(x, i, p.scale.x, kDen.x) * sbOverlap(y, j, p.scale.y, kDen.y)) *
+                texelFetch(src, clamp(p.srcOrigin + ivec2(i, j), ivec2(0), ivec2(p.srcSize) - 1), 0);
+    v /= float(p.scale.x * p.scale.y);
+    v *= p.expScale;
+    if ((p.flags & 1u) != 0u) v = v.bgra;
+    return v;
+}
+
 vec4 px(uint x, uint y)
 {
     // Guest pixel (x, y) of the rectangle: its sx x sy block of host pixels,
     // averaged (colour) or its first sample (depth).
+    if (kDen.x * kDen.y > 1u) return pxFraction(x, y);
     ivec2 c = clamp(p.srcOrigin + ivec2(x * p.scale.x, y * p.scale.y), ivec2(0), ivec2(p.srcSize) - 1);
     vec4 v = texelFetch(src, c, 0);
     if ((p.flags & 2u) != 0u) return v;
@@ -4431,8 +4547,10 @@ uint pack16(vec4 c)
 // thread storing its own pixel's samples writes words `s` apart across the
 // group, several times the memory transactions: most of a scaled resolve's
 // cost. (A pipeline of its own: the shared memory would slow the others.)
-shared uint g_samples[64 * 16];  // by pixel, then sample (scale up to 4x4)
-shared uint g_offsets[64];       // each pixel's samples in the pool; ~0u: none
+// By block (gpu/render_scale.h): a pixel at a whole scale, 2x2 pixels at
+// 1.5x (a group is 16 whole blocks: its rows start even, as its columns).
+shared uint g_samples[64 * 16];  // by block, then sample (up to 64 pixels' worth at 4x4)
+shared uint g_offsets[64];       // each block's samples in the pool; ~0u: none
 #endif
 
 void main()
@@ -4455,16 +4573,27 @@ void main()
     uint w;
     if (bl == 2u && p.scaledWrite != 0u)
     {
-        // Each host sample into the page's scaled slot (see ScaledMemory).
+        // Each host sample this guest pixel owns into its block's place in
+        // the page's scaled slot (see ScaledMemory, gpu/render_scale.h): at a
+        // whole scale all its sx x sy, at 1.5x one, two or four of its 2x2
+        // block's 3x3, from where its texel sits in the block (its word's
+        // bits 0 and 2; the rectangle's origin is even, so gx and gy agree).
         uint a = word << 2;
         uint slot = inside ? s_table[a >> 12] : 0u;
-        uint s = p.scale.x * p.scale.y;
-        uint o = (slot - 1u) * p.slotWords + ((a & 4095u) >> 2) * s;
+        uint s = p.scale.x * p.scale.y;  // samples a block
+        uint k = (a & 4095u) >> 2;
+        uint o = (slot - 1u) * p.slotWords + sbBlockIndex(k, kDen.x, kDen.y) * s;
+        uint subX = sbSubX(k, kDen.x), subY = sbSubY(k, kDen.y);
+        uint i0 = sbHostEdge(subX, p.scale.x, kDen.x), i1 = sbHostEdge(subX + 1u, p.scale.x, kDen.x);
+        uint j0 = sbHostEdge(subY, p.scale.y, kDen.y), j1 = sbHostEdge(subY + 1u, p.scale.y, kDen.y);
+#ifdef COALESCED
+        uint lb = sbBlockIndex(l, kDen.x, kDen.y);  // the block's in this group (l is the word order)
+#endif
         if (slot != 0u)
         {
-            ivec2 c0 = p.srcOrigin + ivec2(gx * p.scale.x, gy * p.scale.y);
-            for (uint j = 0u; j < p.scale.y; j++)
-                for (uint i = 0u; i < p.scale.x; i++)
+            ivec2 c0 = p.srcOrigin + ivec2(sbHostEdge(gx, p.scale.x, kDen.x), sbHostEdge(gy, p.scale.y, kDen.y)) - ivec2(i0, j0);
+            for (uint j = j0; j < j1; j++)
+                for (uint i = i0; i < i1; i++)
                 {
                     vec4 v = texelFetch(src, clamp(c0 + ivec2(i, j), ivec2(0), ivec2(p.srcSize) - 1), 0);
                     if ((p.flags & 2u) == 0u)
@@ -4473,16 +4602,18 @@ void main()
                         if ((p.flags & 1u) != 0u) v = v.bgra;
                     }
 #ifdef COALESCED
-                    g_samples[l * s + j * p.scale.x + i] = swapWord(pack32(v), p.endian);
+                    g_samples[lb * s + j * p.scale.x + i] = swapWord(pack32(v), p.endian);
 #else
                     s_pool[o + j * p.scale.x + i] = swapWord(pack32(v), p.endian);
 #endif
                 }
         }
 #ifdef COALESCED
-        g_offsets[l] = slot != 0u ? o : ~0u;
+        if (subX == 0u && subY == 0u)  // (every pixel at a whole scale)
+            g_offsets[lb] = slot != 0u ? o : ~0u;
         barrier();
-        for (uint q = l; q < 64u * s; q += 64u)
+        uint samples = 64u / (kDen.x * kDen.y) * s;
+        for (uint q = l; q < samples; q += 64u)
         {
             uint po = g_offsets[q / s];
             if (po != ~0u)
@@ -4654,10 +4785,10 @@ void main()
                 }
             }
             // `r` is in guest pixels; the clear covers its host pixels.
-            int32_t x0 = std::clamp(r.x0, 0, int32_t(rt->guestWidth)) * int32_t(rt->scaleX);
-            int32_t y0 = std::clamp(r.y0, 0, int32_t(rt->guestHeight)) * int32_t(rt->scaleY);
-            int32_t x1 = std::clamp(r.x1, 0, int32_t(rt->guestWidth)) * int32_t(rt->scaleX);
-            int32_t y1 = std::clamp(r.y1, 0, int32_t(rt->guestHeight)) * int32_t(rt->scaleY);
+            int32_t x0 = rt->scale.x.EdgeAt(std::clamp(r.x0, 0, int32_t(rt->guestWidth)));
+            int32_t y0 = rt->scale.y.EdgeAt(std::clamp(r.y0, 0, int32_t(rt->guestHeight)));
+            int32_t x1 = rt->scale.x.EdgeAt(std::clamp(r.x1, 0, int32_t(rt->guestWidth)));
+            int32_t y1 = rt->scale.y.EdgeAt(std::clamp(r.y1, 0, int32_t(rt->guestHeight)));
             x1 = std::max(x1, x0);
             y1 = std::max(y1, y0);
             if (x1 <= x0 || y1 <= y0)
@@ -5042,10 +5173,10 @@ void main()
                     if (s_untiledArea && source->cut && !source->wholeArea)
                     {
                         auto [shiftX, shiftY] = TileShift();
-                        int32_t x0 = std::max((r.x0 + shiftX) * int32_t(source->scaleX), 0);
-                        int32_t y0 = std::max((r.y0 + shiftY) * int32_t(source->scaleY), 0);
-                        int32_t x1 = std::min({ (r.x1 + shiftX) * int32_t(source->scaleX), int32_t(source->width), int32_t(source->cutReach.width) });
-                        int32_t y1 = std::min({ (r.y1 + shiftY) * int32_t(source->scaleY), int32_t(source->height), int32_t(source->cutReach.height) });
+                        int32_t x0 = source->scale.x.EdgeAt(r.x0 + shiftX);
+                        int32_t y0 = source->scale.y.EdgeAt(r.y0 + shiftY);
+                        int32_t x1 = std::min({ source->scale.x.EdgeAt(r.x1 + shiftX), int32_t(source->width), int32_t(source->cutReach.width) });
+                        int32_t y1 = std::min({ source->scale.y.EdgeAt(r.y1 + shiftY), int32_t(source->height), int32_t(source->cutReach.height) });
                         VkRect2D read{ { x0, y0 }, { uint32_t(std::max(x1 - x0, 0)), uint32_t(std::max(y1 - y0, 0)) } };
                         if (read.extent.width && read.extent.height && !Contains(source->cutDrawn, read))
                         {
@@ -5062,15 +5193,16 @@ void main()
                     if (s_clearFlushRect)
                     {
                         // What the shader reads (px() and the scaled path:
-                        // size x scale host pixels from rc.srcOrigin, each
-                        // axis clamped to the target), so the clears it
-                        // doesn't see stay pending.
+                        // the rectangle's host pixels from rc.srcOrigin, each
+                        // axis clamped to the target; at 1.5x its edges are
+                        // even, so whole), so the clears it doesn't see stay
+                        // pending.
                         auto [shiftX, shiftY] = TileShift();
                         auto texel = [](int32_t v, uint32_t size) { return std::clamp(v, 0, int32_t(size) - 1); };
-                        int32_t x0 = texel((r.x0 + shiftX) * int32_t(source->scaleX), source->width);
-                        int32_t y0 = texel((r.y0 + shiftY) * int32_t(source->scaleY), source->height);
-                        int32_t x1 = texel((r.x1 + shiftX) * int32_t(source->scaleX) - 1, source->width) + 1;
-                        int32_t y1 = texel((r.y1 + shiftY) * int32_t(source->scaleY) - 1, source->height) + 1;
+                        int32_t x0 = texel(source->scale.x.EdgeAt(r.x0 + shiftX), source->width);
+                        int32_t y0 = texel(source->scale.y.EdgeAt(r.y0 + shiftY), source->height);
+                        int32_t x1 = texel(source->scale.x.EdgeAt(r.x1 + shiftX) - 1, source->width) + 1;
+                        int32_t y1 = texel(source->scale.y.EdgeAt(r.y1 + shiftY) - 1, source->height) + 1;
                         VkRect2D read{ { x0, y0 }, { uint32_t(x1 - x0), uint32_t(y1 - y0) } };
                         FlushPendingClears(source, &read);
                     }
@@ -5094,16 +5226,26 @@ void main()
                     rc.srcWidth = source->width;
                     rc.srcHeight = source->height;
                     auto [shiftX, shiftY] = TileShift();
-                    rc.srcOriginX = (r.x0 + shiftX) * int32_t(source->scaleX);
-                    rc.srcOriginY = (r.y0 + shiftY) * int32_t(source->scaleY);
-                    rc.scaleX = source->scaleX;
-                    rc.scaleY = source->scaleY;
+                    rc.srcOriginX = source->scale.x.EdgeAt(r.x0 + shiftX);
+                    rc.srcOriginY = source->scale.y.EdgeAt(r.y0 + shiftY);
+                    rc.scaleX = source->scale.x.num;
+                    rc.scaleY = source->scale.y.num;
+                    // At 1.5x the shader counts host pixels from srcOrigin
+                    // and the destination's blocks from its origin: both
+                    // need even coordinates (resolves are 8-pixel aligned
+                    // and the tile offsets even, so they are).
+                    const bool wholeBlocks = (r.x0 + shiftX) >= 0 && (r.y0 + shiftY) >= 0 &&
+                        source->scale.x.Exact(uint32_t(r.x0 + shiftX)) && source->scale.y.Exact(uint32_t(r.y0 + shiftY)) &&
+                        source->scale.x.Exact(uint32_t(r.x0)) && source->scale.y.Exact(uint32_t(r.y0));
+                    if (!wholeBlocks)
+                        LogOnce(0x2500, "resolve at (%d,%d) (tile shift %d,%d) from a %s target isn't whole blocks: kept at 1x only, "
+                            "its 1x average up to half a host pixel off", r.x0, r.y0, shiftX, shiftY, gpu::ScaleName(source->scale).c_str());
                     uint32_t bl = ResolveBppLog2(format);
                     uint32_t firstPage = rangeBase >> 12;
                     uint32_t lastPage = std::min<uint32_t>((rangeBase + rangeBytes - 1) >> 12, kGuestPages - 1);
                     // A 32-bit resolve from a scaled target keeps its samples.
-                    bool scaledWrite = source->scaleX * source->scaleY > 1 && bl == 2 && !destInfo.copy_dest_array &&
-                        EnsureScaledMemory() && source->scaleX == s_scaled.sx && source->scaleY == s_scaled.sy;
+                    bool scaledWrite = !source->scale.IsOne() && wholeBlocks && bl == 2 && !destInfo.copy_dest_array &&
+                        EnsureScaledMemory() && source->scale == s_scaled.scale;
                     if (scaledWrite)
                     {
                         std::vector<std::pair<uint32_t, uint32_t>> fresh;
@@ -5122,7 +5264,7 @@ void main()
                         FillFreshSlots(fresh);
                         rc.scaledWrite = 1;
                         rc.slotWords = s_scaled.slotWords;
-                        s_scaled.resolvedBytes += uint64_t(rc.width) * rc.height * s_scaled.s * 4;
+                        s_scaled.resolvedBytes += s_scaled.scale.HostPixels(rc.width, rc.height) * 4;
                     }
 
                     // A cached direct 1x texture of exactly this surface (its
@@ -5279,7 +5421,7 @@ void main()
                         VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &ti, nullptr, nullptr };
                     s_stateEpoch++;
                     bool coalesced = scaledWrite && s_scaled.coalesce;  // 32x2 pixels a group
-                    vkCmdBindPipeline(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, coalesced ? s_resolveCoalescedPipeline : s_resolvePipeline);
+                    vkCmdBindPipeline(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ResolvePipeline(coalesced, source->scale));
                     s_pushDescriptorSet(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s_resolveLayout, 0, AddSharedParts(w, 5), w);
                     vkCmdPushConstants(s_cmd, s_resolveLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, s_resolvePush, &rc);
                     uint32_t perWord = bl >= 2 ? 1 : (4 >> bl);
@@ -5410,9 +5552,12 @@ layout(local_size_x = 64) in;
 layout(std430, set = 0, binding = 0) readonly buffer SharedMemory { uint g_mem[]; };)" GLSL_SHARED_MEMORY_READ R"(
 layout(std430, set = 0, binding = 1) buffer ScaledPool { uint s_pool[]; };
 layout(std430, set = 0, binding = 2) readonly buffer List { uint l_pairs[]; };
-layout(push_constant) uniform P { uint count, s, slotWords, listWord; } p;
-// A new slot starts as its page's 1x data, each word repeated s times: a
-// resolve covering the page only in part leaves no garbage around it.
+layout(push_constant) uniform P { uint count, slotWords, listWord, pad; uvec2 scale, den; } p;
+)" GLSL_SCALE_CODE R"(
+// A new slot starts as its page's 1x data, each word in the host samples its
+// texel owns (all s at a whole scale; at 1.5x one, two or four of its
+// block's): a resolve covering the page only in part leaves no garbage
+// around it.
 void main()
 {
     uint n = gl_GlobalInvocationID.x;
@@ -5420,9 +5565,12 @@ void main()
     if (pair >= p.count) return;
     uint page = l_pairs[p.listWord + pair * 2u], slot = l_pairs[p.listWord + pair * 2u + 1u];
     uint v = memLoad(page * 1024u + k);
-    uint o = slot * p.slotWords + k * p.s;
-    for (uint i = 0u; i < p.s; i++)
-        s_pool[o + i] = v;
+    uint o = slot * p.slotWords + sbBlockIndex(k, p.den.x, p.den.y) * (p.scale.x * p.scale.y);
+    uint subX = sbSubX(k, p.den.x), subY = sbSubY(k, p.den.y);
+    uint i1 = sbHostEdge(subX + 1u, p.scale.x, p.den.x), j1 = sbHostEdge(subY + 1u, p.scale.y, p.den.y);
+    for (uint j = sbHostEdge(subY, p.scale.y, p.den.y); j < j1; j++)
+        for (uint i = sbHostEdge(subX, p.scale.x, p.den.x); i < i1; i++)
+            s_pool[o + j * p.scale.x + i] = v;
 }
 )";
         VkPipeline s_scaledFillPipeline = VK_NULL_HANDLE;
@@ -5442,8 +5590,10 @@ layout(std430, set = 0, binding = 2) writeonly buffer Out { uint o_mem[]; };
 #else
 layout(set = 0, binding = 2, r32ui) writeonly uniform uimage2D o_image;
 #endif
-layout(push_constant) uniform P { uint base, pitch, width, height, sx, sy, endian, slotWords; } p;
-
+// width, height: the texture's host size (whole blocks); scale / den: host
+// pixels per guest pixel.
+layout(push_constant) uniform P { uint base, pitch, width, height, endian, slotWords; uvec2 scale, den; } p;
+)" GLSL_SCALE_CODE R"(
 uint tiled2D(uint x, uint y, uint pitch, uint bppLog2)
 {
     uint outer = (((y >> 5) * (pitch >> 5)) + (x >> 5)) << 6;
@@ -5466,14 +5616,17 @@ uint swapWord(uint v, uint e)
 void main()
 {
     uvec2 h = gl_GlobalInvocationID.xy;
-    uint w = p.width * p.sx;
-    if (h.x >= w || h.y >= p.height * p.sy) return;
-    uint gx = h.x / p.sx, gy = h.y / p.sy;
-    uint a = (p.base + tiled2D(gx, gy, p.pitch, 2u)) & 0x1FFFFFFFu;
+    uint w = p.width;
+    if (h.x >= w || h.y >= p.height) return;
+    // Host texel h: sample (h mod scale) of the block (h / scale), whose
+    // first texel is guest (block x den) (gpu/render_scale.h).
+    uvec2 b = h / p.scale;
+    uint a = (p.base + tiled2D(b.x * p.den.x, b.y * p.den.y, p.pitch, 2u)) & 0x1FFFFFFFu;
     uint slot = s_table[a >> 12];
     uint v = 0u;
     if (slot != 0u)
-        v = s_pool[(slot - 1u) * p.slotWords + ((a & 4095u) >> 2) * (p.sx * p.sy) + (h.y - gy * p.sy) * p.sx + (h.x - gx * p.sx)];
+        v = s_pool[(slot - 1u) * p.slotWords + sbSampleWord((a & 4095u) >> 2, h.x - b.x * p.scale.x, h.y - b.y * p.scale.y,
+            p.scale.x, p.scale.y, p.den.x, p.den.y)];
 #ifdef TO_BUFFER
     o_mem[h.y * w + h.x] = swapWord(v, p.endian);
 #else
@@ -5553,7 +5706,7 @@ void main()
             if (!keepBuffers)
                 FreeScaledBuffers();
             s_scaled.tried = s_scaled.enabled = false;
-            s_scaled.sx = s_scaled.sy = s_scaled.s = 1;
+            s_scaled.scale = {};
             s_scaled.slotWords = s_scaled.slots = 0;
             s_scaled.scratchSize = 0;
             std::vector<uint32_t>().swap(s_scaled.pageSlot);
@@ -5574,10 +5727,8 @@ void main()
             if (const char* v = std::getenv("NFSMW_SCALED_RESOLVE"); v && v[0] == '0')
                 return false;
             auto start = std::chrono::steady_clock::now();
-            s_scaled.sx = s_renderScaleX;
-            s_scaled.sy = s_renderScaleY;
-            s_scaled.s = s_scaled.sx * s_scaled.sy;
-            if (s_scaled.s <= 1)
+            s_scaled.scale = s_renderScale;
+            if (s_scaled.scale.IsOne())
                 return false;
             VkPhysicalDeviceProperties props;
             vkGetPhysicalDeviceProperties(s_vk->physical, &props);
@@ -5589,15 +5740,15 @@ void main()
             // within the device's storage buffer range (NFSMW_SCALED_MB=4096
             // is past a 4 GB - 1 limit).
             VkDeviceSize poolSize = std::min<VkDeviceSize>(VkDeviceSize(megabytes) << 20, props.limits.maxStorageBufferRange) & ~VkDeviceSize(0xFFFF);
-            s_scaled.slotWords = 1024 * s_scaled.s;
-            s_scaled.slots = uint32_t(std::min<uint64_t>(poolSize / (4096ull * s_scaled.s), kGuestPages));
+            s_scaled.slotWords = s_scaled.scale.SlotWords();
+            s_scaled.slots = uint32_t(std::min<uint64_t>(poolSize / (4ull * s_scaled.slotWords), kGuestPages));
             // Scaled textures up to 1280x1024 (at scale). The untile stores
             // into them through an R32_UINT view when the device can for every
             // scaled format (a mutable-format image with extended usage: the
             // format itself needn't be storable); otherwise they load through
             // a scratch buffer that size (the ring's slots are too small) and a
             // copy, one more full write and read of the texture.
-            s_scaled.scratchSize = VkDeviceSize(1280) * 1024 * 4 * s_scaled.s;
+            s_scaled.scratchSize = VkDeviceSize(s_scaled.scale.HostPixels(1280, 1024)) * 4;
             {
                 // (The image's format list is Vulkan 1.2.)
                 const char* v = std::getenv("NFSMW_SCALED_DIRECT");
@@ -5615,11 +5766,7 @@ void main()
                             VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT, &ifp) == VK_SUCCESS;
                 }
             }
-            // Coalesced resolves: 2.8 -> 1.1 ms of scaled resolves a frame on
-            // the Steam Machine (RADV), but 2.6-3.4 -> 4.1-4.4 ms on an M1 Pro
-            // (MoltenVK), so not on Apple GPUs unless NFSMW_SCALED_COALESCE=1.
-            const char* coalesce = std::getenv("NFSMW_SCALED_COALESCE");
-            s_scaled.coalesce = coalesce ? coalesce[0] != '0' : props.vendorID != 0x106B;
+            s_scaled.coalesce = ScaledCoalesce(props);
             // A scratch buffer kept from a smaller scale is too small.
             if (s_scaled.scratch && s_scaled.scratchBytes < s_scaled.scratchSize)
             {
@@ -5656,18 +5803,18 @@ void main()
             if (!s_scaledFillPipeline)
             {
                 auto bindings = WithSharedParts(b, 3);
-                CreateComputePipeline(kScaledFillGlsl, bindings.data(), uint32_t(bindings.size()), 4 * sizeof(uint32_t),
+                CreateComputePipeline(kScaledFillGlsl, bindings.data(), uint32_t(bindings.size()), 8 * sizeof(uint32_t),
                     s_scaledFillSetLayout, s_scaledFillLayout, s_scaledFillPipeline);
             }
             if (s_scaled.direct)
             {
                 b[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
                 if (!s_scaledStorePipeline)
-                    CreateComputePipeline(kScaledUntileGlsl, b, 3, 8 * sizeof(uint32_t), s_scaledStoreSetLayout, s_scaledStoreLayout,
+                    CreateComputePipeline(kScaledUntileGlsl, b, 3, 10 * sizeof(uint32_t), s_scaledStoreSetLayout, s_scaledStoreLayout,
                         s_scaledStorePipeline);
             }
             else if (!s_scaledUntilePipeline)
-                CreateComputePipeline(kScaledUntileGlsl, b, 3, 8 * sizeof(uint32_t), s_scaledUntileSetLayout, s_scaledUntileLayout,
+                CreateComputePipeline(kScaledUntileGlsl, b, 3, 10 * sizeof(uint32_t), s_scaledUntileSetLayout, s_scaledUntileLayout,
                     s_scaledUntilePipeline, "#define TO_BUFFER\n");
             EndPass();
             Begin();
@@ -5675,8 +5822,8 @@ void main()
             FullBarrier();
             s_scaled.enabled = true;
             s_textureCache->generation++;  // lookups decided without the scaled path
-            fprintf(stderr, "[renderer] scaled resolve memory: %u slots of %u KB (%llu MB), scale %ux%u, %s writes, textures %s (%.1f ms)\n",
-                s_scaled.slots, 4 * s_scaled.s, (unsigned long long)(poolSize >> 20), s_scaled.sx, s_scaled.sy,
+            fprintf(stderr, "[renderer] scaled resolve memory: %u slots of %u KB (%llu MB), scale %s, %s writes, textures %s (%.1f ms)\n",
+                s_scaled.slots, s_scaled.slotWords / 256, (unsigned long long)(poolSize >> 20), gpu::ScaleName(s_scaled.scale).c_str(),
                 s_scaled.coalesce ? "coalesced" : "per-thread", s_scaled.direct ? "stored directly" : "through a scratch buffer",
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
             return true;
@@ -5698,7 +5845,6 @@ void main()
 
         void LoadScaledTexture(Texture& t, uint32_t base, uint32_t pitchBlocks, uint32_t endian)
         {
-            uint32_t guestW = t.width / s_scaled.sx, guestH = t.height / s_scaled.sy;
             VkDeviceSize bytes = VkDeviceSize(t.width) * t.height * 4;
             if (bytes > s_scaled.scratchSize)
             {
@@ -5715,8 +5861,9 @@ void main()
             for (uint32_t k = 0; k < 3; k++)
                 w[k] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, VK_NULL_HANDLE, k, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                     nullptr, &bi[k], nullptr };
-            struct { uint32_t base, pitch, width, height, sx, sy, endian, slotWords; } pc = { base, pitchBlocks, guestW, guestH,
-                s_scaled.sx, s_scaled.sy, endian, s_scaled.slotWords };
+            const gpu::RenderScale& sc = s_scaled.scale;
+            struct { uint32_t base, pitch, width, height, endian, slotWords, scaleX, scaleY, denX, denY; } pc = { base, pitchBlocks,
+                t.width, t.height, endian, s_scaled.slotWords, sc.x.num, sc.y.num, sc.x.den, sc.y.den };
             s_stateEpoch++;
             if (t.storeView)
             {
@@ -5775,7 +5922,9 @@ void main()
                 for (uint32_t k = 0; k < 3; k++)
                     w[k] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, VK_NULL_HANDLE, k, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                         nullptr, &bi[k], nullptr };
-                struct { uint32_t count, s, slotWords, listWord; } pc = { count, s_scaled.s, s_scaled.slotWords, uint32_t(list / 4) };
+                const gpu::RenderScale& sc = s_scaled.scale;
+                struct { uint32_t count, slotWords, listWord, pad, scaleX, scaleY, denX, denY; } pc = { count, s_scaled.slotWords,
+                    uint32_t(list / 4), 0, sc.x.num, sc.y.num, sc.x.den, sc.y.den };
                 s_stateEpoch++;
                 vkCmdBindPipeline(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s_scaledFillPipeline);
                 s_pushDescriptorSet(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s_scaledFillLayout, 0, AddSharedParts(w, 3), w);
@@ -5793,9 +5942,10 @@ layout(std430, set = 0, binding = 0) readonly buffer SharedMemory { uint g_mem[]
 layout(set = 0, binding = 1, rgba8) writeonly uniform image2D outImage;
 layout(std430, set = 0, binding = 2) readonly buffer ScaledPool { uint s_pool[]; };
 layout(std430, set = 0, binding = 3) readonly buffer ScaledTable { uint s_table[]; };
-// width, height: the output (host pixels when scaled: from the scaled memory).
-layout(push_constant) uniform P { uint base, pitch, tiled, endian, format, swizzle, width, height, sx, sy, slotWords, scaled; } p;
-
+// width, height: the output (host pixels when scaled: from the scaled memory,
+// at sx / denX x sy / denY host pixels per guest pixel).
+layout(push_constant) uniform P { uint base, pitch, tiled, endian, format, swizzle, width, height, sx, sy, slotWords, scaled, denX, denY; } p;
+)" GLSL_SCALE_CODE R"(
 uint tiled2D(uint x, uint y, uint pitch, uint bppLog2)
 {
     uint outer = (((y >> 5) * (pitch >> 5)) + (x >> 5)) << 6;
@@ -5814,10 +5964,13 @@ void main()
     uint v;
     if (p.scaled != 0u)
     {
-        uint gx = g.x / p.sx, gy = g.y / p.sy;
-        uint a = (p.base + tiled2D(gx, gy, p.pitch, 2u)) & 0x1FFFFFFFu;
+        // Host pixel g: sample (g mod scale) of the block (g / scale), whose
+        // first texel is guest (block x den) (gpu/render_scale.h).
+        uint bx = g.x / p.sx, by = g.y / p.sy;
+        uint a = (p.base + tiled2D(bx * p.denX, by * p.denY, p.pitch, 2u)) & 0x1FFFFFFFu;
         uint slot = s_table[a >> 12];
-        v = slot != 0u ? s_pool[(slot - 1u) * p.slotWords + ((a & 4095u) >> 2) * (p.sx * p.sy) + (g.y - gy * p.sy) * p.sx + (g.x - gx * p.sx)] : 0u;
+        v = slot != 0u ? s_pool[(slot - 1u) * p.slotWords + sbSampleWord((a & 4095u) >> 2, g.x - bx * p.sx, g.y - by * p.sy, p.sx, p.sy,
+            p.denX, p.denY)] : 0u;
     }
     else
     {
@@ -5879,6 +6032,47 @@ void main()
                 s_untileStoreLayout, s_untileStorePipeline, "#define TO_IMAGE\n");
         }
 
+        // The resolve shader for sources whose scale has these denominators
+        // (1 or 2 each; the shader's SB_DEN_X, SB_DEN_Y), into `out`.
+        void MakeResolvePipeline(bool coalesced, uint32_t denX, uint32_t denY, VkPipeline* out)
+        {
+            std::string log;
+            std::string preamble = coalesced ? "#define COALESCED\n" : "";
+            if (s_resolvePush != offsetof(ResolveConstants, texX))
+                preamble += "#define TEX_OFFSET\n";
+            if (denX != 1)
+                preamble += std::format("#define SB_DEN_X {}u\n", denX);
+            if (denY != 1)
+                preamble += std::format("#define SB_DEN_Y {}u\n", denY);
+            auto spirv = CompileGlsl(kResolveGlsl, GLSLANG_STAGE_COMPUTE, log, preamble);
+            if (spirv.empty())
+            {
+                fprintf(stderr, "[renderer] resolve shader failed:\n%s\n", log.c_str());
+                abort();
+            }
+            VkShaderModule module = CreateModule(spirv);
+            VkComputePipelineCreateInfo cpci{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+            cpci.stage = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT,
+                module, "main", nullptr };
+            cpci.layout = s_resolveLayout;
+            Check(vkCreateComputePipelines(s_dev, s_pipelineCache, 1, &cpci, nullptr, out), "resolve pipeline");
+        }
+
+        // The resolve pipeline for a source at `scale` (see s_resolveDenPipelines).
+        VkPipeline ResolvePipeline(bool coalesced, const gpu::RenderScale& scale)
+        {
+            const uint32_t dx = std::clamp(scale.x.den, 1u, 2u), dy = std::clamp(scale.y.den, 1u, 2u);
+            VkPipeline& slot = s_resolveDenPipelines[coalesced][dx - 1][dy - 1];
+            if (!slot)
+            {
+                auto start = std::chrono::steady_clock::now();
+                MakeResolvePipeline(coalesced, dx, dy, &slot);
+                fprintf(stderr, "[renderer] resolve pipeline for scale denominators %ux%u%s made (%.1f ms)\n", dx, dy,
+                    coalesced ? ", coalesced" : "", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+            }
+            return slot;
+        }
+
         void CreateResolvePipeline()
         {
             VkDescriptorSetLayoutBinding b[5] = {
@@ -5902,25 +6096,10 @@ void main()
             plci.pPushConstantRanges = &range;
             Check(vkCreatePipelineLayout(s_dev, &plci, nullptr, &s_resolveLayout), "resolve pipeline layout");
             for (bool coalesced : { false, true })
-            {
-                std::string log;
-                std::string preamble = coalesced ? "#define COALESCED\n" : "";
-                if (s_resolvePush != offsetof(ResolveConstants, texX))
-                    preamble += "#define TEX_OFFSET\n";
-                auto spirv = CompileGlsl(kResolveGlsl, GLSLANG_STAGE_COMPUTE, log, preamble);
-                if (spirv.empty())
-                {
-                    fprintf(stderr, "[renderer] resolve shader failed:\n%s\n", log.c_str());
-                    abort();
-                }
-                VkShaderModule module = CreateModule(spirv);
-                VkComputePipelineCreateInfo cpci{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
-                cpci.stage = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT,
-                    module, "main", nullptr };
-                cpci.layout = s_resolveLayout;
-                Check(vkCreateComputePipelines(s_dev, s_pipelineCache, 1, &cpci, nullptr,
-                    coalesced ? &s_resolveCoalescedPipeline : &s_resolvePipeline), "resolve pipeline");
-            }
+                MakeResolvePipeline(coalesced, 1, 1, coalesced ? &s_resolveCoalescedPipeline : &s_resolvePipeline);
+            s_resolveDenPipelines[0][0][0] = s_resolvePipeline;
+            s_resolveDenPipelines[1][0][0] = s_resolveCoalescedPipeline;
+            PrewarmResolvePipelines(s_renderScale);
         }
 
         // ---------------------------------------------------------------
@@ -6382,7 +6561,8 @@ void main()
         uint64_t s_liveGeneration = ~0ull;
         int32_t s_resolutionSetting = 0;  // Internal Resolution as applied
         constexpr uint32_t kAutoSettleFrames = 30;
-        uint32_t s_autoWantX = 0, s_autoWantY = 0, s_autoSeen = 0;
+        gpu::RenderScale s_autoWant;
+        uint32_t s_autoSeen = 0;
 
         void DestroyTexture(Texture& t)
         {
@@ -6423,39 +6603,41 @@ void main()
             return dropped;
         }
 
-        void ApplyRenderScale(uint32_t sx, uint32_t sy, const std::string& how)
+        void ApplyRenderScale(const gpu::RenderScale& scale, const std::string& how)
         {
             auto start = std::chrono::steady_clock::now();
-            uint32_t oldX = s_renderScaleX, oldY = s_renderScaleY;
+            const gpu::RenderScale old = s_renderScale;
             Flush();
-            s_renderScaleX = sx;
-            s_renderScaleY = sy;
+            s_renderScale = scale;
+            PrewarmResolvePipelines(scale);
             size_t targets = 0;
             for (auto& [key, slot] : s_targets)
             {
-                RenderTarget& old = *slot;  // (keyed as before: the key has no scale)
-                if (!ScaledPitch(old.pitch) || (old.scaleX == sx && old.scaleY == sy))
+                RenderTarget& was = *slot;  // (keyed as before: the key has no scale)
+                if (!ScaledPitch(was.pitch) || was.scale == scale)
                     continue;
-                // Clears still waiting for their target's next pass, in guest pixels.
+                // Clears still waiting for their target's next pass, in guest
+                // pixels (their host edges came from guest ones: GuestEdge
+                // gives those back).
                 std::vector<PendingClear> moved;
                 std::erase_if(s_pendingClears, [&](const PendingClear& pc) {
-                    if (pc.rt != &old)
+                    if (pc.rt != &was)
                         return false;
-                    moved.push_back({ nullptr,
-                        { { pc.rect.offset.x / int32_t(old.scaleX), pc.rect.offset.y / int32_t(old.scaleY) },
-                          { pc.rect.extent.width / old.scaleX, pc.rect.extent.height / old.scaleY } },
-                        pc.value });
+                    const uint32_t x0 = was.scale.x.GuestEdge(uint32_t(pc.rect.offset.x)), y0 = was.scale.y.GuestEdge(uint32_t(pc.rect.offset.y));
+                    const uint32_t x1 = was.scale.x.GuestEdge(uint32_t(pc.rect.offset.x) + pc.rect.extent.width);
+                    const uint32_t y1 = was.scale.y.GuestEdge(uint32_t(pc.rect.offset.y) + pc.rect.extent.height);
+                    moved.push_back({ nullptr, { { int32_t(x0), int32_t(y0) }, { x1 - x0, y1 - y0 } }, pc.value });
                     return true;
                 });
-                uint32_t base = old.base, format = old.format, pitch = old.pitch;
-                bool depth = old.depth, wide = old.wide;
-                DestroyTarget(old);
+                uint32_t base = was.base, format = was.format, pitch = was.pitch;
+                bool depth = was.depth, wide = was.wide;
+                DestroyTarget(was);
                 slot = CreateTarget(base, format, depth, pitch, wide);
                 for (PendingClear& pc : moved)
                 {
                     pc.rt = slot.get();
-                    pc.rect = { { pc.rect.offset.x * int32_t(sx), pc.rect.offset.y * int32_t(sy) },
-                        { pc.rect.extent.width * sx, pc.rect.extent.height * sy } };
+                    pc.rect = HostRect(scale, pc.rect.offset.x, pc.rect.offset.y, pc.rect.offset.x + int32_t(pc.rect.extent.width),
+                        pc.rect.offset.y + int32_t(pc.rect.extent.height));
                     s_pendingClears.push_back(pc);
                 }
                 targets++;
@@ -6463,9 +6645,9 @@ void main()
             for (RecentTarget& recent : s_recentTargets)
                 recent = {};
             size_t textures = DropTextures([](const Texture& t) { return t.scaled; });
-            ResetScaledMemory(sx * sy > 1);
-            fprintf(stderr, "[renderer] internal resolution %ux%u -> %ux%u (%ux%u, %s): %zu targets and %zu scaled textures replaced in %.1f ms\n",
-                oldX, oldY, sx, sy, 1280 * sx, 720 * sy, how.c_str(), targets, textures,
+            ResetScaledMemory(!scale.IsOne());
+            fprintf(stderr, "[renderer] internal resolution %s -> %s (%ux%u, %s): %zu targets and %zu scaled textures replaced in %.1f ms\n",
+                gpu::ScaleName(old).c_str(), gpu::ScaleName(scale).c_str(), scale.x.Size(1280), scale.y.Size(720), how.c_str(), targets, textures,
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
         }
 
@@ -6499,9 +6681,8 @@ void main()
                 if (regionW == 0 || regionH == 0)
                     return;  // no picture to size it for: keep the scale
             }
-            uint32_t sx, sy;
-            WantedRenderScale(setting, regionW, regionH, sx, sy);
-            if (sx == s_renderScaleX && sy == s_renderScaleY)
+            const gpu::RenderScale want = WantedRenderScale(setting, regionW, regionH);
+            if (want == s_renderScale)
             {
                 s_resolutionSetting = setting;
                 s_autoSeen = 0;
@@ -6510,10 +6691,9 @@ void main()
             // Only the picture's size moved (Auto): once it has settled.
             if (setting == s_resolutionSetting)
             {
-                if (sx != s_autoWantX || sy != s_autoWantY)
+                if (!(want == s_autoWant))
                 {
-                    s_autoWantX = sx;
-                    s_autoWantY = sy;
+                    s_autoWant = want;
                     s_autoSeen = 0;
                 }
                 if (++s_autoSeen < kAutoSettleFrames)
@@ -6521,7 +6701,7 @@ void main()
             }
             s_resolutionSetting = setting;
             s_autoSeen = 0;
-            ApplyRenderScale(sx, sy, ScaleReason(setting, regionW, regionH));
+            ApplyRenderScale(want, ScaleReason(setting, regionW, regionH));
         }
 
         // ---------------------------------------------------------------
@@ -6721,7 +6901,7 @@ void main()
                 { 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
             };
             auto bindings = WithSharedParts(b, 4);
-            CreateComputePipeline(kFrontGlsl, bindings.data(), uint32_t(bindings.size()), 12 * sizeof(uint32_t), s_frontSetLayout,
+            CreateComputePipeline(kFrontGlsl, bindings.data(), uint32_t(bindings.size()), 14 * sizeof(uint32_t), s_frontSetLayout,
                 s_frontLayout, s_frontPipeline);
         }
         Flush();
@@ -6969,7 +7149,7 @@ void main()
         // samples scaled textures (every attachment shares the pitch, so the scale).
         s_drawScaled = false;
         for (RenderTarget* rt : { color[0], color[1], color[2], color[3], depth })
-            if (rt && rt->scaleX * rt->scaleY > 1)
+            if (rt && !rt->scale.IsOne())
                 s_drawScaled = true;
 
         // NFSMW_LOG_TILES=1: register state of the first draws under MSAA (predicated tiling).
@@ -7396,17 +7576,19 @@ void main()
         // Untiled, tile 0 draws the whole frame: the whole target, or with
         // NFSMW_UNTILED_AREA its viewport (UntiledScissor).
         // In guest pixels; the host viewport and scissor are x (scaleX, scaleY)
-        // (every attachment of a pass shares the surface pitch, so its scale).
-        uint32_t targetW = UINT32_MAX, targetH = UINT32_MAX, scaleX = 1, scaleY = 1;
+        // (every attachment of a pass shares the surface pitch, so its scale),
+        // the scissor's edges as gpu/render_scale.h maps them (HostRect).
+        uint32_t targetW = UINT32_MAX, targetH = UINT32_MAX;
+        gpu::RenderScale scale;
         for (RenderTarget* rt : { color[0], color[1], color[2], color[3], depth })
             if (rt)
             {
                 targetW = std::min(targetW, rt->guestWidth);
                 targetH = std::min(targetH, rt->guestHeight);
-                scaleX = rt->scaleX;
-                scaleY = rt->scaleY;
+                scale = rt->scale;
             }
         float w = float(targetW), h = float(targetH);
+        const float scaleX = scale.x.Value(), scaleY = scale.y.Value();
         RenderTarget* const attached[5] = { color[0], color[1], color[2], color[3], depth };
         Rect sc = GuestScissor();
         int untiledWhy = 4;
@@ -7423,7 +7605,7 @@ void main()
         // barrier may end the pass: then it gives way a draw early.)
         if (untiledPass && untiledWhy != 4 && x1 > x0 && y1 > y0 && s_passActive && depth == s_passDepth &&
             std::equal(color, color + 4, s_passColor) &&
-            !Contains(s_passArea, { { x0 * int32_t(scaleX), y0 * int32_t(scaleY) }, { uint32_t(x1 - x0) * scaleX, uint32_t(y1 - y0) * scaleY } }))
+            !Contains(s_passArea, HostRect(scale, x0, y0, x1, y1)))
         {
             uint64_t key = 0;
             for (RenderTarget* rt : attached)
@@ -7432,11 +7614,11 @@ void main()
                     rt->wholeArea = true;
                     key = key * 0x9E3779B1ull + ((uint64_t(rt->base) << 20) ^ (uint64_t(rt->pitch) << 1) ^ uint64_t(rt->depth));
                 }
+            const VkRect2D want = HostRect(scale, x0, y0, x1, y1);
             LogOnce((0x33ull << 56) | (key & 0xFFFFFFFFFFFFFFull), "untiled area: frame %llu vs_%016llx ps_%016llx would restart its targets' "
-                "pass (area %ux%u@%d,%d) for %dx%d@%d,%d: they keep the whole target from now on", (unsigned long long)s_frame,
+                "pass (area %ux%u@%d,%d) for %ux%u@%d,%d: they keep the whole target from now on", (unsigned long long)s_frame,
                 (unsigned long long)s_vs->hash, (unsigned long long)s_ps->hash, s_passArea.extent.width, s_passArea.extent.height,
-                s_passArea.offset.x, s_passArea.offset.y, (x1 - x0) * int32_t(scaleX), (y1 - y0) * int32_t(scaleY), x0 * int32_t(scaleX),
-                y0 * int32_t(scaleY));
+                s_passArea.offset.x, s_passArea.offset.y, want.extent.width, want.extent.height, want.offset.x, want.offset.y);
             if (untiledWhy == 0)
             {
                 x0 = y0 = 0;
@@ -7489,7 +7671,7 @@ void main()
         if (untiledPass && s_untiledArea)
         {
             const bool cut = untiledWhy == 0 && (x0 > 0 || y0 > 0 || x1 < int32_t(w) || y1 < int32_t(h));
-            const VkRect2D drew{ { x0 * int32_t(scaleX), y0 * int32_t(scaleY) }, { uint32_t(x1 - x0) * scaleX, uint32_t(y1 - y0) * scaleY } };
+            const VkRect2D drew = HostRect(scale, x0, y0, x1, y1);
             for (int i = 0; i < 5; i++)
                 if (RenderTarget* rt = attached[i]; rt && !(i < 4 ? (adoptedColor >> i) & 1 : adoptedDepth))
                 {
@@ -7506,7 +7688,7 @@ void main()
                         rt->cutReach = {};
                     }
                     rt->cut = true;
-                    rt->cutReach = { std::max(rt->cutReach.width, uint32_t(w) * scaleX), std::max(rt->cutReach.height, uint32_t(h) * scaleY) };
+                    rt->cutReach = { std::max(rt->cutReach.width, scale.x.Size(uint32_t(w))), std::max(rt->cutReach.height, scale.y.Size(uint32_t(h))) };
                     if (x1 <= x0 || y1 <= y0)
                         continue;
                     const VkRect2D& was = rt->cutDrawn;
@@ -7523,7 +7705,7 @@ void main()
         }
         if (x1 <= x0 || y1 <= y0)
             return;
-        VkRect2D scissor{ { x0 * int32_t(scaleX), y0 * int32_t(scaleY) }, { uint32_t(x1 - x0) * scaleX, uint32_t(y1 - y0) * scaleY } };
+        VkRect2D scissor = HostRect(scale, x0, y0, x1, y1);
 
         // Viewport: the guest transform is folded into the vertex shader
         // (pc.posScale) and the host viewport covers the whole target.
@@ -7947,13 +8129,21 @@ void main()
                                 scissor.offset.y + int32_t(scissor.extent.height) } };
                         const uint32_t base = vf[0] & 0x1FFFFFFC, endian = vf[1] & 3;
                         const uint32_t words = (vf[1] >> 2) & 0xFFFFFF, first = s_regs[XE_GPU_REG_VGT_INDX_OFFSET];
-                        barPlan = gpu::bars::PlanFill(draw, [&](uint32_t k, uint32_t j, uint32_t& word) {
+                        auto read = [&](uint32_t k, uint32_t j, uint32_t& word) {
                             const uint32_t v = src.Get(k) + first;  // an ePoly: 8 words
                             if ((v + 1) * 8 > words)
                                 return false;
                             word = GpuSwap(LoadPhysical(base + (v * 8 + j) * 4), endian);
                             return true;
-                        });
+                        };
+                        barPlan = gpu::bars::PlanFill(draw, read);
+                        // The results screen's backdrop (and any opaque
+                        // picture of that shape: the title's key art): what
+                        // lies past the band and outside the picture is
+                        // cleared to black after it, where the world drawn
+                        // behind it showed (gpu/edge_bars.h).
+                        if (barPlan.fill == gpu::bars::Fill::None)
+                            barPlan = gpu::bars::PlanBackdrop(draw, read);
                     }
                     if (barPlan.fill != gpu::bars::Fill::None)
                     {
@@ -7962,10 +8152,11 @@ void main()
                         // building the line once its key is logged.
                         const uint32_t kind = uint32_t(barPlan.fill);
                         const bool blackout = barPlan.fill == gpu::bars::Fill::Blackout;
+                        const bool backdrop = barPlan.fill == gpu::bars::Fill::Backdrop;
                         const gpu::bars::Box& box = barPlan.box;
                         const uint64_t key = (0x36ull << 56) | (uint64_t(kind) << 40) | (uint64_t(barPlan.rectCount) << 36) |
                             (uint64_t(std::lround(s * 4096.0f)) << 18) | uint64_t(std::lround(sv * 4096.0f));
-                        static uint64_t loggedKey[4] = { ~0ull, ~0ull, ~0ull, ~0ull };
+                        static uint64_t loggedKey[5] = { ~0ull, ~0ull, ~0ull, ~0ull, ~0ull };
                         if (loggedKey[kind] != key)
                         {
                             loggedKey[kind] = key;
@@ -7974,23 +8165,29 @@ void main()
                                 snprintf(fills, sizeof(fills), "fills %u rectangle(s) past the 16:9 band, first [%d,%d)x[%d,%d) (host px)",
                                     barPlan.rectCount, barPlan.rects[0].x0, barPlan.rects[0].x1, barPlan.rects[0].y0, barPlan.rects[0].y1);
                             else
-                                snprintf(fills, sizeof(fills), "%s", blackout ? "fills nothing" : "reaches the screen edge: nothing to fill");
+                                snprintf(fills, sizeof(fills), "%s", blackout || backdrop ? "fills nothing" : "reaches the screen edge: nothing to fill");
                             LogOnce(key,
                                 "edge bars: frame %llu vs_%016llx ps_%016llx: %s (clip x %.3f..%.3f y %.3f..%.3f, colour %08X; view scale x %.4f y %.4f) %s",
                                 (unsigned long long)s_frame, (unsigned long long)s_vs->hash, (unsigned long long)s_ps->hash,
-                                blackout ? "a black frame" : kind == uint32_t(gpu::bars::Fill::RightBar) ? "the right vid-cam bar" : "the left vid-cam bar",
+                                backdrop ? "a full-band backdrop (black past the band)" : blackout ? "a black frame"
+                                    : kind == uint32_t(gpu::bars::Fill::RightBar) ? "the right vid-cam bar" : "the left vid-cam bar",
                                 box.x0, box.x1, box.y0, box.y1, barPlan.argb, s, sv, fills);
                         }
                         // NFSMW_LOG_FRONTEND=1: the first frame of each
                         // run of frames with a match, bars and black frames
                         // apart (one run per vid-cam scene and per cut; any
                         // other is a draw this should not take).
-                        static uint64_t lastBarFrame[2] = { ~0ull - 1, ~0ull - 1 };
-                        uint64_t& last = lastBarFrame[blackout ? 1 : 0];
+                        static uint64_t lastBarFrame[3] = { ~0ull - 1, ~0ull - 1, ~0ull - 1 };
+                        uint64_t& last = lastBarFrame[backdrop ? 2 : blackout ? 1 : 0];
                         if (logFrontEnd && s_frame != last && s_frame != last + 1)
-                            fprintf(stderr, "[frontend] edge bars: matching from frame %llu: %s x %.3f..%.3f y %.3f..%.3f colour %08X, %u rect(s)\n",
-                                (unsigned long long)s_frame, blackout ? "black frame" : kind == uint32_t(gpu::bars::Fill::RightBar) ? "right bar" : "left bar",
-                                box.x0, box.x1, box.y0, box.y1, barPlan.argb, barPlan.rectCount);
+                        {
+                            xenos::xe_gpu_texture_fetch_t t0;
+                            memcpy(&t0, &s_regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0], sizeof(t0));
+                            fprintf(stderr, "[frontend] edge bars: matching from frame %llu: %s x %.3f..%.3f y %.3f..%.3f colour %08X blend %08X t0 %08X %ux%u, %u rect(s)\n",
+                                (unsigned long long)s_frame, backdrop ? "backdrop" : blackout ? "black frame" : kind == uint32_t(gpu::bars::Fill::RightBar) ? "right bar" : "left bar",
+                                box.x0, box.x1, box.y0, box.y1, barPlan.argb, blend0, (uint32_t(t0.base_address) << 12) & 0x1FFFFFFFu,
+                                uint32_t(t0.size_2d.width) + 1, uint32_t(t0.size_2d.height) + 1, barPlan.rectCount);
+                        }
                         last = s_frame;
                     }
                     // The edge candidates (above) that still stop short of
@@ -8043,7 +8240,8 @@ void main()
                         if (perT0Edge >= 4)
                             continue;
                         const std::string action = barPlan.rectCount
-                            ? std::string(barPlan.fill == gpu::bars::Fill::Blackout ? "black frame fill" : "bar fill")
+                            ? std::string(barPlan.fill == gpu::bars::Fill::Backdrop ? "backdrop fill"
+                                    : barPlan.fill == gpu::bars::Fill::Blackout ? "black frame fill" : "bar fill")
                             : clipped ? std::format("clipped to rows {}..{}", scissor.offset.y, scissor.offset.y + int32_t(scissor.extent.height))
                             : kCover != 1.0f ? std::format("cover x{:.3f}", kCover)
                             : (kX != 1.0f || kY != 1.0f) ? std::format("widened x{:.3f} y{:.3f}", kX, kY)
@@ -8139,7 +8337,8 @@ void main()
                 if ((s_ps->info.texture2DMask | s_ps->info.texture3DMask | s_ps->info.textureCubeMask) & (1u << n))
                     line += std::format(" {}:{:08X}", n, (s_regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + n * 6 + 1] & 0x1FFFF000u));
             if (barPlan.rectCount)
-                line += std::format(" +edge {} fill x{}", barPlan.fill == gpu::bars::Fill::Blackout ? "black frame" : "bar", barPlan.rectCount);
+                line += std::format(" +edge {} fill x{}", barPlan.fill == gpu::bars::Fill::Backdrop ? "backdrop"
+                    : barPlan.fill == gpu::bars::Fill::Blackout ? "black frame" : "bar", barPlan.rectCount);
             static std::string last;
             static uint32_t repeats = 0;
             if (line == last)
@@ -8242,7 +8441,7 @@ void main()
         {
             bias[0] = RegF(XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_OFFSET) * float(1 << 24);
             // The slope factor is per host pixel: scaled with the resolution (Xenia).
-            bias[2] = RegF(XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_SCALE) / 16.0f * float(std::max(scaleX, scaleY));
+            bias[2] = RegF(XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_SCALE) / 16.0f * std::max(scaleX, scaleY);
         }
         if (fresh || memcmp(bound.bias, bias, sizeof(bias)) != 0)
         {
@@ -8322,7 +8521,8 @@ void main()
             // Weighted by the guest's samples per pixel (its MSAA; the host
             // renders 1) over host pixels per guest pixel (the render scale).
             const uint64_t segments = s_zpdSegNext;
-            ZpdBeginSegment(1u << uint32_t(surface.msaa_samples), scaleX * scaleY);
+            // (At 1.5x a host pixel is 4/9 of a guest one: msaa x 4 / 9.)
+            ZpdBeginSegment((1u << uint32_t(surface.msaa_samples)) * scale.PixelsDen(), scale.PixelsNum());
             s_zpdCounts.draws++;
             if (ZpdLogging())
             {
@@ -8334,7 +8534,7 @@ void main()
                     (unsigned long long)s_frame, (unsigned long long)s_vs->hash, (unsigned long long)s_ps->hash, vertexCount,
                     s_zpdQuery < 0 ? "not counted (this command buffer's queries are used up)"
                         : std::format("{} {}", s_zpdSegNext != segments ? "new segment" : "segment", s_zpdSegNext - 1).c_str(),
-                    1u << uint32_t(surface.msaa_samples), scaleX * scaleY, targets.c_str(), scissor.extent.width,
+                    (1u << uint32_t(surface.msaa_samples)) * scale.PixelsDen(), scale.PixelsNum(), targets.c_str(), scissor.extent.width,
                     scissor.extent.height, scissor.offset.x, scissor.offset.y);
             }
         }
@@ -8351,7 +8551,31 @@ void main()
         // stretched posScale and the rectangle as its scissor (inside this
         // draw's own, so inside the pass); through setScissor and
         // pushConstants, so the bound state follows.
-        if (barPlan.rectCount)
+        if (barPlan.rectCount && barPlan.fill == gpu::bars::Fill::Backdrop)
+        {
+            // A backdrop: its rectangles (inside this draw's scissor, so
+            // inside the pass) cleared to opaque black in the colour targets
+            // it writes; nothing else changes.
+            VkClearAttachment ca[4]{};
+            uint32_t attachments = 0;
+            for (uint32_t i = 0; i < 4; i++)
+                if (color[i] && ((writeMask >> (4 * i)) & 0xF))
+                {
+                    ca[attachments].aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    ca[attachments].colorAttachment = i;
+                    ca[attachments].clearValue.color = { { 0.0f, 0.0f, 0.0f, 1.0f } };
+                    attachments++;
+                }
+            VkClearRect cr[6]{};
+            for (uint32_t i = 0; i < barPlan.rectCount; i++)
+            {
+                const gpu::bars::Rect& r = barPlan.rects[i];
+                cr[i] = { { { r.x0, r.y0 }, { uint32_t(r.x1 - r.x0), uint32_t(r.y1 - r.y0) } }, 0, 1 };
+            }
+            if (attachments)
+                vkCmdClearAttachments(s_cmd, attachments, ca, barPlan.rectCount, cr);
+        }
+        else if (barPlan.rectCount)
         {
             DrawConstants fill = pc;
             memcpy(fill.posScale, barPlan.posScale, sizeof(barPlan.posScale));
@@ -8583,14 +8807,16 @@ void main()
             height = showTexture[2];
         }
         uint32_t pitch = ((fetch[0] >> 22) & 0x1FF) << 5;
-        struct { uint32_t base, pitch, tiled, endian, format, swizzle, width, height, sx, sy, slotWords, scaled; } pc = {
+        struct { uint32_t base, pitch, tiled, endian, format, swizzle, width, height, sx, sy, slotWords, scaled, denX, denY; } pc = {
             fetch[1] & 0x1FFFF000u, pitch ? pitch : (width + 31) & ~31u, (fetch[0] >> 31) & 1, (fetch[1] >> 6) & 3,
-            fetch[1] & 0x3F, (fetch[3] >> 1) & 0xFFF, width, height, 1, 1, 0, 0 };
+            fetch[1] & 0x3F, (fetch[3] >> 1) & 0xFFF, width, height, 1, 1, 0, 0, 1, 1 };
         uint32_t frontBytes = pc.pitch * ((height + 31) & ~31u) * 4;
         // At host resolution when a scaled resolve wrote it (the game's frames;
-        // movies and loading screens drawn at 1x use the 1x image).
-        bool scaled = pc.tiled && !showTexture[0] && s_scaled.enabled && ScaledRangeValid(pc.base, frontBytes);
-        uint32_t outW = scaled ? width * s_scaled.sx : width, outH = scaled ? height * s_scaled.sy : height;
+        // movies and loading screens drawn at 1x use the 1x image). At 1.5x
+        // only a front buffer of whole blocks (even; 1280x720 is).
+        bool scaled = pc.tiled && !showTexture[0] && s_scaled.enabled && s_scaled.scale.Exact(width, height) &&
+            ScaledRangeValid(pc.base, frontBytes);
+        uint32_t outW = scaled ? s_scaled.scale.x.Size(width) : width, outH = scaled ? s_scaled.scale.y.Size(height) : height;
         Image& front = scaled ? s_frontScaled : s_front;
         uint32_t& frontW = scaled ? s_frontScaledWidth : s_frontWidth;
         uint32_t& frontH = scaled ? s_frontScaledHeight : s_frontHeight;
@@ -8611,8 +8837,10 @@ void main()
         {
             pc.width = outW;
             pc.height = outH;
-            pc.sx = s_scaled.sx;
-            pc.sy = s_scaled.sy;
+            pc.sx = s_scaled.scale.x.num;
+            pc.sy = s_scaled.scale.y.num;
+            pc.denX = s_scaled.scale.x.den;
+            pc.denY = s_scaled.scale.y.den;
             pc.slotWords = s_scaled.slotWords;
             pc.scaled = 1;
             s_scaled.untiledBytes += uint64_t(outW) * outH * 4;
@@ -8642,7 +8870,7 @@ void main()
         video::SubmitFrontImage(front.image, outW, outH, width, height);
         // Back at 1x (a live change): the host-resolution image is no longer
         // needed. The presenter has this frame to show instead.
-        if (!scaled && s_frontScaled.image && s_renderScaleX * s_renderScaleY == 1)
+        if (!scaled && s_frontScaled.image && s_renderScale.IsOne())
             DestroyFrontImage(s_frontScaled, s_frontScaledWidth, s_frontScaledHeight);
         if (g_eagerWrites)
         {

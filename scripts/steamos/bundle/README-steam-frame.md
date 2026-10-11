@@ -110,9 +110,21 @@ the run before is kept as `previous-run.log`.
 - The installed game: `game/` in that folder, or the folder you gave
   `--dest`.
 - Shader caches (safe to delete): `~/.cache/speedbreaker/`.
+- In portable mode (below), all of these are in this folder instead.
 - To uninstall: delete this folder, `~/.local/share/speedbreaker/` (that
   deletes your saves too), `~/.cache/speedbreaker/` and the game's folder
   if you chose one, and remove the shortcut from Steam.
+
+## Portable mode
+
+An empty file named `portable.txt` next to `speedbreaker.sh` keeps
+everything in this folder: saves, `settings.toml` and logs in `data/`, the
+game in `data/game`, shader caches in `cache/`. The whole folder can then be
+moved or copied to another machine and played there (add it to Steam again
+there). Making the file starts fresh; to bring your current saves, settings
+and game along, run `~/Games/SpeedBreaker/speedbreaker.sh --portable on`
+from Konsole instead (it copies them, checking every game file, and makes
+the file; nothing is deleted). `--portable off` copies them back.
 
 ## Licenses
 

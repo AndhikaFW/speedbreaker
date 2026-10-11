@@ -298,7 +298,8 @@ namespace report
         }
         text += "Session: " + SessionText() + "\n";
         text += "Environment: " + EnvironmentText() + "\n";
-        text += "Data: " + GetUserPath().string() + " (logs in logs/), caches: " + GetCachePath().string() + "\n";
+        text += "Data: " + GetUserPath().string() + " (logs in logs/" + (portable::Current().Active() ? "; portable mode" : "")
+            + "), caches: " + GetCachePath().string() + "\n";
         text += SettingsText();
         return text;
     }

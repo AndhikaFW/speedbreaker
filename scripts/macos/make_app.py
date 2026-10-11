@@ -56,13 +56,29 @@
 # --dmg: also <output>/SpeedBreaker-macos.dmg (the app and a shortcut to
 # Applications, to drag it onto) with its .sha256, the release download, and
 # a copy named by the version (SpeedBreaker-<version>-macos.dmg, a hard link).
-import json, os, plistlib, re, shutil, subprocess, sys, tempfile
+# The dmg is an HFS+ volume (Mac OS Extended) on a GPT disk, compressed
+# (UDZO), made by hdiutil while it works: macOS 27 deprecates hdiutil's
+# create, attach, detach and imageinfo (they still work; -quiet hides the
+# warning) in favour of `diskutil image`. Where hdiutil is missing or fails,
+# `diskutil image` makes the same image (its "create from <folder>" makes
+# APFS only, so this goes by a blank image, partitioned and filled, then
+# converted): the same files, modes, owners and extended attributes. What
+# differs, none of it visible in Finder: the GPT partition's name, the
+# volume's size (the content + 10% + 8 MB, against hdiutil's estimate), the
+# volume root's owner on disk (root, which a mount ignores; hdiutil's is the
+# builder), and the compression (diskutil has no zlib level to set; on
+# v0.1.1's app its dmg came out 4% smaller than hdiutil's level 9).
+# DMG_TOOL=hdiutil or DMG_TOOL=diskutil uses only that one.
+import json, os, plistlib, re, shutil, stat, subprocess, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ARGS = [a for a in sys.argv[1:] if not a.startswith('--')]
 OPTIONS = [a for a in sys.argv[1:] if a.startswith('--')]
 DMG = '--dmg' in OPTIONS
 MIN_MACOS = next((a.split('=', 1)[1] for a in OPTIONS if a.startswith('--min-macos=')), None)
+DMG_TOOL = os.environ.get('DMG_TOOL', '')  # '' (hdiutil, else diskutil), 'hdiutil' or 'diskutil'
+if DMG_TOOL not in ('', 'hdiutil', 'diskutil'):
+    raise SystemExit(f'make_app.py: DMG_TOOL={DMG_TOOL}: use hdiutil or diskutil, or leave it unset')
 for a in OPTIONS:
     if a != '--dmg' and not a.startswith('--min-macos='):
         raise SystemExit(f'make_app.py: unknown option {a} (usage: make_app.py [build dir] [output dir] [--dmg] [--min-macos=<version>])')
@@ -332,8 +348,88 @@ def copy_licenses(resources, libraries):
         raise SystemExit('make_app.py: no license file found for ' + ', '.join(missing))
 
 
+def failure(e):
+    """What a failed command said (its last line), for a message."""
+    said = (e.stderr or e.stdout or '').strip().splitlines()
+    return said[-1] if said else f'exit {e.returncode}'
+
+
+def diskutil(*args):
+    """Runs `diskutil <args>`; a failure ends the script, saying which step."""
+    try:
+        return run('diskutil', *args)
+    except subprocess.CalledProcessError as e:
+        raise SystemExit(f'make_app.py: diskutil {" ".join(args)}: {failure(e)}')
+
+
+def attached_disks(plist_text):
+    """`diskutil image attach --plist`'s devices: [(disk, mount point or None)], the whole disk first."""
+    entities = plistlib.loads(plist_text.encode()).get('system-entities', [])
+    disks = [(e['dev-entry'].removeprefix('/dev/'), e.get('mount-point')) for e in entities if 'dev-entry' in e]
+    if not disks or not re.fullmatch(r'disk\d+', disks[0][0]):
+        raise SystemExit(f'make_app.py: diskutil image attach named no disk: {entities}')
+    return disks
+
+
+def dmg_with_diskutil(stage, dmg, tmp):
+    """The dmg hdiutil makes from `stage`, made with `diskutil image`: a blank
+    image, a GPT disk with one HFS+ volume named SpeedBreaker on it, the
+    stage copied in, then converted to UDZO."""
+    size = 0
+    for root, dirs, files in os.walk(stage):
+        for n in dirs + files:
+            size += (os.lstat(os.path.join(root, n)).st_size + 4095) // 4096 * 4096
+    size = (size + size // 10 + (8 << 20) + (1 << 20) - 1) // (1 << 20) << 20
+    blank = os.path.join(tmp, 'blank.dmg')
+    diskutil('image', 'create', 'blank', '--fs', 'None', '--size', str(size), blank)
+    disk = attached_disks(diskutil('image', 'attach', '--plist', '--noMount', '--nobrowse', blank))[0][0]
+    try:
+        # Mac OS Extended, not journaled, as hdiutil's -fs HFS+. It mounts the
+        # new volume in /Volumes for a moment; it's filled at a mount point of
+        # our own, out of Finder's sight.
+        diskutil('partitionDisk', '/dev/' + disk, '1', 'GPT', 'HFS+', 'SpeedBreaker', '100%')
+        volume = disk + 's1'
+        info = plistlib.loads(diskutil('info', '-plist', volume).encode())
+        if info.get('FilesystemType') != 'hfs' or info.get('VolumeName') != 'SpeedBreaker':
+            raise SystemExit(f'make_app.py: {volume} is {info.get("FilesystemType")} "{info.get("VolumeName")}", not hfs "SpeedBreaker"')
+        if info.get('MountPoint'):
+            diskutil('unmount', volume)
+        mnt = os.path.join(tmp, 'volume')
+        os.makedirs(mnt)
+        diskutil('mount', 'nobrowse', '-mountPoint', mnt, volume)
+        run('ditto', stage, mnt)
+        os.chmod(mnt, stat.S_IMODE(os.stat(stage).st_mode))  # the volume's root as hdiutil makes it
+        shutil.rmtree(os.path.join(mnt, '.fseventsd'), ignore_errors=True)  # the event log macOS starts at mount
+        diskutil('unmount', volume)
+    finally:
+        subprocess.run(['diskutil', 'eject', disk], capture_output=True)
+    diskutil('image', 'create', 'from', '--format', 'UDZO', blank, dmg)
+
+
+def check_dmg_with_diskutil(dmg, tmp):
+    """hdiutil verify's place when diskutil made the dmg: a compressed GPT +
+    HFS+ image that mounts, holding the app and the Applications shortcut,
+    and the app's code signature checks every file in it."""
+    info = plistlib.loads(diskutil('image', 'info', '--plist', dmg).encode())
+    hints = [p.get('content-hint') for p in info.get('Partitions', [])]
+    if info.get('Image Format') != 'UDZO' or hints != ['GUID_partition_scheme', 'Apple_HFS']:
+        raise SystemExit(f'make_app.py: {dmg} is {info.get("Image Format")} {hints}, not UDZO with one HFS+ volume')
+    mnt = os.path.join(tmp, 'check')
+    os.makedirs(mnt)
+    disks = attached_disks(diskutil('image', 'attach', '--plist', '--readOnly', '--nobrowse', '--mountPoint', mnt, dmg))
+    try:
+        top = sorted(os.listdir(mnt))
+        link = os.path.join(mnt, 'Applications')
+        if top != ['Applications', 'SpeedBreaker.app'] or not os.path.islink(link) or os.readlink(link) != '/Applications':
+            raise SystemExit(f'make_app.py: {dmg} holds {top}, not SpeedBreaker.app and a shortcut to /Applications')
+        run('codesign', '--verify', '--deep', '--strict', os.path.join(mnt, 'SpeedBreaker.app'))
+    finally:
+        subprocess.run(['diskutil', 'eject', disks[0][0]], capture_output=True)
+
+
 def make_dmg(app, version):
-    """SpeedBreaker-macos.dmg: the app and a shortcut to Applications."""
+    """SpeedBreaker-macos.dmg: the app and a shortcut to Applications. Returns
+    it and the tool that made it."""
     dmg = os.path.join(OUT, 'SpeedBreaker-macos.dmg')
     versioned = os.path.join(OUT, f'SpeedBreaker-{version}-macos.dmg')
     with tempfile.TemporaryDirectory() as tmp:
@@ -344,15 +440,37 @@ def make_dmg(app, version):
         for f in (dmg, versioned):
             if os.path.exists(f):
                 os.remove(f)
-        run('hdiutil', 'create', '-quiet', '-volname', 'SpeedBreaker', '-srcfolder', stage, '-fs', 'HFS+', '-format', 'UDZO',
-            '-imagekey', 'zlib-level=9', '-ov', dmg)
-    os.link(dmg, versioned)
-    for f in (dmg, versioned):
-        digest = run('shasum', '-a', '256', f).split()[0]
-        with open(f + '.sha256', 'w') as out:
-            out.write(f'{digest}  {os.path.basename(f)}\n')  # sha256sum -c / shasum -a 256 -c
-    run('hdiutil', 'verify', '-quiet', dmg)
-    return dmg
+        tool = None
+        if DMG_TOOL != 'diskutil':
+            if shutil.which('hdiutil'):
+                try:
+                    run('hdiutil', 'create', '-quiet', '-volname', 'SpeedBreaker', '-srcfolder', stage, '-fs', 'HFS+',
+                        '-format', 'UDZO', '-imagekey', 'zlib-level=9', '-ov', dmg)
+                    tool = 'hdiutil'
+                except subprocess.CalledProcessError as e:
+                    if DMG_TOOL == 'hdiutil':
+                        raise SystemExit(f'make_app.py: hdiutil create: {failure(e)}')
+                    print(f'make_app.py: hdiutil create failed ({failure(e)}): making the dmg with diskutil image',
+                          file=sys.stderr)
+                    if os.path.exists(dmg):
+                        os.remove(dmg)
+            elif DMG_TOOL == 'hdiutil':
+                raise SystemExit('make_app.py: DMG_TOOL=hdiutil, but this Mac has no hdiutil')
+            else:
+                print('make_app.py: no hdiutil on this Mac: making the dmg with diskutil image', file=sys.stderr)
+        if not tool:
+            dmg_with_diskutil(stage, dmg, tmp)
+            tool = 'diskutil'
+        os.link(dmg, versioned)
+        for f in (dmg, versioned):
+            digest = run('shasum', '-a', '256', f).split()[0]
+            with open(f + '.sha256', 'w') as out:
+                out.write(f'{digest}  {os.path.basename(f)}\n')  # sha256sum -c / shasum -a 256 -c
+        if tool == 'hdiutil':
+            run('hdiutil', 'verify', '-quiet', dmg)
+        else:
+            check_dmg_with_diskutil(dmg, tmp)
+    return dmg, tool
 
 
 def main():
@@ -521,8 +639,8 @@ def main():
     print(f'{app} ({size} MB, v{version}, {commit}{"-dirty" if dirty else ""}, macOS {minimum}+): '
           f'{len(copied)} libraries and MoltenVK {mvk_version} in Frameworks; symbols in {dsym}')
     if DMG:
-        dmg = make_dmg(app, version)
-        print(f'{dmg} ({os.path.getsize(dmg) // (1 << 20)} MB) and {os.path.basename(dmg)}.sha256')
+        dmg, tool = make_dmg(app, version)
+        print(f'{dmg} ({os.path.getsize(dmg) // (1 << 20)} MB, made with {tool}) and {os.path.basename(dmg)}.sha256')
 
 
 if __name__ == '__main__':

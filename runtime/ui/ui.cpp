@@ -5,6 +5,7 @@
 #include <kernel/xam.h>
 #include <report/report.h>
 #include <user/settings.h>
+#include <video/swapchain_policy.h>
 
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
@@ -106,6 +107,7 @@ namespace ui
 
         float s_appliedScale = 0.0f;
         uint32_t s_framebufferW = 0, s_framebufferH = 0;  // SetFramebufferSize
+        bool s_displayFromSwapchain = false;  // the layout follows the swapchain, not the window (FitUiDisplay)
         ImGuiStyle s_baseStyle;
 
         // Back + Start on one controller toggles the settings menu; both must
@@ -826,21 +828,45 @@ namespace ui
             return false;
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplSDL3_NewFrame();
-        // SDL gave the window's pixels at the screen's scale; a smaller
-        // swapchain (iOS's present scale) needs its own for the viewport,
-        // clip rectangles and font density.
-        if (ImGuiIO& io = ImGui::GetIO(); s_framebufferW && io.DisplaySize.x > 0 && io.DisplaySize.y > 0)
-            io.DisplayFramebufferScale = ImVec2(float(s_framebufferW) / io.DisplaySize.x, float(s_framebufferH) / io.DisplaySize.y);
+        // SDL gave the window's size and pixels; the UI is drawn into the
+        // swapchain, which can be smaller (iOS's present scale) and, for a
+        // moment, another shape (a view SDL turned portrait while it is
+        // fitted back): its own scale for the viewport, clip rectangles and
+        // font density, and its shape for the layout (and so the UI scale,
+        // which follows the height).
+        ImGuiIO& io = ImGui::GetIO();
+        if (s_framebufferW && io.DisplaySize.x > 0 && io.DisplaySize.y > 0)
+        {
+            const video::UiDisplay fit = video::FitUiDisplay(io.DisplaySize.x, io.DisplaySize.y, { s_framebufferW, s_framebufferH });
+            if (fit.fromSwapchain != s_displayFromSwapchain)
+            {
+                s_displayFromSwapchain = fit.fromSwapchain;
+                if (fit.fromSwapchain)
+                    fprintf(stderr, "[ui] laying out at the swapchain's %.0fx%.0f points (%ux%u pixels), not the window's %.0fx%.0f\n",
+                        fit.width, fit.height, s_framebufferW, s_framebufferH, io.DisplaySize.x, io.DisplaySize.y);
+                else
+                    fprintf(stderr, "[ui] laying out at the window's %.0fx%.0f points again\n", io.DisplaySize.x, io.DisplaySize.y);
+            }
+            io.DisplaySize = ImVec2(fit.width, fit.height);
+            io.DisplayFramebufferScale = ImVec2(fit.scaleX, fit.scaleY);
+        }
         UpdateScale();
         ImGui::NewFrame();
         // Panels and toasts lay out in the work area: the window's safe area,
         // clear of an iPhone's Dynamic Island and home indicator (elsewhere
         // the whole window, as before).
+        // (The window's, in its points: kept inside the display, which is
+        // the swapchain's shape while FitUiDisplay overrules the window.)
         if (SDL_Rect safe; s_window && SDL_GetWindowSafeArea(s_window, &safe) && safe.w > 0 && safe.h > 0)
         {
             ImGuiViewport* viewport = ImGui::GetMainViewport();
-            viewport->WorkPos = ImVec2(viewport->Pos.x + float(safe.x), viewport->Pos.y + float(safe.y));
-            viewport->WorkSize = ImVec2(float(safe.w), float(safe.h));
+            const float x0 = std::clamp(float(safe.x), 0.0f, io.DisplaySize.x), y0 = std::clamp(float(safe.y), 0.0f, io.DisplaySize.y);
+            const float x1 = std::clamp(float(safe.x + safe.w), x0, io.DisplaySize.x), y1 = std::clamp(float(safe.y + safe.h), y0, io.DisplaySize.y);
+            if (x1 - x0 >= 1.0f && y1 - y0 >= 1.0f)
+            {
+                viewport->WorkPos = ImVec2(viewport->Pos.x + x0, viewport->Pos.y + y0);
+                viewport->WorkSize = ImVec2(x1 - x0, y1 - y0);
+            }
         }
 #if defined(__APPLE__) && TARGET_OS_IOS
         DragToScroll();

@@ -143,7 +143,10 @@ namespace ui
                 // refuses for a file chooser, so no picker would open at all.
                 SDL_PropertiesID props = SDL_CreateProperties();
                 SDL_SetPointerProperty(props, SDL_PROP_FILE_DIALOG_WINDOW_POINTER, GetWindow());
-                if (const char* home = std::getenv("HOME"))
+                // Portable mode: it opens in SpeedBreaker's folder, where the game moves with it.
+                if (const portable::Layout& layout = portable::Current(); layout.Active())
+                    SDL_SetStringProperty(props, SDL_PROP_FILE_DIALOG_LOCATION_STRING, layout.root.string().c_str());
+                else if (const char* home = std::getenv("HOME"))
                     SDL_SetStringProperty(props, SDL_PROP_FILE_DIALOG_LOCATION_STRING, home);
                 SDL_SetStringProperty(props, SDL_PROP_FILE_DIALOG_TITLE_STRING, "Choose where to install the game");
 #ifdef __APPLE__

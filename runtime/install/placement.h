@@ -27,6 +27,12 @@
 //     or an uninstall replaces it, and on the Mac the app's signature would
 //     break) or anything inside it, or a folder inside an install (the
 //     default one or the one recorded last time).
+//   - Portable mode (user/portable.h): SpeedBreaker's own folder is where
+//     the game goes (data/game by default), so inside it is fine, except the
+//     folder's top itself (the program's), lib/ and licenses/ (the
+//     download's own files, overwritten by an update), data/ itself
+//     (settings and saves) and cache/ (deleted at will). A folder outside it
+//     gets a note: the game there won't move with the folder.
 //   - Never into an existing folder SpeedBreaker can't write: Install
 //     replaces it or moves it aside, which macOS refuses for a folder its
 //     owner can't write, after the whole copy.
@@ -120,6 +126,7 @@ namespace install
     {
         std::filesystem::path home;                     // the home folder (empty: unknown)
         std::filesystem::path bundle;                   // SpeedBreaker's own folder (empty: unknown)
+        std::filesystem::path portable;                 // the same in portable mode (user/portable.h); empty otherwise
         std::vector<std::filesystem::path> installs;    // installs nothing may go inside: the default and the recorded one
         uint64_t largestFile = 0;                       // the manifest's biggest file
         bool macOS = false;

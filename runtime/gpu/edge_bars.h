@@ -312,6 +312,104 @@ namespace gpu::bars
         return n;
     }
 
+    // A full-band backdrop: the results screen's picture after a race (the
+    // "WINNER" polaroid over asphalt and leaves; the title's and Controls'
+    // key art have the same shape) is one opaque textured quad of the front
+    // end, centred, x +-1.104 and y +-0.981 of the 16:9 band. On a 16:9
+    // screen it hides the world (a thin border of it shows at the top and
+    // bottom, as on the console, where a TV's overscan hid it); past the band
+    // (Hor+ beside it, Vert+ above and below it) the world rendered behind
+    // it showed: the race's road and cars at the sides of the results on an
+    // iPhone (2868x1320). What a 16:9 screen shows of it is kept, the art's
+    // own pixels too; everything else past the band (what no 16:9 screen
+    // shows) is filled black, as a 16:9 picture's letterbox. Thresholds in
+    // band units. The nearest draws it must not take: the fades and dims
+    // (+-1.29: flat, and the widen, stretch and cover rules' own), the pause
+    // dim (C8 alpha) and its gradients, the vid cam's noise and dark overlays
+    // (3C alpha, x +-0.70), the overlay at the intro's start (x +-1.104, B8
+    // alpha), the black frames (the 32x32 white texture), a menu backdrop the
+    // cover rule zooms under Vert+ (not left alone), the HUD's pieces (none
+    // covers the band).
+    struct BackdropRule
+    {
+        float centreMax = 0.01f;    // |the box's centre|, each axis
+        float extentMinX = 0.99f;   // half its width: the whole band's (to 1%)
+        float extentMinY = 0.95f;   // half its height: nearly all of it
+        float extentMax = 1.20f;    // each half extent: short of the fades' +-1.29
+        uint32_t minAlpha = 0xF0;   // vertex alpha, all four
+        uint32_t minTexels = 128;   // t0 at least this wide and tall (not the 32x32 white texture)
+        float cornerTolerance = 1e-3f;
+    };
+
+    // A backdrop: one axis-aligned rectangle, every vertex's alpha at least
+    // minAlpha, centred in the band and covering all of its width and nearly
+    // all of its height, not reaching the fades' extent. Its box goes to
+    // `box`. (The texture's size is a register check: BackdropCandidate.)
+    inline bool MatchBackdrop(const Vertex v[4], float scaleX, float scaleY, const BackdropRule& rule = {}, Box* box = nullptr)
+    {
+        if (!(scaleX > 0.0f && scaleY > 0.0f))
+            return false;
+        for (int i = 0; i < 4; i++)
+            if ((v[i].argb >> 24) < rule.minAlpha)
+                return false;
+        Box b;
+        if (!RectangleBox(v, rule.cornerTolerance, b))
+            return false;
+        const float midX = (b.x0 + b.x1) * 0.5f / scaleX, midY = (b.y0 + b.y1) * 0.5f / scaleY;
+        const float halfX = (b.x1 - b.x0) * 0.5f / scaleX, halfY = (b.y1 - b.y0) * 0.5f / scaleY;
+        if (!(std::fabs(midX) <= rule.centreMax && std::fabs(midY) <= rule.centreMax))
+            return false;
+        if (!(halfX >= rule.extentMinX && halfX < rule.extentMax && halfY >= rule.extentMinY && halfY < rule.extentMax))
+            return false;
+        if (box)
+            *box = b;
+        return true;
+    }
+
+    // What a backdrop fills, inside the draw's scissor: what lies past the
+    // band (the columns beside it under Hor+, the rows above and below it
+    // under Vert+; at most one of the view scales is below 1) and outside
+    // the backdrop's own box, up to kFillEdge: per side, the part beyond the
+    // box and, where the box reaches into that side, the parts above and
+    // below it (Hor+; left and right of it under Vert+). At most 6.
+    inline uint32_t BackdropRects(const Box& b, const float ps[4], float hostW, float hostH, const Rect& scissor, float scaleX, float scaleY,
+        Rect out[6])
+    {
+        uint32_t n = 0;
+        auto add = [&](float cx0, float cx1, float cy0, float cy1) {
+            if (cx1 <= cx0 || cy1 <= cy0)
+                return;
+            const Rect c = Intersect(ClipToHost(cx0, cx1, cy0, cy1, ps, hostW, hostH), scissor);
+            if (!Empty(c) && n < 6)
+                out[n++] = c;
+        };
+        const float e = kFillEdge;
+        if (scaleX < 1.0f)
+        {
+            // Right of the band: [scaleX, e] x [-e, e]; left: [-e, -scaleX].
+            const float in = std::min(std::max(b.x1, scaleX), e);  // where the box ends in the right strip
+            add(in, e, -e, e);
+            add(scaleX, in, b.y1, e);
+            add(scaleX, in, -e, b.y0);
+            const float inL = std::max(std::min(b.x0, -scaleX), -e);
+            add(-e, inL, -e, e);
+            add(inL, -scaleX, b.y1, e);
+            add(inL, -scaleX, -e, b.y0);
+        }
+        else if (scaleY < 1.0f)
+        {
+            const float in = std::min(std::max(b.y1, scaleY), e);
+            add(-e, e, in, e);
+            add(b.x1, e, scaleY, in);
+            add(-e, b.x0, scaleY, in);
+            const float inB = std::max(std::min(b.y0, -scaleY), -e);
+            add(-e, e, -e, inB);
+            add(b.x1, e, inB, -scaleY);
+            add(-e, b.x0, inB, -scaleY);
+        }
+        return n;
+    }
+
     // The posScale that stretches the quad's box over [-edge, edge] in clip
     // x and y (x' = ax x + bx, likewise y), folded in: NDC = x' ps0 + ps2 =
     // x (ax ps0) + (ps2 + bx ps0). Orientation is kept (ax, ay > 0) whatever
@@ -349,18 +447,19 @@ namespace gpu::bars
         Rect scissor{};               // the draw's scissor (host pixels)
     };
 
-    enum class Fill : uint8_t { None, LeftBar, RightBar, Blackout };
+    enum class Fill : uint8_t { None, LeftBar, RightBar, Blackout, Backdrop };
 
-    // What to draw after the draw: `rectCount` more copies of it (none for a
-    // bar that reaches the screen edge), with `posScale` and each rectangle
-    // as the scissor.
+    // What to draw after the draw: for a bar or a black frame, `rectCount`
+    // more copies of it (none for a bar that reaches the screen edge), with
+    // `posScale` and each rectangle as the scissor; for a backdrop, each
+    // rectangle cleared to opaque black (its picture must not be copied).
     struct Plan
     {
         Fill fill = Fill::None;
         Box box{};          // the quad's, clip space
         uint32_t argb = 0;  // its colour
         uint32_t rectCount = 0;
-        Rect rects[2]{};
+        Rect rects[6]{};
         float posScale[4]{};
     };
 
@@ -380,6 +479,51 @@ namespace gpu::bars
         return !d.occlusion && d.prim == 13 && d.count == 4 && d.frontEndShader && d.leftAlone && c[3] == 0.0f && c[4] == 0.0f &&
             c[6] == 0.0f && c[7] == 0.0f && yScale && (d.vte & 0xF) == 0xF && (d.blend0 == 0x07060706u || d.blend0 == 0x00010001u) &&
             d.t0Sampled && d.t0Width <= 32 && d.t0Height <= 32;
+    }
+
+    // The register checks for a backdrop, before any vertex is read:
+    // Candidate's, but over a large t0 (a picture, not the white texture).
+    inline bool BackdropCandidate(const Draw& d, const BackdropRule& rule = {})
+    {
+        const float* c = d.c;
+        const bool yScale = d.frontEndY > 0.0f ? std::fabs(std::fabs(c[5]) - d.frontEndY) <= d.frontEndY * 1e-5f
+                                               : d.frontEndY == 0.0f && d.scaleY >= 1.0f;
+        return (d.scaleX < 1.0f || d.scaleY < 1.0f) && !d.occlusion && d.prim == 13 && d.count == 4 && d.frontEndShader && d.leftAlone &&
+            c[3] == 0.0f && c[4] == 0.0f && c[6] == 0.0f && c[7] == 0.0f && yScale && (d.vte & 0xF) == 0xF &&
+            (d.blend0 == 0x07060706u || d.blend0 == 0x00010001u) && d.t0Sampled && d.t0Width >= rule.minTexels && d.t0Height >= rule.minTexels;
+    }
+
+    // The plan for a backdrop (PlanFill's for bars and black frames):
+    // vertex 0's alpha first, then the rest.
+    template <class ReadWord>
+    Plan PlanBackdrop(const Draw& d, ReadWord&& read, const BackdropRule& rule = {})
+    {
+        Plan p;
+        if (!BackdropCandidate(d, rule))
+            return p;
+        uint32_t colour = 0;
+        if (!read(0u, 3u, colour) || (colour >> 24) < rule.minAlpha)
+            return p;
+        const float* c = d.c;
+        Vertex v[4];
+        for (uint32_t k = 0; k < 4; k++)
+        {
+            uint32_t w[4];
+            for (uint32_t j = 0; j < 4; j++)
+                if (!read(k, j, w[j]))
+                    return p;
+            float q[3];
+            std::memcpy(q, w, sizeof(q));
+            v[k] = { q[0] * c[0] + q[1] * c[1] + q[2] * c[2] + c[3], q[0] * c[4] + q[1] * c[5] + q[2] * c[6] + c[7], w[3] };
+        }
+        Box box{};
+        if (!MatchBackdrop(v, d.scaleX, d.scaleY, rule, &box))
+            return p;
+        p.fill = Fill::Backdrop;
+        p.box = box;
+        p.argb = v[0].argb;
+        p.rectCount = BackdropRects(box, d.posScale, d.hostW, d.hostH, d.scissor, d.scaleX, d.scaleY, p.rects);
+        return p;
     }
 
     // The plan for a draw. read(k, j, word): word j of the draw's vertex k

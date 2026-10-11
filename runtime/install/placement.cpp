@@ -118,6 +118,29 @@ namespace install
                 strerror(error ? error : EACCES));
         }
 
+        // Portable mode: the parts of SpeedBreaker's folder (`root`) the game
+        // can't go in, and why ("" for the rest of it). `named`: the folder
+        // as the player named it.
+        std::string PortableReserved(const fs::path& gameDir, const fs::path& named, const fs::path& root)
+        {
+            if (gameDir == root)
+                return std::format("{} is SpeedBreaker's own folder, which holds the program. Choose a folder inside it, "
+                    "such as {} (where the game goes by default), or another folder.", root.string(),
+                    (root / portable::kDataFolder / "game").string());
+            const fs::path relative = gameDir.lexically_relative(root);
+            const fs::path first = *relative.begin();
+            if (first == "lib" || first == "licenses")
+                return std::format("{} is inside SpeedBreaker's {} folder, which holds the program's own files: an update "
+                    "overwrites them. Choose another folder.", named.string(), first.string());
+            if (first == portable::kCacheFolder)
+                return std::format("{} is inside SpeedBreaker's cache folder, which can be deleted at any time. Choose "
+                    "another folder.", named.string());
+            if (relative == portable::kDataFolder)
+                return std::format("{} holds your settings and saves. Choose a folder inside it, such as {} (where the game "
+                    "goes by default), or another folder.", gameDir.string(), (gameDir / "game").string());
+            return {};
+        }
+
         // The refusals every game folder gets, picked or exact. Ok if none.
         // `picked` is the folder the player chose (gameDir, or the folder
         // gameDir would be made in): the messages name it, not a subfolder
@@ -130,7 +153,15 @@ namespace install
             if (!context.home.empty() && gameDir == Normal(context.home))
                 return Refusal(Error::DestinationNotWritable, std::format("{} is your home folder itself. Choose a folder in "
                     "it instead.", gameDir.string()), gameDir);
-            if (fs::path bundle = Normal(context.bundle); !bundle.empty() && IsAtOrInside(gameDir, bundle))
+            // Portable mode: SpeedBreaker's folder is where the player keeps
+            // the game (data/game by default), except its own parts.
+            if (fs::path root = Normal(context.portable); !root.empty() && IsAtOrInside(gameDir, root))
+            {
+                const fs::path& named = IsAtOrInside(picked, root) ? picked : gameDir;
+                if (std::string message = PortableReserved(gameDir, named, root); !message.empty())
+                    return Refusal(Error::DestinationNotWritable, std::move(message), gameDir);
+            }
+            else if (fs::path bundle = Normal(context.bundle); !bundle.empty() && IsAtOrInside(gameDir, bundle))
             {
                 const fs::path& named = IsAtOrInside(picked, bundle) ? picked : gameDir;
                 std::string message;
@@ -170,6 +201,9 @@ namespace install
         Result FileSystemRules(const fs::path& gameDir, const fs::path& picked, const FolderFacts& facts,
             const PlacementContext& context, std::vector<std::string>& notes)
         {
+            if (fs::path root = Normal(context.portable); !root.empty() && !IsAtOrInside(gameDir, root))
+                notes.push_back(std::format("This folder is outside SpeedBreaker's folder ({}): in portable mode, the game "
+                    "there won't move with it.", root.string()));
             if (context.macOS)
             {
                 // iCloud Drive (and Desktop and Documents, when the Mac keeps
@@ -746,6 +780,8 @@ namespace install
             context.home = Resolved(home);
         if (fs::path bundle = BundleFolder(); !bundle.empty())
             context.bundle = Resolved(bundle);
+        if (const portable::Layout& layout = portable::Current(); layout.Active())
+            context.portable = Resolved(layout.root);
         context.installs.push_back(Resolved(DefaultInstallPath()));
         if (std::optional<fs::path> recorded = RecordedInstallPath())
             context.installs.push_back(Resolved(*recorded));
