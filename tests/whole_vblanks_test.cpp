@@ -33,11 +33,91 @@ namespace
         return std::abs(measuredMs / vblankMs - double(vblanks)) > 0.5 ? 0 : vblanks;
     }
 
+    // The rule from 2026-10-07 to 2026-10-11: each frame its own count,
+    // game time level with the vblanks after every frame (a frame that saw
+    // none kept its measured time and was given back by the next ones).
+    struct CountRule
+    {
+        double ahead = 0.0;
+        uint64_t Give(double measuredMs, uint64_t vblanks, double vblankMs)
+        {
+            if (vblanks > 6)
+            {
+                ahead = 0.0;
+                return 0;
+            }
+            if (vblanks == 0)
+            {
+                ahead = std::min(ahead + std::max(measuredMs, 0.0) / vblankMs, 6.0);
+                return 0;
+            }
+            double owed = double(vblanks) - ahead;
+            int64_t give = std::clamp<int64_t>(std::llround(owed), 1, 6);
+            ahead = double(give) - owed;
+            return uint64_t(give);
+        }
+    };
+
     struct Frame
     {
         double ms;
         uint64_t vblanks;
     };
+
+    // GitHub issue #9's mechanism: the main loop runs up to `queue` frames
+    // ahead of a display that shows one frame a vblank (the render thread
+    // and the GPU ring hold them). A frame's work is 4-10 ms, and with
+    // probability `hiccupP` 15 ms or more longer (streaming, a page fault):
+    // up to `hiccupMs`. The loop starts a frame when the last one is done
+    // and the queue has room (a vblank took a frame from it). Returns the
+    // frames' measured times and counts, and how many vblanks found the
+    // queue empty (the display showed a frame again).
+    std::vector<Frame> QueuedLoop(int queue, double hiccupP, double hiccupMs, int count, uint32_t seed, int& dry)
+    {
+        std::mt19937 rng(seed);
+        std::uniform_real_distribution<double> unit(0.0, 1.0);
+        std::vector<double> starts, done;
+        std::vector<int> shownAt;  // the vblank each frame was first shown at
+        double t = 0.0;
+        int nextShown = 0;          // frames shown so far
+        int vblank = 1;             // the next vblank to fire, at vblank * kRefreshMs
+        dry = 0;
+        auto fireUntil = [&](double until) {
+            for (; double(vblank) * kRefreshMs <= until; vblank++)
+            {
+                if (nextShown < int(done.size()) && done[size_t(nextShown)] <= double(vblank) * kRefreshMs)
+                    shownAt.push_back(vblank), nextShown++;
+                else if (nextShown > 0)
+                    dry++;
+            }
+        };
+        for (int k = 0; k <= count; k++)
+        {
+            // Room in the queue: frames done but not shown fewer than `queue`.
+            while (int(done.size()) - nextShown >= queue)
+            {
+                double next = double(vblank) * kRefreshMs;
+                fireUntil(next);
+                t = std::max(t, next);
+            }
+            fireUntil(t);
+            starts.push_back(t);
+            double work = 4.0 + 6.0 * unit(rng);
+            if (unit(rng) < hiccupP)
+                work += 15.0 + (hiccupMs - 15.0) * unit(rng);
+            t += work;
+            done.push_back(t);
+            fireUntil(t);
+        }
+        std::vector<Frame> out;
+        for (int k = 0; k < count; k++)
+        {
+            double a = starts[size_t(k)], b = starts[size_t(k) + 1];
+            uint64_t n = uint64_t(std::floor(b / kRefreshMs) - std::floor(a / kRefreshMs));
+            out.push_back({ b - a, n });
+        }
+        return out;
+    }
 
     struct Totals
     {
@@ -106,32 +186,102 @@ namespace
         return out;
     }
 
+    // Issue #9: the queued loop at 60 fps held. With no vblank finding the
+    // queue empty, every frame is shown for one vblank and must get one.
+    void QueuedLoops()
+    {
+        struct Case
+        {
+            const char* name;
+            int queue;
+            double hiccupP, hiccupMs;
+        };
+        const Case cases[] = {
+            { "queue 2, a 15-30 ms hiccup every ~3 s", 2, 1.0 / 180, 30.0 },
+            { "queue 3, a 15-45 ms hiccup every ~3 s", 3, 1.0 / 180, 45.0 },
+            { "queue 3, a 15-45 ms hiccup every ~0.5 s (a Deck-like CPU)", 3, 1.0 / 30, 45.0 },
+            { "queue 2, a 15-80 ms hiccup every ~1 s (some run the queue dry)", 2, 1.0 / 60, 80.0 },
+        };
+        for (const Case& c : cases)
+        {
+            uint64_t frames = 0, newOff = 0, oldOff = 0, dryTotal = 0;
+            double worst = 0;
+            for (int p = 0; p < 8; p++)
+            {
+                int dry = 0;
+                std::vector<Frame> loop = QueuedLoop(c.queue, c.hiccupP, c.hiccupMs, 6000, 77u + uint32_t(p), dry);
+                game::WholeVblanks rule;
+                CountRule old;
+                double given = 0, fired = 0;
+                for (const Frame& f : loop)
+                {
+                    uint64_t k = rule.Give(f.ms, f.vblanks, kRefreshMs), o = old.Give(f.ms, f.vblanks, kRefreshMs);
+                    newOff += k != 1;
+                    oldOff += o != 1;
+                    given += k ? double(k) : f.ms / kRefreshMs;
+                    fired += double(f.vblanks);
+                }
+                frames += loop.size();
+                dryTotal += uint64_t(dry);
+                worst = std::max(worst, std::abs(given - fired));
+            }
+            printf("  %-62s frames not given 1: %llu (the rule until 2026-10-11: %llu) of %llu; vblanks with the queue empty %llu; "
+                "game time within %.2f vblanks\n", c.name, (unsigned long long)newOff, (unsigned long long)oldOff,
+                (unsigned long long)frames, (unsigned long long)dryTotal, worst);
+            CHECK(oldOff > 0, "%s: the old rule's hitches are there to remove (%llu)", c.name, (unsigned long long)oldOff);
+            if (dryTotal == 0)
+                CHECK(newOff == 0, "%s: issue #9: every frame given 1 while the display shows one a vblank (%llu not)", c.name,
+                    (unsigned long long)newOff);
+            else
+                CHECK(newOff <= dryTotal && newOff < oldOff, "%s: only frames after an empty queue given more (%llu, %llu empty, old %llu)",
+                    c.name, (unsigned long long)newOff, (unsigned long long)dryTotal, (unsigned long long)oldOff);
+            CHECK(worst <= game::WholeVblanks::kSlack + 1.0, "%s: game time within kSlack + 1 vblanks (%.2f)", c.name, worst);
+        }
+    }
+
     void Synthetic()
     {
         // Frame by frame, from a fresh start.
         {
             game::WholeVblanks r;
             CHECK(r.Give(16.6, 1, kRefreshMs) == 1, "a 60 fps frame: 1");
-            CHECK(r.Give(44.0, 3, kRefreshMs) == 3, "44 ms, 3 fired (2.64 rounded up): 3");
-            CHECK(r.Give(44.0, 2, kRefreshMs) == 2, "44 ms, 2 fired (2.64 rounded down): 2; the half-vblank rule kept 44 ms");
-            CHECK(HalfVblankRule(44.0, 2, kRefreshMs) == 0, "the old rule's miss");
             CHECK(r.ahead == 0.0, "nothing ahead");
+            CHECK(HalfVblankRule(44.0, 2, kRefreshMs) == 0, "the old rule's miss: 44 ms, 2 fired, kept 44 ms");
+            // GPU-bound 44 ms frames (2.64 refreshes, 2 or 3 fired): game time
+            // falls kSlack behind first, then each gets its count.
+            CHECK(r.Give(44.0, 3, kRefreshMs) == 1 && r.ahead == -2.0, "first slow frame: 1 (%.2f behind)", -r.ahead);
+            CHECK(r.Give(44.0, 2, kRefreshMs) == 1 && r.ahead == -3.0, "then 1, kSlack behind (%.2f)", -r.ahead);
+            CHECK(r.Give(44.0, 3, kRefreshMs) == 3, "3 fired, kSlack behind: 3");
+            CHECK(r.Give(44.0, 2, kRefreshMs) == 2, "2 fired: 2");
+            CHECK(r.ahead == -game::WholeVblanks::kSlack, "and stays kSlack behind (%.2f)", r.ahead);
             CHECK(r.Give(44.0, 1, 2 * kRefreshMs) == 1 && r.Give(44.0, 2, 2 * kRefreshMs) == 2,
                 "Frame Rate 30: 44 ms is 1.32 guest vblanks of 33.3 ms; 1 or 2 fired, given");
-            // A late vblank: an 18.7 ms frame sees none (its measured time),
-            // the next sees 2 and is given 1; then 1 each.
-            CHECK(r.Give(18.7, 0, kRefreshMs) == 0, "none fired: measured time");
-            CHECK(std::abs(r.ahead - 18.7 / kRefreshMs) < 1e-9, "ahead by the measured time (%.3f)", r.ahead);
-            CHECK(r.Give(18.7, 2, kRefreshMs) == 1, "the catch-up gives back the vblank");
-            CHECK(r.Give(18.7, 1, kRefreshMs) == 1, "then one each");
-            CHECK(std::abs(r.ahead - (18.7 / kRefreshMs - 1.0)) < 1e-9, "the fraction stays (%.3f)", r.ahead);
-            // Ahead by more than half a vblank: a frame of 1 still gets 1.
-            CHECK(r.Give(16.0, 0, kRefreshMs) == 0 && r.ahead > 1.0, "ahead by more than a vblank");
-            CHECK(r.Give(16.6, 1, kRefreshMs) == 1, "never fewer than one");
+            r.Reset();
+            CHECK(r.ahead == 0.0, "reset");
+            // GitHub issue #9: at 60 fps held, the main loop's frames drift
+            // against the vblanks while the display shows one frame a vblank
+            // from its queue: a slow frame sees 2 or 3, the next ones none.
+            // Each is shown for one vblank and gets one.
+            const uint64_t drift[] = { 1, 2, 0, 1, 1, 3, 0, 0, 1, 2, 1, 0, 1 };
+            bool allOne = true;
+            for (uint64_t k : drift)
+                allOne &= r.Give(k == 0 ? 4.0 : 16.6 * double(k), k, kRefreshMs) == 1;
+            CHECK(allOne && r.ahead == 0.0, "issue #9: every drifting frame given 1, nothing left over (%.2f)", r.ahead);
+            // A slow frame of 6 (100 ms: the queue ran dry, the display waited
+            // 3 vblanks): it gets the 3 beyond kSlack, the 3 catching up one each.
+            CHECK(r.Give(100.0, 6, kRefreshMs) == 3, "6 fired, 3 beyond kSlack: 3");
+            CHECK(r.Give(3.0, 0, kRefreshMs) == 1 && r.Give(3.0, 0, kRefreshMs) == 1 && r.Give(3.0, 0, kRefreshMs) == 1 && r.ahead == 0.0,
+                "the frames catching up: 1 each, back level (%.2f)", r.ahead);
+            // More frames than vblanks (the queue filling): one each up to
+            // kSlack ahead, then their measured time.
+            CHECK(r.Give(4.0, 0, kRefreshMs) == 1 && r.Give(4.0, 0, kRefreshMs) == 1 && r.Give(4.0, 0, kRefreshMs) == 1, "kSlack frames ahead: 1 each");
+            CHECK(r.Give(4.0, 0, kRefreshMs) == 0 && r.ahead == game::WholeVblanks::kSlack, "then measured time, never more than kSlack ahead");
+            CHECK(r.Give(16.6, 1, kRefreshMs) == 1 && r.ahead == game::WholeVblanks::kSlack, "kSlack ahead, a frame of 1: 1 (it fits)");
+            CHECK(r.Give(33.3, 2, kRefreshMs) == 1 && r.ahead == game::WholeVblanks::kSlack - 1.0, "a frame of 2: 1, giving one back");
             CHECK(r.Give(120.0, 7, kRefreshMs) == 0 && r.ahead == 0.0, "7 vblanks (loading): measured time, and a fresh start");
             for (int i = 0; i < 20; i++)
                 r.Give(30.0, 0, kRefreshMs);
-            CHECK(r.ahead == game::WholeVblanks::kMaxAhead, "ahead at most %.0f vblanks", game::WholeVblanks::kMaxAhead);
+            CHECK(r.ahead == game::WholeVblanks::kSlack, "ahead at most kSlack (%.2f)", r.ahead);
             r.Reset();
             CHECK(r.ahead == 0.0 && r.Give(16.6, 1, 0.0) == 0, "no vblank period: measured time");
         }
@@ -174,9 +324,9 @@ namespace
             printf("  %-48s new rule within %.2f vblanks of the vblanks' time; half-vblank rule x%.4f; %llu of %llu frames given whole vblanks\n",
                 c.name, worst, oldMean, (unsigned long long)given, (unsigned long long)frames);
             // Game time against the vblanks that fired, over 4000 frames:
-            // within what can be ahead at the end (half a vblank, and a last
-            // frame that saw none), whatever the frames did.
-            CHECK(worst <= 2.0, "%s: the new rule within 2 vblanks of the vblanks (%.2f)", c.name, worst);
+            // within kSlack (and a last frame that saw none), whatever the
+            // frames did.
+            CHECK(worst <= game::WholeVblanks::kSlack + 1.0, "%s: the new rule within kSlack + 1 vblanks of the vblanks (%.2f)", c.name, worst);
             CHECK(oldMean >= c.oldMin && oldMean <= c.oldMax, "%s: the half-vblank rule's known bias (x%.4f)", c.name, oldMean);
             if (c.paced)
                 CHECK(pacedOne == paced && given == frames, "%s: every paced frame given one vblank (%llu of %llu)", c.name,
@@ -229,6 +379,8 @@ int main(int argc, char** argv)
 {
     printf("synthetic frames:\n");
     Synthetic();
+    printf("a main loop queued ahead of the display (GitHub issue #9):\n");
+    QueuedLoops();
     if (argc > 1)
         printf("logs:\n");
     for (int i = 1; i < argc; i++)

@@ -18,20 +18,25 @@
 // a step boundary, frames alternate between no step and two.
 //
 // Each guest vblank is made one step instead (NFSMW_GAME_TIME=0 turns this
-// off). A frame is given k/60 s for the k guest vblanks that fired during it
-// (counted from one frame's start to the next, 1 to 6), as the console's
-// 60 Hz vblank would have given it; the stepper's elapsed time, then k steps
-// give or take a tick, is rounded to k. The main loop starts a frame when D3D
-// lets it, after the vblank that released the last one, so its start can
-// jitter by most of a vblank without changing the count; a frame slower than
-// the vblank starts anywhere between two, and its count is its length
-// rounded either way. A frame no vblank fired in keeps its measured time,
-// which later frames give back (game/whole_vblanks.h): game time adds up to
-// the vblanks that fired. It runs at the display's rate over 60: 0.044% slow
-// on a 59.97 Hz monitor, at most 2.5% (the lock's range). Frames of more
-// than 6 vblanks (loading) keep their measured time. At Frame Rate 30
-// (video::GuestVblankDivider) a guest vblank comes every other refresh and
-// is given 2/60 s: two steps a frame, the game at its speed.
+// off). A frame is given whole vblanks of 1/60 s, as the console's 60 Hz
+// vblank would have given it; the stepper's elapsed time, then k steps give
+// or take a tick, is rounded to k. The main loop runs ahead of the display:
+// the game's render thread swaps (VdSwap) during the loop's next frame, and
+// the command processor lets each swap go at a vblank about two frames after
+// that, so the loop's frames drift against the vblanks (counted from one
+// frame's start to the next) while the display shows one frame a vblank from
+// the queue: a frame the loop is slow with counts 2 or 3, the next ones none.
+// Each is given one vblank while game time stays within a few vblanks of the
+// vblanks that fired (game/whole_vblanks.h; given their counts, the world
+// ran 2-3 steps in one displayed frame and none in the next: GitHub issue
+// #9). Further behind, the queue ran dry and the display waited, and the
+// frame gets the rest; a frame slower than the vblank (GPU-bound) gets its
+// count, its length rounded either way. Game time adds up to the vblanks
+// that fired, to within those few. It runs at the display's rate over 60:
+// 0.044% slow on a 59.97 Hz monitor, at most 2.5% (the lock's range). Frames
+// of more than 6 vblanks (loading) keep their measured time. At Frame Rate
+// 30 (video::GuestVblankDivider) a guest vblank comes every other refresh
+// and is given 2/60 s: two steps a frame, the game at its speed.
 #include <stdafx.h>
 #include "frame_time.h"
 #include "whole_vblanks.h"
@@ -50,6 +55,8 @@ namespace
         return on;
     }();
     std::atomic<uint64_t> s_frames{ 0 }, s_snapped{ 0 }, s_noStep{ 0 }, s_multiStep{ 0 };
+    // Game time handed to the frames so far (game::FrameClockMs), ms in 16.16.
+    std::atomic<uint64_t> s_clock{ 0 };
     // NFSMW_GAME_TIME_LOG=<file>: one line per frame, written when the next
     // one starts: its measured ms, guest vblanks, whether it was given whole
     // vblanks, the world steps it ran (-1: no world), how long after the last
@@ -86,12 +93,23 @@ namespace game
         return { s_frames.load(std::memory_order_relaxed), s_noStep.load(std::memory_order_relaxed),
             s_multiStep.load(std::memory_order_relaxed), s_snapped.load(std::memory_order_relaxed) };
     }
+
+    double FrameClockMs()
+    {
+        return double(s_clock.load(std::memory_order_relaxed)) / 65536.0;
+    }
 }
 
 // GameFrameTime, before `bl 0x823AFE20` at 0x823B0148 in the main loop: r3 is
 // the frame's measured time, milliseconds in 16.16 fixed point.
 void GameFrameTime(PPCRegister& r3)
 {
+    // Whatever the frame is given below (or its measured time), on every path.
+    struct AddToClock
+    {
+        PPCRegister& r3;
+        ~AddToClock() { s_clock.fetch_add(uint64_t(std::max(int32_t(r3.u32), 0)), std::memory_order_relaxed); }
+    } addToClock{ r3 };
     static uint64_t last = 0;
     uint64_t now = video::GuestVblanks(), vblanks = now - last;
     last = now;

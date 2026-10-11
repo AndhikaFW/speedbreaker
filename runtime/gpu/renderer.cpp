@@ -15,6 +15,7 @@
 #include "shader_translator.h"
 #include "zpd_report.h"
 #include "depth24_glsl.h"
+#include "depth_only.h"
 #include "render_scale.h"
 #include "shared_memory_glsl.h"
 #include "xenos/registers.h"
@@ -1345,6 +1346,28 @@ namespace gpu::renderer
         std::unordered_map<uint64_t, std::unique_ptr<Shader>> s_shaders;
         Shader* s_vs = nullptr;
         Shader* s_ps = nullptr;
+
+        // Depth-only draws run no pixel shader on Xenos (depth_only.h): they
+        // get this empty one instead of the guest's bound one, left over from
+        // earlier draws. NFSMW_DEPTH_ONLY_PS=1 runs the bound one, as up to
+        // v0.1.2 (A/B only).
+        constexpr uint64_t kDepthOnlyPsHash = 0xDE97400000000001ull;  // (a guest shader hashing to it: a 2^-64 chance)
+        const bool s_depthOnlyGuestPs = [] { const char* v = std::getenv("NFSMW_DEPTH_ONLY_PS"); return v && v[0] == '1'; }();
+
+        Shader* DepthOnlyPixelShader()
+        {
+            static Shader* const ps = [] {
+                auto& slot = s_shaders[kDepthOnlyPsHash];
+                slot = std::make_unique<Shader>();
+                slot->stage = ShaderStage::Pixel;
+                slot->hash = kDepthOnlyPsHash;
+                slot->info.ok = true;
+                slot->info.constPacked = true;  // (reads no constants: none uploaded for it)
+                slot->info.glsl = gpu::kEmptyPixelShaderGlsl;
+                return slot.get();
+            }();
+            return ps;
+        }
 
         // IM_LOAD shaders by where they are (LoadShader). A dense frame loads
         // thousands, the same few hundred from the same addresses, and
@@ -6996,6 +7019,15 @@ void main()
         }
         if (edramMode != xenos::EdramMode::kColorDepth && edramMode != xenos::EdramMode::kDepthOnly)
             return;
+        // Depth-only: no pixel shader runs (depth_only.h); the guest's stays
+        // bound for the draws after this one.
+        struct RestorePs
+        {
+            Shader* ps;
+            ~RestorePs() { s_ps = ps; }
+        } restorePs{ s_ps };
+        if (!gpu::RunsGuestPixelShader(edramMode, s_depthOnlyGuestPs))
+            s_ps = DepthOnlyPixelShader();
         s_stats.draws++;
         auto skip = [&](uint64_t key, const char* why) {
             s_stats.skipped++;
@@ -7355,7 +7387,9 @@ void main()
         if (polygonal && initiator.prim_type != xenos::PrimitiveType::kRectangleList)
             cull = (modeCntl.cull_front ? VK_CULL_MODE_FRONT_BIT : 0) | (modeCntl.cull_back ? VK_CULL_MODE_BACK_BIT : 0);
         auto colorControlKey = Reg<reg::RB_COLORCONTROL>();
-        bool alphaTest = colorControlKey.alpha_test_enable && colorControlKey.alpha_func != xenos::CompareFunction::kAlways;
+        // (The alpha test tests the pixel shader's alpha: none depth-only.)
+        bool alphaTest = colorControlKey.alpha_test_enable && colorControlKey.alpha_func != xenos::CompareFunction::kAlways &&
+            gpu::RunsGuestPixelShader(edramMode, s_depthOnlyGuestPs);
         key.raster = cull | (modeCntl.face ? 4u : 0u) | (clipCntl.clip_disable ? 8u : 0u) | (depthBias ? 16u : 0u) |
             (alphaTest ? 32u : 0u);
 

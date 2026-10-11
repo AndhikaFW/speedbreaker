@@ -22,6 +22,10 @@ sb_test(zpd_report_test)
 # The resolve shader's 24-bit depth pack (gpu/depth24_glsl.h), header only;
 # renderer.cpp is read to check its resolve shader uses it.
 sb_test(depth24_pack_test ARGS ${RT}/gpu/renderer.cpp)
+# Depth-only draws run no pixel shader (gpu/depth_only.h, header only): the
+# sun's shadow pass as the game draws it, and renderer.cpp's Draw using the
+# rule (the cars' and tunnel roofs' shadows, v0.1.3).
+sb_test(depth_only_test ARGS ${RT}/gpu/renderer.cpp)
 # The internal resolution as a ratio, 1.5x included: guest <-> host pixels
 # and the scaled resolve memory's layout (gpu/render_scale.h, header only);
 # renderer.cpp is read to check its scaled-memory shaders use it.
@@ -53,6 +57,9 @@ sb_test(frame_rate_policy_test SOURCES ${RT}/video/frame_rate_policy.cpp)
 sb_test(swapchain_policy_test SOURCES ${RT}/video/swapchain_policy.cpp)
 # Game time in whole vblanks (game/whole_vblanks.h), header only.
 sb_test(whole_vblanks_test)
+# The nitrous light trails' ring at the 360's 30 fps length (game/light_trails.h,
+# header only; GitHub issue #10).
+sb_test(light_trails_test)
 sb_test(guest_time_test SOURCES ${RT}/cpu/guest_time.cpp)
 sb_test(report_zip_test SOURCES ${RT}/report/zip.cpp ARGS ${CMAKE_CURRENT_BINARY_DIR}/report_zip_out)
 find_package(Python3 COMPONENTS Interpreter)
@@ -108,6 +115,11 @@ sb_test(version_check_test)
 # Check for Updates' logic: versions, GitHub's JSON, curl's output and the
 # release notes (update/check.cpp, self-contained).
 sb_test(update_check_test SOURCES ${RT}/update/check.cpp)
+# The jump tables XenonRecomp makes switches of (config/switch_tables.toml)
+# against the leaf functions' bounds (config/nfsmw.toml): no label or default
+# outside its function, and the tables a borrowed bounds check broke (the
+# Performance Tuning labels, GitHub issue #8) as the guest dispatches them.
+sb_test(switch_tables_test ARGS ${ROOT}/config/switch_tables.toml ${ROOT}/config/nfsmw.toml)
 # The write watch around CPU write faults, on physical memory mapped as the
 # runtime maps it.
 sb_test(write_watch_test SOURCES ${RT}/kernel/write_watch.cpp ${RT}/cpu/guest_time.cpp)

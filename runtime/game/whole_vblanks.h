@@ -10,19 +10,32 @@
 namespace game
 {
     // Game time follows the guest vblanks that fire: over any run of frames
-    // it adds up to them, to within a vblank, and each frame that saw any
-    // gets whole ones (1 to 6), so the fixed 1/60 s world step runs a whole
-    // number of times a frame.
+    // it adds up to them, to within kSlack vblanks, and each frame that saw
+    // any gets whole ones (1 to 6), so the fixed 1/60 s world step runs a
+    // whole number of times a frame.
     //   - A frame the vblank paces (60 fps held, or 30 at Frame Rate 30) saw
     //     one and gets one.
-    //   - A frame it doesn't (GPU-bound) starts anywhere between two, so its
-    //     count is its length rounded down or up: a 44 ms frame (2.64
-    //     refreshes) sees 2 or 3, and gets them.
-    //   - A frame no vblank fired in (a vblank thread waking late, as the
-    //     Mac's does several ms at a time when its GPU is busy; or two frames
-    //     between two vblanks) keeps its measured time, and is then ahead of
-    //     the vblanks by that much: the next frames give it back, one whole
-    //     vblank fewer when it adds up to one, never fewer than one.
+    //   - The main loop runs up to a few frames ahead of the display (its
+    //     render thread and the GPU ring queue them), so its own frames
+    //     don't line up with the vblanks: a frame the loop is slow with
+    //     (streaming, a file read, a page fault) spans 2 vblanks and the next
+    //     one, catching up, none, while the display still shows one frame a
+    //     vblank from the queue. Each of those frames gets one: game time may
+    //     run up to kSlack vblanks behind or ahead of the vblanks that fired.
+    //     Until 2026-10-11 they got their own counts (2, then the measured
+    //     few ms): the world ran 2 steps in a frame the display showed for
+    //     one vblank and none in the next, a hitch every few seconds while
+    //     driving that no frame-time graph shows (GitHub issue #9).
+    //   - Behind by more than that, the queue ran dry and the display waited
+    //     (a frame shown twice): the frame gets the vblanks beyond kSlack,
+    //     at most 6, so game time keeps up with the display.
+    //   - A frame it doesn't pace (GPU-bound) starts anywhere between two,
+    //     so its count is its length rounded down or up: a 44 ms frame (2.64
+    //     refreshes) sees 2 or 3, and once game time is kSlack behind (the
+    //     first such frame), gets them.
+    //   - Ahead by kSlack (more frames than vblanks for a while: the queue
+    //     filling after a load), a frame no vblank fired in keeps its
+    //     measured time.
     // The rule until 2026-10-07 gave a frame its count only when its
     // measured time was within half a vblank of it, else the measured time:
     // GPU-bound 44 ms frames got 3 vblanks or their own 2.64, so the game ran
@@ -32,11 +45,14 @@ namespace game
     // 6-9% slow.
     struct WholeVblanks
     {
-        // Game time given beyond the vblanks that fired, in vblanks: at most
-        // kMaxAhead (a held vblank, as a GPU-only suspension's, isn't
-        // replayed: what can't be given back is forgotten).
+        // Game time given beyond the vblanks that fired, in vblanks (below 0:
+        // behind), within +-kSlack: what can't be given back is forgotten (a
+        // held vblank, as a GPU-only suspension's, isn't replayed).
         double ahead = 0.0;
-        static constexpr double kMaxAhead = 6.0;
+        // How far the main loop's frames may drift from the vblanks without
+        // the display showing it: the frames queued between the loop and the
+        // display (2-3, measured on the Steam Machine).
+        static constexpr double kSlack = 3.0;
 
         // A frame the main loop measured at `measuredMs`, during which
         // `vblanks` guest vblanks fired (from its start to the next frame's),
@@ -49,14 +65,16 @@ namespace game
                 ahead = 0.0;
                 return 0;
             }
-            if (vblanks == 0)
+            ahead -= double(vblanks);
+            if (ahead + 1.0 > kSlack)
             {
-                ahead = std::min(ahead + std::max(measuredMs, 0.0) / vblankMs, kMaxAhead);
+                ahead = std::min(ahead + std::max(measuredMs, 0.0) / vblankMs, kSlack);
                 return 0;
             }
-            double owed = double(vblanks) - ahead;
-            int64_t give = std::clamp<int64_t>(std::llround(owed), 1, 6);
-            ahead = double(give) - owed;
+            int64_t give = 1;
+            if (ahead + 1.0 < -kSlack)
+                give = std::clamp<int64_t>(std::llround(-kSlack - ahead), 1, 6);
+            ahead = std::max(ahead + double(give), -kSlack);
             return uint64_t(give);
         }
 

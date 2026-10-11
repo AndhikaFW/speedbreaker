@@ -2940,15 +2940,6 @@ labels = [
 ]
 
 [[switch]]
-base = 0x822C7720
-r = 11
-default = 0x822C76E4
-labels = [
-    0x822C7760,
-    0x822C7774,
-]
-
-[[switch]]
 base = 0x822C8638
 r = 3
 default = 0x822C869C
@@ -2974,15 +2965,6 @@ labels = [
     0x822C88AC,
     0x822C88C0,
     0x822C88D4,
-]
-
-[[switch]]
-base = 0x822C89F8
-r = 10
-default = 0x822C89D0
-labels = [
-    0x822C8A2C,
-    0x822C8A34,
 ]
 
 [[switch]]
@@ -3275,14 +3257,6 @@ labels = [
     0x822E7BF0,
     0x822E7C90,
     0x822E7CB0,
-]
-
-[[switch]]
-base = 0x822E7CE0
-r = 3
-default = 0x822E7BC4
-labels = [
-    0x822E7D14,
 ]
 
 [[switch]]
@@ -13318,6 +13292,51 @@ labels = [
     0x822C5BE0,
     0x822C5BC8,
     0x822C5BD8,
+]
+
+# bctr 0x822c7734 in 0x822c7718: absolute table at 0x822c7738, index r6, 10 entries (no bounds check)
+[[switch]]
+base = 0x822C7728
+r = 6
+labels = [
+    0x822C7760,
+    0x822C7774,
+    0x822C7788,
+    0x822C779C,
+    0x822C77B0,
+    0x822C77C4,
+    0x822C77D8,
+    0x822C77EC,
+    0x822C7800,
+    0x822C7814,
+]
+
+# bctr 0x822c8a0c in 0x822c89f4: absolute table at 0x822c8a10, index r3, 7 entries (no bounds check)
+[[switch]]
+base = 0x822C8A00
+r = 3
+labels = [
+    0x822C8A2C,
+    0x822C8A34,
+    0x822C8A5C,
+    0x822C8A3C,
+    0x822C8A44,
+    0x822C8A4C,
+    0x822C8A54,
+]
+
+# bctr 0x822e7cf4 in 0x822e7cdc: absolute table at 0x822e7cf8, index r4, 7 entries (no bounds check)
+[[switch]]
+base = 0x822E7CE8
+r = 4
+labels = [
+    0x822E7D14,
+    0x822E7D20,
+    0x822E7D2C,
+    0x822E7D38,
+    0x822E7D44,
+    0x822E7D50,
+    0x822E7D5C,
 ]
 
 # bctr 0x822e9a30 in 0x822e9a00: absolute table at 0x822e9a34, index r5, 56 entries (no bounds check)

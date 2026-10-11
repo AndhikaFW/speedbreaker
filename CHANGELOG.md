@@ -4,6 +4,43 @@ What changed in each SpeedBreaker release, newest first. Each release's notes on
 its entry here, and the game shows the entry once, the first time a new version starts (offline:
 it's built into the game).
 
+## v0.1.3
+
+### What's new
+
+- Smoother driving: no more small hitch every few seconds (the car jumped ahead, then stood
+  still for a frame or two), which frame-time graphs didn't show (GitHub issue #9). Thanks to
+  m9cy884mv6-a11y for the careful report.
+- Sun shadows of cars, walls and tunnel roofs: cars cast their hard shadow in sunlight again, and
+  walls, barriers and tunnel roofs shade the road and the cars, as on the Xbox 360. Inside tunnels
+  the car no longer flickers between sunlight and tree shadows (GitHub issue #3). Thanks to the
+  players who reported the flicker on GitHub and the missing car shadows on Reddit.
+- Nitrous light trails are as long as on the Xbox 360 again: at 60 fps they were half as long, and
+  looked brighter (GitHub issue #10). Thanks to jaswinprakash for the report, and to victorgbd,
+  whose Android port of another Most Wanted recompilation found the cause.
+- Pause menu > Performance Tuning: each slider has its own name again (Steering, Handling, Brakes,
+  Ride Height, Aerodynamics, Nitrous, Turbo or Supercharger) instead of "Steering" on every row
+  (GitHub issue #8).
+
+### More about it
+
+- The hitch: the game's main loop runs a couple of frames ahead of the screen. When one of its
+  frames took longer, SpeedBreaker gave it two or three steps of game time and the next ones
+  none, while the screen still showed one frame per refresh. A frame the screen shows for one
+  refresh now runs one step. The game's speed is unchanged.
+- The shadows: the game draws cars, walls and tunnel roofs into its sun shadow map as plain solid
+  shapes, which on the Xbox 360 run no pixel shader. SpeedBreaker ran the trees' leaf-cutting
+  shader on them too, and it threw them all away. Checked against real Xbox 360 footage of the
+  same race. Sunlit roads are as bright as in v0.1.1 and v0.1.2.
+- The light trails: the game draws them from where the car was over its last two frames, and the
+  Xbox 360 races at 30 fps, so at 60 fps they covered half the distance. They now span the same
+  time as on the 360. At Frame Rate 30 nothing changes.
+- The tuning labels: the recompiled code looked up each row's name in a table that had lost all
+  but its first entry.
+- Updating keeps your saves, settings and the installed game, and needs no disc image: on a Mac,
+  drag the new app into Applications and choose Replace, then Open Anyway once more; on SteamOS,
+  unpack the new download over the old folder.
+
 ## v0.1.2
 
 ### What's new
