@@ -44,11 +44,13 @@ iOS doesn't give an app that much by default, so the app asks for two entitlemen
   ([xnu, kern_exec.c](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_exec.c)).
   Apple gives it to free Apple Accounts too, but not every tool asks for it.
 
-What that means for each way of signing (as of October 2026; untested with a free account so far):
+What that means for each way of signing (as of October 2026). The IPA itself hasn't been installed on a
+device yet: the tested iPhones and iPad ran the same app built and signed with Xcode and a paid account.
 
 | Signed with | Entitlements the app gets | Expected |
 |---|---|---|
-| A paid Apple Developer account, any tool, or Xcode | both | works, as tested |
+| A paid Apple Developer account, Xcode (building it yourself) | both | works, as tested |
+| A paid Apple Developer account, a sideloading tool | depends on the tool (AltStore keeps only Increased Memory Limit) | likely works; untested |
 | A free Apple Account, [AltStore Classic](https://altstore.io) 2.2 or later | Increased Memory Limit | likely works on devices that support it |
 | A free Apple Account, Xcode Personal Team (building it yourself) | Increased Memory Limit, after removing the other one | likely works on devices that support it |
 | A free Apple Account, [SideStore](https://sidestore.io) 0.7 | neither ([SideStore #1616](https://github.com/SideStore/SideStore/issues/1616)) | may start; iOS may close it in busy scenes |
@@ -62,6 +64,10 @@ doesn't fit, the game says so instead of closing: a page titled **This copy of S
 start**, whose Details line names the entitlements this copy was signed with. When it starts with
 iOS's default address space, or a memory limit below about 3 GB, a notice says iOS may close the
 game in busy scenes.
+
+Coming from a build you made yourself, the IPA installs as a separate app (the tools give it
+another bundle identifier), with its own storage: install the game again from your disc image.
+Saves made in the old app stay with it.
 
 ### Free Apple Account limits
 

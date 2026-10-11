@@ -9,7 +9,7 @@
   <b>An unofficial static recompilation of the Xbox 360 version of <i>Need for Speed: Most Wanted</i> (2005):<br>
   a native port, not an emulator.<br>
   Play your own copy on Steam Deck, Steam Machine and Steam Frame (SteamOS), Linux and Mac,<br>
-  or build it yourself for iPhone and iPad.</b>
+  and for iPhone and iPad, sideload the experimental IPA or build it yourself.</b>
 </p>
 
 <p align="center">
@@ -101,8 +101,9 @@ and a settings menu you can open mid-race.
   </tr>
 </table>
 
-<sub>Screenshots: SpeedBreaker on a Mac Studio (M4 Max). They are unedited frames from the game's
-own output, except that the licence plate in the top image is blurred. The game content in them
+<sub>Screenshots: SpeedBreaker v0.1.2 on a Mac Studio (M4 Max). They are unedited frames from the
+game's own output, except that the licence plates in the top image and the first race image are
+blurred. The game content in them
 belongs to its owners.</sub>
 
 ## Download
@@ -111,9 +112,9 @@ belongs to its owners.</sub>
 |---|---|---|
 | **Steam Deck** and **Steam Machine** (SteamOS) | [Download][dl-steamos-x86_64]<br>`SpeedBreaker-steamos-x86_64.tar.xz` | Steam Deck OLED (SteamOS 3.9.2). Steam Machine (SteamOS 3.8) on a 3440x1440 ultrawide. The Steam Deck LCD hasn't been tested yet. |
 | **Steam Frame** (SteamOS, arm64) | [Download][dl-steamos-arm64]<br>`SpeedBreaker-steamos-arm64.tar.xz` | Steam Frame (SteamOS 0.3.0). It plays as a big flat screen in the headset; it is not a VR mode. |
-| **Linux** (x86-64) | [Download][dl-steamos-x86_64] the x86-64 SteamOS build, `SpeedBreaker-steamos-x86_64.tar.xz`, or [build from source](#building-from-source) | SteamOS here. Players report it working on Fedora 44 (GeForce GTX 1080 Ti) and Ubuntu 24.04 (Intel Arc 140T). Other setups: reports welcome. |
+| **Linux** (x86-64) | [Download][dl-steamos-x86_64] the x86-64 SteamOS build, `SpeedBreaker-steamos-x86_64.tar.xz`, or [build from source](#building-from-source) | Tested here on SteamOS. Players reported v0.1.1 working on Fedora 44 (GeForce GTX 1080 Ti) and Ubuntu 24.04 (Intel Arc 140T). Other setups: reports welcome. |
 | **Mac** (Apple silicon) | [Download][dl-macos]<br>`SpeedBreaker-macos.dmg` | MacBook Pro (M1 Pro) on macOS 27 and Mac Studio (M4 Max) on macOS 26; macOS 15.6 (Sequoia) in a virtual machine. There is no Intel Mac build. |
-| **iPhone** and **iPad** | [Sideload the IPA](#iphone-and-ipad) (experimental), `SpeedBreaker-<version>-ios.ipa` on the [release page][releases], or [build it yourself](#iphone-and-ipad) with Xcode | iPhone 15 Pro Max and iPhone 18 Pro Max (iOS 27). iPad Pro 12.9-inch (M2, iPadOS 27) with a Backbone Pro. Not on the App Store. The IPA hasn't been tested with a free Apple Account yet. |
+| **iPhone** and **iPad** | [Sideload the IPA](#iphone-and-ipad) (experimental), `SpeedBreaker-<version>-ios.ipa` on the [release page][releases], or [build it yourself](#iphone-and-ipad) with Xcode | iPhone 15 Pro Max and iPhone 18 Pro Max (iOS 27). iPad Pro 12.9-inch (M2, iPadOS 27) with a Backbone Pro. Not on the App Store. Those were Xcode-signed builds: the IPA itself hasn't been installed on a device yet. |
 | **Windows** | Coming soon | |
 | **Android** | Coming soon | |
 
@@ -131,8 +132,9 @@ should say OK. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
 - **Steam Deck, Steam Machine and Linux PCs** (the x86-64 SteamOS download): a 64-bit x86 CPU
   with AVX2 (x86-64-v3): Intel Haswell (2013) or newer, or AMD Excavator, Zen or newer. A
   Vulkan 1.2 graphics card.
-- **Steam Frame** (the arm64 SteamOS download): SteamOS on the Steam Frame. The arm64 download
-  is for the Frame only; it hasn't been tested on any other arm64 Linux device.
+- **Steam Frame** (the arm64 SteamOS download): SteamOS on the Steam Frame, kept up to date
+  (v0.1.2 needs the September 2026 release or later). The arm64 download is for the Frame only;
+  it hasn't been tested on any other arm64 Linux device.
 - **Mac:** Apple silicon and **macOS 15** (Sequoia) or later. The app won't open on older
   versions of macOS, and there is no Intel Mac build.
 - **iPhone and iPad:** iOS or iPadOS 17 or later, on an A15-class chip or newer (iPhone 13 and
@@ -260,7 +262,8 @@ SpeedBreaker plays as a big flat screen in the headset. It is not a VR mode.
 
 There's no separate desktop-Linux package yet. Try the x86-64 SteamOS download,
 [`SpeedBreaker-steamos-x86_64.tar.xz`][dl-steamos-x86_64], which brings its own runtime libraries
-but hasn't been tested outside SteamOS, or [build from source](#building-from-source). Unpack it,
+and is tested here on SteamOS (players reported v0.1.1 working on Fedora 44 and Ubuntu 24.04), or
+[build from source](#building-from-source). Unpack it,
 put your `.iso` in your home folder, Downloads, Desktop, Documents or Games (or on a USB drive),
 and run `speedbreaker.sh`: always start the game with it, since it picks the libraries the
 program in `lib/` needs (started on its own, the program fails on most systems with a message
@@ -269,9 +272,10 @@ screen. The installer puts the game in `~/.local/share/speedbreaker/game`, or on
 any folder you pick with *Choose a folder...* (it needs a file chooser portal or zenity; without
 one, use `--dest`, below).
 
-On a laptop with two GPUs, SpeedBreaker uses the dedicated one (NVIDIA or AMD); with NVIDIA's
-driver the launcher also turns on PRIME render offload. The log's `[video] Vulkan devices:` line
-says which GPU it chose and why. To pick another, start it with `NFSMW_GPU=<its number or part of
+On a laptop with two GPUs, SpeedBreaker uses the dedicated graphics card; with NVIDIA's driver the
+launcher also turns on PRIME render offload. That hasn't been confirmed on a real two-GPU laptop
+yet: the log's `[video] Vulkan devices:` line says which GPU it chose and why, and a report with
+that line from yours would help. To pick another, start it with `NFSMW_GPU=<its number or part of
 its name>`, e.g. `NFSMW_GPU=intel %command%` in Steam's launch options.
 
 ### Mac
@@ -305,10 +309,12 @@ SpeedBreaker isn't on the App Store. There are two ways to get it onto your iPho
   on the [release page][releases]. A sideloading tool such as AltStore signs it with your own Apple
   Account and installs it. The game asks iOS for more memory than most apps, and a free Apple
   Account can't give all of it, so with a free account it may not start, or iOS may close it in
-  busy scenes. When iOS refuses the memory, the game says so on screen. It hasn't been tested with
-  a free Apple Account yet: read
-  [Sideloading the IPA](scripts/ios/README.md#sideloading-the-ipa-experimental) first, and please
-  report how it goes.
+  busy scenes. When iOS refuses the memory, the game says so on screen. The IPA itself hasn't been
+  installed on a device yet (the tested iPhones and iPad ran the same app built and signed with
+  Xcode): read [Sideloading the IPA](scripts/ios/README.md#sideloading-the-ipa-experimental)
+  first, and please report how it goes, with your device and tool. Coming from a build you made
+  yourself, the IPA installs as a separate app: install the game again from your disc image, and
+  your saves stay with the old app.
 - **Build it yourself** with Xcode on a Mac, signed with your own Apple developer account:
   [scripts/ios/README.md](scripts/ios/README.md) walks you through it.
 
@@ -392,7 +398,7 @@ Each page has a *Reset page* button.
 | Sharpening | 0.00 to 1.00 | 0.30 (0 turns it off) |
 | Anisotropic Filtering | Auto / Off / 2x / 4x / 8x / 16x / Original | Auto: 16x on dedicated graphics cards and M-series iPads, 4x elsewhere. Original uses each texture's own setting, as on the 360. |
 | Mipmaps | On / Off | On, so distant textures don't shimmer |
-| Internal Resolution | Auto / 1x (720p) / 1.5x (1080p) / 2x (1440p) / 3x (2160p) | Auto: enough to cover your screen, within what the device can afford (1x, 2x or 3x). On iPhone and iPad, Auto always picks 1x. |
+| Internal Resolution | Auto / 1x (720p) / 1.5x (1080p) / 2x (1440p) / 3x (2160p) | Auto: enough to cover your screen, within what the device can afford (whole scales only: 1x, 2x, 3x, or 3x2 on an ultrawide). On iPhone and iPad, Auto always picks 1x. |
 
 **Audio:** Master Volume (100%), Mute (Off), and Mute in Background (Off), which silences the
 game while its window isn't in front.
@@ -415,11 +421,12 @@ online, and only when you press it). The page also shows which build you're runn
   let Frame Rate *Auto* fall back to a steady 30.
 - **30 fps is a real option.** It's a steady 30 at full game speed, and the smooth choice in the
   Steam Frame headset.
-- **Between 1x and 2x,** try 1.5x (1080p): much sharper than 1x for a little over half the work
-  of 2x.
+- **Between 1x and 2x,** try 1.5x (1080p): much sharper than 1x, with a little over half the
+  pixels of 2x.
 - **On iPhone and iPad,** keep Internal Resolution at Auto (1x). On the tested iPad Pro (M2), 2x
-  is too slow for races. The iPhone 18 Pro Max mostly holds 60 fps at 1.5x, but gets hot within
-  about ten minutes, and Frame Rate Auto then drops to 30. Screen Resolution 75% saves more.
+  is too slow for races. The iPhone 18 Pro Max holds 60 fps at 1.5x, but on a cable it reached
+  iOS's "serious" heat level in about nine minutes (1x did in about six), and Frame Rate Auto then
+  drops to 30. Screen Resolution 75% saves more.
 - **Docked Deck or Steam Machine:** set the shortcut's Game Resolution to Native.
 - **See what's happening:** Settings > Advanced > Performance Overlay.
 
@@ -466,9 +473,10 @@ or later on Apple silicon.
 **The game stutters on my Steam Deck OLED.** Set the screen to 60 Hz (see
 [Steam Deck setup](#steam-deck-and-steam-machine)).
 
-**My laptop runs the game on the slow built-in graphics.** Since v0.1.2 SpeedBreaker picks the
-dedicated GPU by itself. If it still doesn't, see the `[video] Vulkan devices:` line in
-`last-run.log` and set `NFSMW_GPU` (see [Linux](#linux)).
+**My laptop runs the game on the slow built-in graphics.** Since v0.1.2 SpeedBreaker is meant to
+pick the dedicated GPU by itself (not yet confirmed on a real two-GPU laptop). If it doesn't, see
+the `[video] Vulkan devices:` line in `last-run.log`, set `NFSMW_GPU` (see [Linux](#linux)), and
+please open an issue with that line.
 
 **The picture is small or stretched on my TV or monitor in Game Mode.** Set the shortcut's
 Properties > General > Game Resolution to Native.
@@ -723,9 +731,9 @@ research.
 The x86-64 SteamOS download also carries glibc and libstdc++ (LGPL-2.1+; GPL-3.0 with the GCC
 Runtime Library Exception); the Steam Frame download uses the system's. Full license texts are in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [LICENSES/](LICENSES/), and every download
-carries them too: in `licenses/` in the SteamOS downloads, and in
+carries them too: in `licenses/` in the SteamOS downloads, in
 `SpeedBreaker.app/Contents/Resources/licenses` in the Mac app, with each bundled library's own
-license. The source code of the LGPL and GPL parts in the downloads (FFmpeg, libmspack, and the
+license, and in `SpeedBreaker.app/licenses` in the iPhone and iPad IPA. The source code of the LGPL and GPL parts in the downloads (FFmpeg, libmspack, and the
 x86-64 download's glibc and GCC runtime) is published next to the downloads of each release, as
 `SpeedBreaker-<version>-third-party-source.tar.xz`.
 
@@ -747,7 +755,8 @@ Corporation.**
 "Need for Speed", "Most Wanted" and "Carbon" are trademarks of Electronic Arts Inc. Steam,
 Steam Deck, Steam Machine, Steam Frame, SteamOS and their logos and icons are trademarks of
 Valve Corporation. All other trademarks, including Xbox, Xbox 360, PlayStation, Apple, Mac,
-macOS, iPhone, iPad, iCloud, Xcode, App Store, Backbone, Vulkan, Linux, Windows and Android,
+macOS, iPhone, iPad, iCloud, Xcode, App Store, Backbone, Vulkan, Linux, Windows, Android, NVIDIA,
+GeForce, AMD and Intel,
 belong to their respective owners. They are used here only to describe what SpeedBreaker works
 with. The game is named only to say which game SpeedBreaker runs; no logos, box art or key art
 of the game are used. The game content visible in screenshots belongs to its owners.

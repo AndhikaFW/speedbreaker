@@ -93,7 +93,9 @@ xcodebuild -project "$ROOT/scripts/ios/SpeedBreaker.xcodeproj" -scheme SpeedBrea
     MARKETING_VERSION="${VERSION:-0.0.0}" CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
     OTHER_LDFLAGS="${LIBS[*]}" build
 APP=$DERIVED/Build/Products/Release-iphoneos/SpeedBreaker.app
-nm -gU "$APP/SpeedBreaker" | grep -q ' _vkGetInstanceProcAddr$' || { echo "build.sh: vkGetInstanceProcAddr was stripped" >&2; exit 1; }
+# Counted, not grep -q: grep -q stops reading nm's long output at the first
+# match, and with pipefail nm's SIGPIPE then fails the pipe (a false alarm).
+[ "$(nm -gU "$APP/SpeedBreaker" | grep -c ' _vkGetInstanceProcAddr$')" != 0 ] || { echo "build.sh: vkGetInstanceProcAddr was stripped" >&2; exit 1; }
 echo "$APP (v${VERSION:-?}, build $BUILD_NUMBER, $(du -sh "$APP" | cut -f1))"
 
 if [ "${1:-}" = install ]; then

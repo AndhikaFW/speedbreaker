@@ -201,8 +201,9 @@ To move it: copy or move the whole folder (with `data/`, which holds the
 game: about 7 GB), then add `speedbreaker.sh` to Steam again on the other
 machine (step 2). The game finds itself wherever the folder is. Keep the
 folder on internal storage or on a card or drive formatted by SteamOS
-(ext4): on one formatted for Windows (exFAT, FAT32, NTFS) the program can't
-start, though such a drive is fine for carrying a copy of the folder. On a
+(ext4): from one formatted for Windows (exFAT, FAT32, NTFS) the program may
+not start (Game Mode doesn't mount such drives, and files there can lose the
+"executable" mark), though such a drive is fine for carrying a copy. On a
 read-only drive the game plays but says it can't keep settings or saves.
 Portable mode is for SteamOS and Linux; the Mac app keeps its data in the
 Mac's own folders.

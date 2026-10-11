@@ -8,7 +8,7 @@ include, software by others under their own licenses, listed here. The license t
 
 The downloads carry these notices too: the Mac app in `SpeedBreaker.app/Contents/Resources/licenses`,
 each SteamOS download in its `licenses/` folder (with the license of every library it bundles,
-collected when the bundle is made).
+collected when the bundle is made), and the iPhone and iPad IPA in `SpeedBreaker.app/licenses`.
 
 ## Compiled into SpeedBreaker (every platform)
 
