@@ -4,6 +4,84 @@ What changed in each SpeedBreaker release, newest first. Each release's notes on
 its entry here, and the game shows the entry once, the first time a new version starts (offline:
 it's built into the game).
 
+## v0.1.4
+
+### What's new
+
+- The picture now matches a real Xbox 360 on a TV: slightly deeper shadows and slightly brighter
+  mid-tones. The game sets a gamma ramp for the console's TV output, and SpeedBreaker never
+  applied it until now. The new Settings > Display > Xbox 360 Display Gamma is on by default, also
+  after an update: to get the previous look back, turn it off.
+- Settings > Display > Brightness: lighter or darker shadows and mid-tones, from -5 to +5, a
+  gentle step at a time, like a TV's brightness. Black and white stay put, and only the game's
+  picture changes, never the menus. At 0, the default, it leaves the picture as it is.
+- The game's own Brightness slider (pause menu > Options > Video) now changes the picture as you
+  move it, as on an Xbox 360: the game writes a new gamma ramp for each step, and SpeedBreaker
+  applies it. It needs Settings > Display > Xbox 360 Display Gamma, which is on by default; with
+  that off it does nothing, as before. If you moved the slider in an earlier version and the game
+  has saved since, that brightness now takes effect: a slider left at maximum gives a much
+  brighter, washed-out picture, as a 360 with that save would show. Set the slider back to the
+  middle, or press Y (Defaults) and choose Yes. Thanks to m9cy884mv6-a11y for the report (GitHub
+  issue #18).
+- Keyboard: the right stick has keys, O and L for up and down, K and ; for left and right. The
+  game shifts gears with the right stick, so you can now shift from the keyboard and finish a
+  drag race. Thanks to love-gamer, who wrote it (GitHub pull request #11).
+- Settings > Quit Game, at the bottom of the menu after Close: quits SpeedBreaker with a controller,
+  the mouse or the keyboard, so a fullscreen game no longer needs a keyboard shortcut to leave. It
+  asks first, with Cancel chosen, so no single press quits. Not on iPhone and iPad, where apps are
+  closed from the app switcher.
+- Settings > Display > Fullscreen now decides how the game starts, every time. On a Mac, the
+  window's green button (or Ctrl+Cmd+F) switches fullscreen until you quit, so the game no longer
+  sometimes starts fullscreen and sometimes not.
+- Mac: the mouse pointer no longer sits over the game. It hides after two seconds without moving
+  while you play, and comes back as soon as you move the mouse; in the settings menu and the
+  installer it stays. Thanks to DoubleDips for the report (GitHub issue #15).
+- Mac: smoother frame pacing. The game's 60 Hz clock now keeps time on macOS (it ran up to 9 ms
+  late), and on a MacBook Pro's 120 Hz ProMotion screen each frame now follows the last by 1/60 s
+  instead of arriving whenever the GPU finished it. Other screens show frames as before, and the
+  timing turns itself off if a screen doesn't keep it.
+- On slow GPUs, below 15 fps, the game no longer runs a few percent slow: its clock now keeps up
+  with the screen (a laptop with Intel graphics at Internal Resolution 1.5x, about 12 fps, ran 4%
+  slow).
+- Changing the window's shape while a movie plays (for example the green button during the
+  opening movie) no longer shows a stray "EVENT HANDLER" label above the picture.
+
+### More about it
+
+- The gamma ramp: the game sets it when it starts, and the console applies it to every frame on
+  its way to the TV. Two real Xbox 360 recordings of the intro movie and the title screen match it
+  to within half a level, against about two levels without it. With Xbox 360 Display Gamma off
+  and Brightness at 0, the picture is exactly the one of earlier versions.
+- The game's slider: each step writes a new ramp, which shows on that frame. At its lowest, its
+  default and its highest, the picture's average brightness moves by about -13, +1 and +24 levels
+  (of 255) against Xbox 360 Display Gamma off. The game keeps the slider in your alias's save the
+  next time it saves the profile; without an alias it starts at the middle every time.
+- The right-stick keys: holding both keys of a pair centres the stick. No other key changed.
+- Fullscreen: a switch the game didn't ask for (on a Mac, the green button or Ctrl+Cmd+F) lasts
+  until you quit and never changes the setting. While the window differs from the setting,
+  Settings > Display > Fullscreen says NOW FULLSCREEN or NOW WINDOWED; choosing On or Off there
+  saves it and switches the window.
+- The pointer hides only over the game's window, so in a window it still shows over the desktop,
+  and the mouse is never captured.
+- The pacing: macOS let the thread that drives the game's 60 Hz clock wake up to 9 ms late; it
+  now runs with real-time priority. And a ProMotion screen shows each frame as soon as it's ready,
+  so frames that took a little longer to draw arrived unevenly: SpeedBreaker now asks for each
+  frame to be shown at a set time after its tick. Measured on a MacBook Pro (M1 Pro) in
+  fullscreen: 99.9% of frames 1/60 s apart in menus and about 94% while driving (99-100% on the
+  open road, less in the heaviest scenes, where a frame takes longer than the time allowed),
+  against about a quarter without it, for about 5 ms more latency.
+- The slow clock: when a frame took longer than six screen refreshes, SpeedBreaker started its
+  count over and dropped up to three refreshes of game time each time; below 15 fps that happened
+  every second or so. That time is now given back over the next frames. Above 20 fps nothing
+  changes. Checked by replaying frame timings recorded on that laptop: game time went from 96% to
+  99.9% of real time.
+- The label: it belongs to a menu the game keeps just above the picture. After a window change
+  mid-movie the game kept the old window's layout for it, so the label slipped into view; it now
+  gets the new layout at once.
+- Updating keeps your saves, settings and the installed game, and needs no disc image: on a Mac,
+  drag the new app into Applications and choose Replace, then Open Anyway once more; on SteamOS,
+  unpack the new download over the old folder.
+
 ## v0.1.3
 
 ### What's new

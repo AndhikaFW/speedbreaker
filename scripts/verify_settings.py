@@ -29,7 +29,8 @@ as the relaunch phases reuse the video phase's profile):
             the game's exposure adapts, so a change is judged against the two
             captures around it, and a bracket with the menu open and nothing
             changed is the control): anti-aliasing, upscaling, sharpening,
-            anisotropic filtering, aspect ratio, the performance overlay;
+            anisotropic filtering, aspect ratio, Brightness, Xbox 360 Display
+            Gamma, the performance overlay;
             Mipmaps and Internal Resolution marked RESTART and changing
             nothing yet; V-Sync's present mode and frame rate; the deadzones
             on a virtual pad. Also the defaults of a new profile, and
@@ -101,7 +102,8 @@ RACE = '8-26/2:START,30-130/4:DOWN,31-131/4:A,32.5-132.5/4:START,145:A'
 # The menu's pages and rows (runtime/user/settings.cpp, hidden rows left out).
 PAGES = ['Display', 'Graphics', 'Audio', 'Input', 'Advanced']
 ROWS = {
-    'Display': ['video.fullscreen', 'video.vsync', 'video.frame_rate', 'video.aspect_ratio'],
+    'Display': ['video.fullscreen', 'video.vsync', 'video.frame_rate', 'video.aspect_ratio', 'video.brightness',
+                'video.xbox_display_gamma'],
     'Graphics': ['video.anti_aliasing', 'video.scaling', 'video.sharpening', 'video.anisotropic_filtering',
                  'video.mipmaps', 'video.internal_resolution'],
     'Audio': ['audio.master_volume', 'audio.mute', 'audio.mute_in_background'],
@@ -112,7 +114,7 @@ ROWS = {
 DEFAULTS = {
     'video.fullscreen': 'false', 'video.vsync': 'true', 'video.frame_rate': '"60"', 'video.present_scale': '"100"',
     'video.anti_aliasing': 'true', 'video.scaling': '"bicubic"',
-    'video.aspect_ratio': '"auto"', 'video.sharpening': '0.3', 'video.anisotropic_filtering': '"auto"',
+    'video.aspect_ratio': '"auto"', 'video.brightness': '0', 'video.xbox_display_gamma': 'true', 'video.sharpening': '0.3', 'video.anisotropic_filtering': '"auto"',
     'video.mipmaps': 'true', 'video.internal_resolution': '"auto"', 'audio.master_volume': '100', 'audio.mute': 'false',
     'audio.mute_in_background': 'false', 'input.stick_deadzone': '0.08', 'input.trigger_deadzone': '0.02',
     'input.vibration': 'true', 'advanced.async_shaders': 'true', 'advanced.performance_overlay': 'false',
@@ -269,6 +271,8 @@ def phase_video():
     p.close()
     picture_checks(p)
     bracket(p, 'aspect_169', [('video.aspect_ratio', 1, '16:9')], [('video.aspect_ratio', -1, 'Fill Screen')])
+    bracket(p, 'bright_2', [('video.brightness', 2, '+2')], [('video.brightness', -2, '0')])
+    bracket(p, 'gamma_off', [('video.xbox_display_gamma', -1, 'Off')], [('video.xbox_display_gamma', 1, 'On')])
     # Restart options: changed, the picture as before; put back (the running
     # values again), as before too.
     bracket(p, 'restart', [('video.mipmaps', 1, 'Off', 'at the next launch'),
@@ -818,6 +822,14 @@ def analyze_video(res, run, log):
             ok = side(b) < 1.0 and side(r) > 4.0 and side(back) > 4.0
             res.add('video.aspect_ratio', phase, '16:9: black bars at the sides; Fill Screen again fills them',
                     'PASS' if ok else 'FAIL', f'outer {edge} px columns, mean luma: {side(r):.1f} -> {side(b):.2f} -> {side(back):.1f}')
+    # Brightness +2 (exponent 0.874): about +8..+13 levels in the shadows and
+    # mid-tones. The 360's display gamma (the game's ramp at its default
+    # brightness: 16 -> 12.5, 128 -> 134.4) is on by default: turned off,
+    # lighter shadows and darker mid-tones.
+    tone_shift(res, 'video.brightness', phase, '+2: brighter shadows and mid-tones', s, 'bright_2',
+               {(24, 64): (3, 15), (96, 160): (6, 16)})
+    tone_shift(res, 'video.xbox_display_gamma', phase, "off: lighter shadows, darker mid-tones (the game's ramp gone)", s, 'gamma_off',
+               {(6, 20): (0.5, 6), (96, 160): (-10, -2)})
     unchanged_picture(res, 'video.mipmaps', phase, 'Mipmaps and Internal Resolution changed and put back: '
                       'the picture as with nothing changed', s, 'restart')
     vsync_results(res, phase, log)
@@ -981,6 +993,40 @@ def changes_picture(res, option, phase, check, s, label, rows, strict):
     res.add(option, phase, check, 'PASS' if ok else 'FAIL' if strict else 'INCONCLUSIVE',
             f'{"?" if frac is None else f"{frac:.1%}"} of blocks changed beyond the no-change control\'s 99th percentile '
             f'(1% by chance; want over 5%), or detail energy x{ratio:.3f} (want off 1 by over {margin:.3f})')
+
+
+def tone_shift(res, option, phase, check, s, label, want):
+    """Brightness and the 360's display gamma: per band of the captures'
+    luma before the change, how far the changed capture moved from the two
+    around it (interpolated to its time), over the blocks those two agree
+    on. `want` maps (lo, hi) luma bands to (min, max) shifts in levels."""
+    tri = bracket_shots(s, label)
+    if not tri:
+        res.add(option, phase, check, 'INCONCLUSIVE', f'captures for {label} missing')
+        return
+    r, c, b, w = tri
+    keep = still_blocks(r, b)
+    if keep.mean() < 0.5:
+        res.add(option, phase, check, 'INCONCLUSIVE', f'the scene moved around the change ({keep.mean():.0%} still)')
+        return
+    h, wd = keep.shape[0] * BLOCK, keep.shape[1] * BLOCK
+    mask = np.repeat(np.repeat(keep, BLOCK, axis=0), BLOCK, axis=1)
+    luma = lambda x: x[:h, :wd] @ np.array([0.2126, 0.7152, 0.0722])
+    lr, lc, lb = luma(r), luma(c), luma(b)
+    base = lr + w * (lb - lr)
+    parts, ok = [], True
+    for (lo, hi), (mn, mx) in want.items():
+        sel = mask & (base >= lo) & (base < hi)
+        if sel.sum() < 500:
+            parts.append(f'{lo}-{hi}: too few pixels')
+            ok = False
+            continue
+        d = float(np.mean(lc[sel] - base[sel]))
+        good = mn <= d <= mx
+        ok = ok and good
+        parts.append(f'{lo}-{hi}: {d:+.1f} (want {mn:+g}..{mx:+g})')
+    back = float(np.mean(np.abs(lb - lr)[mask]))
+    res.add(option, phase, check, 'PASS' if ok else 'FAIL', '; '.join(parts) + f'; put back: mean difference {back:.2f}')
 
 
 def picture_results(res, phase, s, strict_aniso=False):

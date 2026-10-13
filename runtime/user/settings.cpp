@@ -136,6 +136,15 @@ namespace settings
               .table = "video", .key = "aspect_ratio", .label = "Aspect Ratio",
               .description = "Fill other screen shapes: a wider view on an ultrawide, a taller one on a Steam Deck or a 4:3 iPad, the HUD at 16:9. Or 16:9 with bars.",
               .env = "NFSMW_ASPECT", .defaultValue = double(AspectMode::Auto), .entries = kAspectEntries },
+            // Brightness: a power curve on the game's picture, -5..+5 (video/display_tone.h).
+            { .id = Id::Brightness, .category = Category::Display, .type = Type::Int, .apply = Apply::Live,
+              .table = "video", .key = "brightness", .label = "Brightness",
+              .description = "Lighter or darker shadows and mid-tones, a gentle step at a time, as a TV's brightness. Black and white stay put. 0 is the original picture.",
+              .env = "NFSMW_BRIGHTNESS", .defaultValue = 0, .min = -5, .max = 5, .step = 1 },
+            { .id = Id::DisplayGamma, .category = Category::Display, .type = Type::Bool, .apply = Apply::Live,
+              .table = "video", .key = "xbox_display_gamma", .label = "Xbox 360 Display Gamma",
+              .description = "The gamma ramp the game itself sets for a real Xbox 360's TV output: a little deeper shadows and brighter mid-tones, as on the console. Off: the flatter picture of SpeedBreaker 0.1.3 and earlier.",
+              .env = "NFSMW_DISPLAY_GAMMA", .defaultValue = 1 },
             { .id = Id::Sharpening, .category = Category::Graphics, .type = Type::Float, .apply = Apply::Live,
               .table = "video", .key = "sharpening", .label = "Sharpening",
               .description = "Extra sharpness for bicubic upscaling. 0 turns it off.",
@@ -1090,6 +1099,9 @@ namespace settings
             int64_t n = std::llround(value);
             if (unit == "%")
                 return std::format("{}%", n);
+            // A range around zero (Brightness) shows its sign: -2, 0, +2.
+            if (o.min < 0 && n > 0)
+                return unit.empty() ? std::format("+{}", n) : std::format("+{} {}", n, unit);
             return unit.empty() ? std::format("{}", n) : std::format("{} {}", n, unit);
         }
         if (unit == "%")

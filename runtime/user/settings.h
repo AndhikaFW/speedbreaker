@@ -46,6 +46,8 @@ namespace settings
         AntiAliasing,
         Scaling,
         AspectRatio,
+        Brightness,    // the game's picture (video/display_tone.h)
+        DisplayGamma,  // the 360's display gamma ramp (video/display_gamma.h)
         Sharpening,
         Anisotropy,
         Mipmaps,

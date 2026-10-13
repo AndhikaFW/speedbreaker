@@ -8,6 +8,7 @@
 // OK, A, B, Start or Esc closes it, and the window's close button too.
 #include <stdafx.h>
 #include "ui.h"
+#include "quit_game.h"
 
 #include <imgui.h>
 
@@ -15,12 +16,7 @@ namespace ui
 {
     namespace
     {
-        constexpr bool kCanQuit =
-#if defined(__APPLE__) && TARGET_OS_IOS
-            false;
-#else
-            true;
-#endif
+        constexpr bool kCanQuit = quit::kOffered;  // not on iPhone or iPad
 
         struct ErrorPage
         {

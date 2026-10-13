@@ -49,18 +49,43 @@ sb_test(band_filter_test SOURCES ${RT}/video/picture_fit.cpp)
 # Internal Resolution Auto's budget on iPhones and iPads, chip by chip
 # (video/scale_budget.cpp), and the scale it makes on the phones' screens.
 sb_test(scale_budget_test SOURCES ${RT}/video/scale_budget.cpp ${RT}/video/picture_fit.cpp)
+# Settings > Display > Brightness's curve and the 360's display gamma ramp
+# (video/display_tone.h, video/display_gamma.h: the DC_LUT_* registers as
+# Direct3D writes them), header only; presenter.cpp is read to check the
+# tone shader's wrapping of the scale shaders, settings.cpp for the two
+# options' defaults (Xbox 360 Display Gamma on since v0.1.4).
+sb_test(display_tone_test ARGS ${RT}/video/presenter.cpp ${RT}/user/settings.cpp)
 sb_test(refresh_fit_test SOURCES ${RT}/video/refresh_fit.cpp)
+# How late the guest vblank's thread wakes on this machine, alone and with
+# every core busy (video/vblank_timer.cpp; checked on macOS, where its
+# scheduling changed in v0.1.4).
+sb_test(vblank_timer_test SOURCES ${RT}/video/vblank_timer.cpp)
+# When the Mac shows a new frame at a set time after its vblank, and the
+# watchdog that turns it off (video/present_schedule.h, header only).
+sb_test(present_schedule_test)
 sb_test(frame_rate_policy_test SOURCES ${RT}/video/frame_rate_policy.cpp)
 # When the presenter builds its swapchain again and at what size (an iPhone's
 # view turned portrait by SDL, sizes seen while inactive, SUBOPTIMAL), and the
 # UI's display size: scenarios, then planted wrong rules that must fail one.
 sb_test(swapchain_policy_test SOURCES ${RT}/video/swapchain_policy.cpp)
+# The front end's matrix after the window changes shape: the game's
+# pointer-keyed matrix cache and the hook's resend (game/front_end_matrix.h,
+# header only; the "EVENT HANDLER" label above the boot PSA).
+sb_test(front_end_matrix_test)
+# Settings > Display > Fullscreen against the window's own state
+# (video/fullscreen_policy.h, header only): the green button and other system
+# changes never change the saved setting, the menu does; presenter.cpp is read
+# to check its window events don't write the setting.
+sb_test(fullscreen_policy_test ARGS ${RT}/video/presenter.cpp)
 # Game time in whole vblanks (game/whole_vblanks.h), header only.
 sb_test(whole_vblanks_test)
 # The nitrous light trails' ring at the 360's 30 fps length (game/light_trails.h,
 # header only; GitHub issue #10).
 sb_test(light_trails_test)
 sb_test(guest_time_test SOURCES ${RT}/cpu/guest_time.cpp)
+# When the mouse cursor shows over the game (ui/cursor_idle.h, header only),
+# and how ui.cpp drives it.
+sb_test(cursor_idle_test ARGS ${RT}/ui/ui.cpp)
 sb_test(report_zip_test SOURCES ${RT}/report/zip.cpp ARGS ${CMAKE_CURRENT_BINARY_DIR}/report_zip_out)
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_FOUND)
@@ -115,6 +140,11 @@ sb_test(version_check_test)
 # Check for Updates' logic: versions, GitHub's JSON, curl's output and the
 # release notes (update/check.cpp, self-contained).
 sb_test(update_check_test SOURCES ${RT}/update/check.cpp)
+# Settings > Quit Game: where it is offered (not on iPhone or iPad) and its
+# confirmation (ui/quit_game.h, header only); the runtime's code around it
+# is read: the button and prompt gated, the focus on Cancel, B and Escape
+# cancelling, and the quit taking the window close's way out.
+sb_test(quit_game_test ARGS ${RT})
 # The jump tables XenonRecomp makes switches of (config/switch_tables.toml)
 # against the leaf functions' bounds (config/nfsmw.toml): no label or default
 # outside its function, and the tables a borrowed bounds check broke (the

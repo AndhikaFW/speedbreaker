@@ -21,6 +21,10 @@
 //     widescreen case of the front-end matrix (sub_82440D80): f13 is its x
 //     scale (0.92 safe area x 0.75, a 4:3 canvas centred in 16:9) and f0 its
 //     y scale (0.92), stored at m00 and m11 (shader constants c0 and c5).
+//     When the matrix it leaves differs from the last (the window changed
+//     shape), it also clears the game's cached matrix pointer, so the new
+//     matrix is uploaded even when nothing else used the cache since
+//     (game/front_end_matrix.h: the boot movies).
 //   - UltrawideMirror, at the branch at 0x8245CED8 that ends the widescreen
 //     case of the rear-view mirror draw (sub_8245CDF0). The mirror is not a
 //     view: its picture is one quad whose pixel shader (ps_40d7f669a326708d)
@@ -41,6 +45,7 @@
 // of the build failing on an undefined symbol.
 #include <stdafx.h>
 #include "ultrawide.h"
+#include "front_end_matrix.h"
 #include "glare.h"
 
 #include <kernel/function.h>
@@ -109,6 +114,30 @@ namespace
     void ScaleAboutCentre(PPCRegister& f, float scale)
     {
         f.f64 = double(0.5f + (float(f.f64) - 0.5f) * scale);
+    }
+
+    // The front-end matrix the hook left last (the game's render thread),
+    // and NFSMW_FE_RESEND=0 to leave the game's matrix cache alone (the
+    // matrix then stays narrowed for an old window shape through the boot
+    // movies, as before; an A/B switch).
+    game::front_end::MatrixTracker s_frontEndMatrix;
+    const bool s_frontEndResend = [] {
+        const char* v = std::getenv("NFSMW_FE_RESEND");
+        return !(v && v[0] == '0');
+    }();
+
+    // The hook changed the front end's matrix (a new window shape, or the
+    // first frames): clear sub_82453768's cached matrix pointer so the call
+    // right after the hook uploads it (game/front_end_matrix.h).
+    void ResendIfChanged(float x, float y)
+    {
+        if (!s_frontEndMatrix.Changed(x, y) || !s_frontEndResend)
+            return;
+        *static_cast<uint32_t*>(g_memory.Translate(game::front_end::kMatrixCachePointer)) = 0;
+        static uint32_t logged = 0;
+        if (++logged <= 16)
+            fprintf(stderr, "[uw] front-end matrix x %.4f y %.4f: sent to the game again%s\n", x, y,
+                logged == 16 ? " (no more of these lines)" : "");
     }
 }
 
@@ -188,6 +217,7 @@ void UltrawideFrontEnd(PPCRegister& f13, PPCRegister& f0)
         ScaleRegister(f0, scale.y);
     s_frontEndX.store(float(f13.f64), std::memory_order_relaxed);
     s_frontEndY.store(float(f0.f64), std::memory_order_relaxed);
+    ResendIfChanged(float(f13.f64), float(f0.f64));
 }
 
 void UltrawideMirror(PPCRegister& f1, PPCRegister& f2, PPCRegister& f3, PPCRegister& f4)
@@ -223,6 +253,7 @@ void UltrawideFrontEnd(PPCRegister& f13)
     if (scale != 1.0f)
         ScaleRegister(f13, scale);
     s_frontEndX.store(float(f13.f64), std::memory_order_relaxed);
+    ResendIfChanged(float(f13.f64), 0.0f);
 }
 
 void UltrawideMirror(PPCRegister& f1, PPCRegister& f3)

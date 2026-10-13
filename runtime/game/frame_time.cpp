@@ -34,9 +34,12 @@
 // count, its length rounded either way. Game time adds up to the vblanks
 // that fired, to within those few. It runs at the display's rate over 60:
 // 0.044% slow on a 59.97 Hz monitor, at most 2.5% (the lock's range). Frames
-// of more than 6 vblanks (loading) keep their measured time. At Frame Rate
-// 30 (video::GuestVblankDivider) a guest vblank comes every other refresh
-// and is given 2/60 s: two steps a frame, the game at its speed.
+// of more than 6 vblanks (a hitch, loading) keep their measured time; below
+// 20 fps, where they are the frame rate's own, only those over half a second
+// do, the rest get 6 (the stepper's own cap) and later frames give back what
+// that leaves owed, so game time keeps up down to 10 fps. At Frame Rate 30
+// (video::GuestVblankDivider) a guest vblank comes every other refresh and is
+// given 2/60 s: two steps a frame, the game at its speed.
 #include <stdafx.h>
 #include "frame_time.h"
 #include "whole_vblanks.h"

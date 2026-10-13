@@ -11,6 +11,8 @@
 #include <video/presenter.h>
 #include <video/frame_rate.h>
 #include <video/vblank_lock.h>
+#include <video/vblank_timer.h>
+#include <video/display_gamma.h>
 #include <platform/thermal.h>
 #include <game/frame_time.h>
 #include "renderer.h"
@@ -259,13 +261,19 @@ namespace gpu
             {
                 s_regs[index] |= 0x80000000u;
             }
+            else if (video::display_gamma::IsLutRegister(index))
+            {
+                // The display gamma ramp (video/display_gamma.h): stored as
+                // any register, and followed for the presenter.
+                video::display_gamma::OnRegisterWrite(index, value);
+            }
             if (index != REG_CP_RB_WPTR)  // the game owns that one
                 *MmioRegister(index) = s_regs[index];
         }
 
         // A run of registers WriteRegister has nothing special for (it treats
-        // only the scratch fences, COHER_STATUS_HOST and the write pointer
-        // specially) can be written in bulk.
+        // only the scratch fences, COHER_STATUS_HOST, the write pointer and
+        // the display gamma ramp's registers specially) can be written in bulk.
         bool BulkSafe(uint32_t base, uint32_t count)
         {
             uint32_t end = base + count;
@@ -273,7 +281,8 @@ namespace gpu
                 return false;
             auto hits = [&](uint32_t lo, uint32_t hi) { return base <= hi && end > lo; };
             return !hits(REG_CP_RB_WPTR, REG_CP_RB_WPTR) && !hits(REG_SCRATCH_REG0, REG_SCRATCH_REG7) &&
-                !hits(REG_COHER_STATUS_HOST, REG_COHER_STATUS_HOST);
+                !hits(REG_COHER_STATUS_HOST, REG_COHER_STATUS_HOST) &&
+                !hits(video::display_gamma::kRegRwMode, video::display_gamma::kRegLutaControl);
         }
 
         // WriteRegister for `count` registers from `src`, big-endian dwords
@@ -1111,29 +1120,41 @@ namespace gpu
             }
         }
 
-        // One line for the vblank lock's state (on changes, and each minute).
-        void LogVblank(const video::VblankLock::Status& s)
+        // One line for the vblank lock's state (on changes, and each minute),
+        // and how late the last minute's vblanks fired.
+        void LogVblank(const video::VblankLock::Status& s, const video::VblankTiming& timing, const char* timer)
         {
             const video::RefreshEstimate& d = s.display;
+            std::string line;
             if (s.locked)
-                fprintf(stderr, "[vblank] locked to the display: %.4f Hz (fit %u presents over %.1f s, rms %.2f ms, %u set aside); "
-                    "vblank %.2f ms before its refresh, error %+.3f ms; vblank to screen %.1f ms (median), to present %.1f ms (99%%); %llu slips\n",
+                line = std::format("locked to the display: {:.4f} Hz (fit {} presents over {:.1f} s, rms {:.2f} ms, {} set aside); "
+                    "vblank {:.2f} ms before its refresh, error {:+.3f} ms; vblank to screen {:.1f} ms (median), to present {:.1f} ms (99%); {} slips",
                     1e9 / d.periodNs, d.samples, d.spanNs / 1e9, d.rmsNs / 1e6, d.rejected, s.leadNs / 1e6, s.errorNs / 1e6,
-                    s.latencyNs / 1e6, s.readyNs / 1e6, (unsigned long long)s.slips);
+                    s.latencyNs / 1e6, s.readyNs / 1e6, s.slips);
             else if (s.follows)
-                fprintf(stderr, "[vblank] free-running every %.3f ms: the display follows the vblank (variable refresh?), "
-                    "so there is no refresh to lock to\n", s.periodNs / 1e6);
+                line = std::format("free-running every {:.3f} ms: the display follows the vblank (variable refresh?), "
+                    "so there is no refresh to lock to", s.periodNs / 1e6);
             else if (d.samples)
-                fprintf(stderr, "[vblank] free-running every %.3f ms; display %s: %.4f Hz (fit %u presents over %.1f s, rms %.2f ms, %u set aside)\n",
+                line = std::format("free-running every {:.3f} ms; display {}: {:.4f} Hz (fit {} presents over {:.1f} s, rms {:.2f} ms, {} set aside)",
                     s.periodNs / 1e6, d.valid ? "measured (lock off)" : "not accepted", 1e9 / d.periodNs, d.samples, d.spanNs / 1e9,
                     d.rmsNs / 1e6, d.rejected);
             else
-                fprintf(stderr, "[vblank] free-running every %.3f ms\n", s.periodNs / 1e6);
+                line = std::format("free-running every {:.3f} ms", s.periodNs / 1e6);
+            if (video::VblankTiming::Summary t = timing.Summarize(); t.count)
+                line += std::format("; timer {}: vblanks late {:.2f} ms (median), {:.2f} ms (99%), {:.2f} ms at most, handler {:.2f} ms (99%)",
+                    timer, t.lateMedianNs / 1e6, t.late99Ns / 1e6, t.lateMaxNs / 1e6, t.handler99Ns / 1e6);
+            fprintf(stderr, "[vblank] %s\n", line.c_str());
         }
 
         void Vsync()
         {
             SetHostThreadName("nfsmw-vsync");  // (Linux would give it its creator's name, nfsmw-main)
+            // Woken on time (video/vblank_timer.h): on macOS an ordinary
+            // thread's sleeps ran up to 9 ms late.
+            const video::VblankTimer timer = video::ChosenVblankTimer();
+            const bool realtime = video::PrepareVblankThread(timer, 16'666'667);
+            const char* timerName = video::VblankTimerName(timer, realtime);
+            video::VblankTiming timing;
             GuestThreadContext thread(2);
             using namespace std::chrono;
             video::VblankLock& clock = video::GuestVblank();
@@ -1173,14 +1194,16 @@ namespace gpu
                     paused = nowPaused;
                     clock.Resumed();
                 }
-                video::NoteGuestVblank(now());
+                const int64_t fired = now();
+                video::NoteGuestVblank(fired);
                 s_counter++;
                 s_vblanks++;
                 DispatchInterrupt(thread.ppcContext, 0, 2);
+                timing.Add(fired - next, now() - fired);
                 auto status = clock.GetStatus();
                 if (status.locked != locked || status.slips != slips || ++count % 3600 == 0)
                 {
-                    LogVblank(status);
+                    LogVblank(status, timing, timerName);
                     locked = status.locked;
                     slips = status.slips;
                 }

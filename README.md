@@ -69,15 +69,16 @@ and a settings menu you can open mid-race.
   speed, or *Auto*, which drops to 30 only while a device is hot or can't hold 60.
 - **The sun glare is back.** The low sun glows in open sky and fades behind buildings, as it did
   on the console.
-- **The original look:** sunlit roads and shadows as on the console, correct colours on Apple
-  devices, proper car paint and mirror reflections, and distant textures that don't shimmer. Anti-aliasing, sharpening and up to 16x
-  anisotropic filtering are also available.
+- **The original look:** sunlit roads and shadows as on the console, the picture a real Xbox 360
+  sends to a TV (the game's own display gamma), correct colours on Apple devices, proper car paint
+  and mirror reflections, and distant textures that don't shimmer. Anti-aliasing, sharpening, a
+  Brightness setting and up to 16x anisotropic filtering are also available.
 - **A guided installer.** It finds your disc image, checks that it is the right game, and
   verifies all 49 files as it copies them. An interrupted install never leaves a broken game.
 - **Your controller, or the keyboard.** Controllers work as an Xbox 360 pad, with hot-plugging
   and rumble support.
 - **A settings menu that pauses the game.** Open it with F1, Back + Start, or a three-finger
-  tap. Every change applies at once.
+  tap. Every change applies at once, and *Quit Game* leaves the game from a controller too.
 - **Suspend and resume on iPhone and iPad.** Switch away and the game freezes; come back and it
   carries on where it stopped.
 - **One-button bug reports.** Logs, settings and a screenshot go into one zip file. Nothing is
@@ -268,9 +269,9 @@ put your `.iso` in your home folder, Downloads, Desktop, Documents or Games (or 
 and run `speedbreaker.sh`: always start the game with it, since it picks the libraries the
 program in `lib/` needs (started on its own, the program fails on most systems with a message
 such as `GLIBC_2.44 not found`). The game starts in a window; Display > Fullscreen switches to full
-screen. The installer puts the game in `~/.local/share/speedbreaker/game`, or on a drive, or in
-any folder you pick with *Choose a folder...* (it needs a file chooser portal or zenity; without
-one, use `--dest`, below).
+screen and decides how the game starts. The installer puts the game in
+`~/.local/share/speedbreaker/game`, or on a drive, or in any folder you pick with *Choose a
+folder...* (it needs a file chooser portal or zenity; without one, use `--dest`, below).
 
 On a laptop with two GPUs, SpeedBreaker uses the dedicated graphics card; with NVIDIA's driver the
 launcher also turns on PRIME render offload. That hasn't been confirmed on a real two-GPU laptop
@@ -299,7 +300,9 @@ its name>`, e.g. `NFSMW_GPU=intel %command%` in Steam's launch options.
    upload it and can remove its files from the Mac to save space.
 
 **Settings:** **F1** or **Cmd+,**, or Back + Start on a controller. The game starts in a window;
-Display > Fullscreen switches to full screen. SpeedBreaker needs macOS 15 (Sequoia) or later.
+Display > Fullscreen switches to full screen and decides how the game starts from then on. The
+window's green button (or Ctrl+Cmd+F) switches only until you quit. While you play, the mouse
+pointer hides after two seconds without moving. SpeedBreaker needs macOS 15 (Sequoia) or later.
 
 ### iPhone and iPad
 
@@ -351,12 +354,15 @@ is B, Square is X and Triangle is Y.
 | D-pad | D-pad | Arrow keys |
 | Start | Start / Menu / Options | Enter |
 | Back | Back / View / Create | Esc |
-| Right stick, stick clicks | Same on the controller | C (right stick click) |
+| Right stick | Right stick | O / L up and down, K / ; left and right |
+| Stick clicks | Press a stick in | C (right) |
 
 - One player, one controller: the first one connected is used, and you can plug one in at any
   time. The keyboard always works as well.
 - Because Back + Start opens the settings, the game sees Back a moment late: a tap arrives when
   you let go, a hold after a quarter of a second.
+- The game shifts gears with the right stick, so from the keyboard you shift with O and L.
+  Holding both keys of a pair centres the stick.
 - There is no button remapping and no mouse control in game.
 
 **To open the settings:**
@@ -374,7 +380,9 @@ is B, Square is X and Triangle is Y.
 The game pauses while the settings are open. The D-pad (or arrow keys) chooses and changes a row,
 LB and RB (or Q and E) turn pages, and B (or Esc) closes the menu. On a touchscreen, tap and
 drag. The mouse works too. Every change applies at once and is saved when you close the menu.
-Each page has a *Reset page* button.
+The bottom row has *Reset page* (the page's defaults), *Close*, and *Quit Game*, which asks
+first, with *Cancel* chosen (not on iPhone and iPad, where apps are closed from the app
+switcher).
 
 <details>
 <summary><b>All settings and their defaults</b></summary>
@@ -383,11 +391,17 @@ Each page has a *Reset page* button.
 
 | Option | Choices | Default |
 |---|---|---|
-| Fullscreen | On / Off | Off: a 1280x720 window you can resize. Always on in SteamOS Game Mode. Not shown on iPhone and iPad, which are always full screen. |
+| Fullscreen | On / Off | Off: a 1280x720 window you can resize. The game always starts as set here; on a Mac, the window's green button switches only until you quit, and the row then says NOW FULLSCREEN or NOW WINDOWED. Always on in SteamOS Game Mode. Not shown on iPhone and iPad, which are always full screen. |
 | V-Sync | On / Off | On. Off can tear, but shows frames sooner. |
 | Frame Rate | Auto / 60 fps / 30 fps | 60 fps on most devices. 30 fps keeps the game at full speed. Auto runs at 60, or at a steady 30 while the device is hot or can't hold 60. |
 | Screen Resolution | Full / 75% | Full. iPhone and iPad only: 75% is slightly softer and saves graphics work. |
 | Aspect Ratio | Fill Screen / 16:9 | Fill Screen: wider screens get a wider view; 4:3, 3:2 and 16:10 screens (the Steam Deck, many Macs) a taller one. 16:9 always shows the classic picture with bars. |
+| Brightness | -5 to +5 | 0, the picture as it is. Each step makes the shadows and mid-tones a little lighter or darker, like a TV's brightness; black and white stay put, and the menus never change. |
+| Xbox 360 Display Gamma | On / Off | On: the gamma ramp the game sets for a real Xbox 360's TV output, with slightly deeper shadows and slightly brighter mid-tones. Off: the flatter picture of v0.1.3 and earlier. |
+
+The game's own Brightness slider, in the pause menu's Options > Video, works too while Xbox 360
+Display Gamma is on (with it off, it does nothing). Its middle is the default look; Y (Defaults),
+then Yes, puts it back.
 
 **Graphics**
 
@@ -417,6 +431,10 @@ online, and only when you press it). The page also shows which build you're runn
 
 - **Run your display at 60 Hz.** On a Steam Deck OLED, set the refresh rate to 60 Hz and leave
   Steam's Framerate Limit off.
+- **MacBook Pro with a 120 Hz (ProMotion) screen:** since v0.1.4 SpeedBreaker asks for each frame
+  to reach the screen 1/60 s after the last. Measured in fullscreen on an M1 Pro: 99.9% of frames
+  in menus and about 94% while driving (fewer in the heaviest scenes). Other screens show frames
+  as before.
 - **Start with Auto.** If busy scenes drop below 60, set Internal Resolution one step lower, or
   let Frame Rate *Auto* fall back to a steady 30.
 - **30 fps is a real option.** It's a steady 30 at full game speed, and the smooth choice in the
@@ -499,6 +517,17 @@ says so: connect it and start the game again.
 
 **The car steers by itself.** Raise Settings > Input > Stick Deadzone.
 
+**The picture looks different since v0.1.4.** v0.1.4 applies the gamma ramp the game sets for a
+real Xbox 360's TV output: slightly deeper shadows and slightly brighter mid-tones, as on the
+console. For the previous, flatter picture, turn off Settings > Display > Xbox 360 Display Gamma.
+For lighter or darker shadows either way, use Settings > Display > Brightness. If the picture is
+much brighter and washed out, the game's own Brightness slider (pause menu > Options > Video) was
+probably moved up in an earlier version, where it did nothing, and saved: it now takes effect. Set
+the slider back to the middle, or press Y (Defaults) and choose Yes.
+
+**How do I quit in fullscreen without a keyboard?** Open the settings and choose *Quit Game* on
+the bottom row; it asks first.
+
 **The game ignores my touches on iPhone or iPad.** The game needs a controller or a keyboard.
 Touch only works in SpeedBreaker's own screens; a three-finger tap opens the settings.
 
@@ -521,7 +550,7 @@ SpeedBreaker folder instead: `data/`, `data/game` and `cache/`.
 2. A notice says where the zip file went: your **Desktop** (on SteamOS, pick it up in Desktop
    Mode, or in the Desktop app on a Steam Frame), the **SpeedBreaker** folder in the Files app on
    iPhone and iPad, or the data folder above when there is no Desktop. Its name says which
-   version you were running, for example `speedbreaker-bug-report-v0.1.3-<date>_<time>.zip`.
+   version you were running, for example `speedbreaker-bug-report-v0.1.4-<date>_<time>.zip`.
 3. Open an [issue][issues], attach the zip, and say what you were doing, what you expected, what
    happened, and roughly how long into the session it happened.
 
@@ -558,7 +587,9 @@ native program for x86-64 or arm64. A runtime written for this project stands in
 - **Resolution:** the 3D scene renders at 1x, 1.5x, 2x or 3x; the bloom and haze stay at the original
   resolution, so the game keeps its colour grade.
 - **Frame pacing:** the game's clock locks to the display's measured refresh (58.5 to 61.5 Hz),
-  one game step per refresh. 30 fps runs two game steps per frame.
+  one game step per refresh. 30 fps runs two game steps per frame. On a Mac the clock's thread
+  runs with real-time priority, and on a 120 Hz ProMotion screen each frame is shown at a set time
+  after its tick (turned off for the session if the screen doesn't keep those times).
 - **Sun glare:** the game measures the sun with occlusion queries; SpeedBreaker counts them on
   the GPU.
 

@@ -1,6 +1,7 @@
 // SpeedBreaker runtime. GPL-3.0-or-later (see COPYING). See ui.h.
 #include <stdafx.h>
 #include "ui.h"
+#include "cursor_idle.h"
 
 #include <kernel/xam.h>
 #include <report/report.h>
@@ -469,6 +470,63 @@ namespace ui
         }
     }
 
+    namespace
+    {
+#if !(defined(__APPLE__) && TARGET_OS_IOS)
+        // The mouse cursor over the game (cursor_idle.h). Main thread.
+        CursorIdle s_cursorIdle;
+        bool s_cursorShown = true;  // as SDL starts
+        int s_cursorChanges = 0;    // logged, the first few
+
+        // A real mouse's movement, click or scroll: not the mouse SDL makes
+        // of a finger or a pen, nor a motion event that moved nothing.
+        bool MouseActivity(const SDL_Event& e)
+        {
+            auto touchOrPen = [](SDL_MouseID which) { return which == SDL_TOUCH_MOUSEID || which == SDL_PEN_MOUSEID; };
+            switch (e.type)
+            {
+            case SDL_EVENT_MOUSE_MOTION:
+                return CursorIdle::Activity(true, touchOrPen(e.motion.which), e.motion.xrel, e.motion.yrel);
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+            case SDL_EVENT_MOUSE_BUTTON_UP:
+                return CursorIdle::Activity(false, touchOrPen(e.button.which), 0.0f, 0.0f);
+            case SDL_EVENT_MOUSE_WHEEL:
+                return CursorIdle::Activity(false, touchOrPen(e.wheel.which), 0.0f, 0.0f);
+            default:
+                return false;
+            }
+        }
+#endif
+
+        // Shows or hides the cursor for now (each frame, and as the menu
+        // opens or closes). While a menu or modal page has the mouse, ImGui's
+        // backend shows it and picks its shape; otherwise it must keep its
+        // hands off, or it shows it again every frame the performance
+        // overlay or a toast is drawn.
+        void UpdateCursor()
+        {
+#if !(defined(__APPLE__) && TARGET_OS_IOS)
+            const bool menu = s_ready && s_capturing.load(std::memory_order_relaxed);
+            if (s_ready)
+            {
+                ImGuiIO& io = ImGui::GetIO();
+                if (menu)
+                    io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
+                else
+                    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+            }
+            const bool show = s_cursorIdle.Shows(SDL_GetTicksNS(), menu);
+            if (show == s_cursorShown)
+                return;
+            s_cursorShown = show;
+            show ? SDL_ShowCursor() : SDL_HideCursor();
+            if (++s_cursorChanges <= 6)
+                fprintf(stderr, "[ui] mouse cursor %s\n", show ? (menu ? "shown (a menu has the mouse)" : "shown (the mouse moved)")
+                                                                : "hidden (still for 2 s over the game)");
+#endif
+        }
+    }
+
     bool Initialize(SDL_Window* window, const VulkanTarget& target)
     {
         if (s_ready)
@@ -555,6 +613,14 @@ namespace ui
 
     void ProcessEvent(const SDL_Event& e)
     {
+#if !(defined(__APPLE__) && TARGET_OS_IOS)
+        if (MouseActivity(e))
+        {
+            // Shown at once, not at the next frame's check.
+            s_cursorIdle.Moved(e.common.timestamp);
+            UpdateCursor();
+        }
+#endif
         if (!s_ready)
             return;
         bool forward = s_capturing.load(std::memory_order_relaxed);
@@ -647,6 +713,7 @@ namespace ui
     void Tick()
     {
         s_pollAt = SDL_GetTicksNS();
+        UpdateCursor();
 #if defined(__APPLE__) && TARGET_OS_IOS
         // Every frame: SDL's text input or the Files picker can have the
         // first responder for a while (ios_ui.h). Cheap when nothing changed.
@@ -661,9 +728,13 @@ namespace ui
         // the next presented frame as build/ui_shot_<n>.ppm: on the keys'
         // own clock, so a capture lands between two keys (the
         // NFSMW_CHECK_PRESENT_SEC clock starts at the first frame, a second
-        // or more later).
+        // or more later). MouseMove moves the pointer to the window's middle
+        // and 40 points either side in turn, for the cursor's hiding:
+        // SDL_WarpMouseInWindow moves the real pointer (SDL reports a warp as
+        // a motion of no distance, which isn't the mouse moving), then the
+        // motion a mouse moving there makes is posted.
         constexpr SDL_Keycode kFocusLost = SDLK_EXTENDED_MASK | 0x7F01, kFocusGained = SDLK_EXTENDED_MASK | 0x7F02,
-                              kShot = SDLK_EXTENDED_MASK | 0x7F03;
+                              kShot = SDLK_EXTENDED_MASK | 0x7F03, kMouseMove = SDLK_EXTENDED_MASK | 0x7F04;
         struct Key { double time; SDL_Keycode key; };
         static const auto start = std::chrono::steady_clock::now();
         static std::vector<Key> keys = [] {
@@ -680,6 +751,7 @@ namespace ui
                     std::string name = item.substr(colon + 1);
                     SDL_Keycode key = name == "FocusLost" ? kFocusLost : name == "FocusGained" ? kFocusGained
                         : name == "Shot"                                                         ? kShot
+                        : name == "MouseMove"                                                    ? kMouseMove
                                                                                                  : SDL_GetKeyFromName(name.c_str());
                     if (key != SDLK_UNKNOWN)
                         parsed.push_back({ std::atof(item.c_str()), key });
@@ -716,6 +788,28 @@ namespace ui
                 s_shots++;
                 shotDue = keys[next++].time;
                 return;
+            }
+            if (keys[next].key == kMouseMove)
+            {
+                static int moves = 0;
+                int w = 0, h = 0;
+                SDL_GetWindowSize(s_window, &w, &h);
+                const float x = float(w) * 0.5f + float((moves++ % 3) - 1) * 40.0f, y = float(h) * 0.5f;
+                float fromX = x, fromY = y;
+                SDL_GetMouseState(&fromX, &fromY);
+                SDL_WarpMouseInWindow(s_window, x, y);
+                SDL_Event e{};
+                e.type = SDL_EVENT_MOUSE_MOTION;
+                e.motion.timestamp = SDL_GetTicksNS();
+                e.motion.windowID = SDL_GetWindowID(s_window);
+                e.motion.which = 1;  // a mouse (not SDL_TOUCH_MOUSEID or SDL_PEN_MOUSEID)
+                e.motion.x = x;
+                e.motion.y = y;
+                e.motion.xrel = x - fromX;
+                e.motion.yrel = y - fromY;
+                SDL_PushEvent(&e);
+                fprintf(stderr, "[ui] NFSMW_UI_KEYS: mouse to %.0f,%.0f\n", x, y);
+                continue;
             }
             if (keys[next].key == kFocusLost || keys[next].key == kFocusGained)
             {
@@ -806,6 +900,7 @@ namespace ui
         s_frameBuilt = false;
         if (!s_ready)
             return false;
+        UpdateCursor();  // a menu opened or closed by this frame's events
         // A touch press held back for a three-finger tap goes to ImGui once
         // a second finger can no longer land in time (a finger resting on a
         // row, say), without waiting for another touch event. Judged here,
@@ -948,6 +1043,7 @@ namespace ui
         s_settingsOpen = false;
         UpdateCapture();
         ForgetUpdateDialog();
+        ForgetQuitPrompt();
         report::NoteMenuClosed();
         XamNotifySystemUi(false);
         if (settings::Dirty() && !settings::Save())

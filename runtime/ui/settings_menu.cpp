@@ -7,9 +7,11 @@
 // pages), and touch as the mouse (on iOS a drag scrolls the rows: ui.cpp).
 // Advanced also has Save Bug Report (report/bug_report.cpp), Check for
 // Updates (update_dialog.cpp), the build's identity (version and commit) and
-// the legal notice.
+// the legal notice. The footer's last button is Quit Game, which asks first
+// (quit_game.h; not on iPhone or iPad).
 #include <stdafx.h>
 #include "ui.h"
+#include "quit_game.h"
 
 #include <report/report.h>
 #include <user/settings.h>
@@ -18,6 +20,10 @@
 
 #include <imgui.h>
 #include <imgui_internal.h>  // ClosePopupToLevel: a dialog left open when the menu closed
+
+#include <SDL3/SDL_error.h>
+#include <SDL3/SDL_events.h>
+#include <SDL3/SDL_timer.h>
 
 namespace ui
 {
@@ -35,6 +41,11 @@ namespace ui
         bool s_opened = true;        // just opened: take focus
 
         constexpr int kCategories = int(Category::Count);
+
+#if SB_QUIT_GAME
+        constexpr const char* kQuitPopup = "quit";
+        quit::Prompt s_quit;
+#endif
 
         bool Pressed(ImGuiKey key)
         {
@@ -176,6 +187,10 @@ namespace ui
                     marker("ENV", ImGui::GetColorU32(ImGuiCol_TextDisabled));
                 if (settings::RestartPending(o.id))
                     marker("RESTART", ImGui::GetColorU32(ImGuiCol_PlotLines));
+                // The row is the saved choice; the system (the green button)
+                // changed the window this session: say what it is now.
+                if (o.id == Id::Fullscreen && !locked && video::FullscreenWindowDiffers())
+                    marker(video::WindowFullscreen() ? "NOW FULLSCREEN" : "NOW WINDOWED", ImGui::GetColorU32(ImGuiCol_TextDisabled));
             }
 
             int delta = 0;
@@ -288,6 +303,84 @@ namespace ui
                 OpenUpdateDialog();
         }
 
+        bool QuitPromptOpen()
+        {
+#if SB_QUIT_GAME
+            return ImGui::IsPopupOpen(kQuitPopup);
+#else
+            return false;
+#endif
+        }
+
+#if SB_QUIT_GAME
+        // Quit Game's prompt (quit_game.h), at the settings window's top
+        // level like the other dialogs. True while it is open: B is its, not
+        // the menu's.
+        bool DrawQuitPrompt()
+        {
+            if (!ImGui::IsPopupOpen(kQuitPopup))
+            {
+                if (s_quit.Dismiss() == quit::Outcome::Cancelled)
+                    fprintf(stderr, "[ui] Quit Game: cancelled (the prompt closed)\n");
+                return false;
+            }
+            ImGuiViewport* viewport = ImGui::GetMainViewport();
+            ImGui::SetNextWindowPos(viewport->GetWorkCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+            if (!ImGui::BeginPopupModal(kQuitPopup, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar))
+            {
+                if (s_quit.Dismiss() == quit::Outcome::Cancelled)
+                    fprintf(stderr, "[ui] Quit Game: cancelled (the prompt closed)\n");
+                return false;
+            }
+            s_quit.Shown();
+            ImGui::TextUnformatted("Quit SpeedBreaker? Progress since your last save will be lost.");
+            ImGui::Spacing();
+            const bool quitPressed = ImGui::Button("Quit");
+            ImGui::SameLine();
+            if (s_quit.TakeFocus())
+                ImGui::SetKeyboardFocusHere();  // Cancel (quit::Prompt::kDefaultFocus)
+            const bool cancelPressed = ImGui::Button("Cancel");
+            ImGui::SetItemDefaultFocus();
+            quit::Outcome outcome = quit::Outcome::None;
+            const char* how = "";
+            if (cancelPressed)
+            {
+                outcome = s_quit.Press(quit::Button::Cancel);
+                how = "Cancel";
+            }
+            else if (quitPressed)
+                outcome = s_quit.Press(quit::Button::Quit);
+            else if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+            {
+                outcome = s_quit.Back();
+                how = "B or Escape";
+            }
+            if (outcome == quit::Outcome::Cancelled)
+            {
+                fprintf(stderr, "[ui] Quit Game: cancelled (%s)\n", how);
+                ImGui::CloseCurrentPopup();
+            }
+            else if (outcome == quit::Outcome::Quit)
+            {
+                // The way out a window close takes: RunFrame returns false on
+                // its next poll and main() shuts the game down.
+                fprintf(stderr, "[ui] Quit Game: quitting (as closing the window does)\n");
+                ImGui::CloseCurrentPopup();
+                SDL_Event e{};
+                e.type = SDL_EVENT_QUIT;
+                e.quit.timestamp = SDL_GetTicksNS();
+                if (!SDL_PushEvent(&e))
+                {
+                    fprintf(stderr, "[ui] Quit Game: couldn't queue the quit: %s\n", SDL_GetError());
+                    Toast("Couldn't quit. Close the game's window instead.");
+                    s_quit.QuitFailed();
+                }
+            }
+            ImGui::EndPopup();
+            return true;
+        }
+#endif
+
         void HelpLine()
         {
             if (s_describedUpdate)
@@ -338,6 +431,14 @@ namespace ui
             if (o.id == Id::Fullscreen && video::FullscreenLocked())
             {
                 ImGui::TextDisabled("Always on in Game Mode: Steam sets the resolution (Properties > Game Resolution).");
+                return;
+            }
+            // The window's own fullscreen button (or the system) changed it for
+            // this session; the setting still decides how the game starts.
+            if (o.id == Id::Fullscreen && video::FullscreenWindowDiffers() && !settings::EnvOverride(o.id))
+            {
+                ImGui::TextDisabled("The window is %s for now. The game starts %s, as set here.",
+                    video::WindowFullscreen() ? "fullscreen" : "windowed", settings::GetBool(Id::Fullscreen) ? "fullscreen" : "windowed");
                 return;
             }
             // The experiment's finer scale wins over Screen Resolution's.
@@ -396,7 +497,7 @@ namespace ui
 #endif
 
         // Pages: LB/RB (Q/E) or the tabs; not under a dialog, which keeps them.
-        const bool dialog = ImGui::IsPopupOpen("reset") || UpdateDialogOpen();
+        const bool dialog = ImGui::IsPopupOpen("reset") || UpdateDialogOpen() || QuitPromptOpen();
         if (int delta = dialog ? 0 : PageDelta())
         {
             s_category = Category((int(s_category) + delta + kCategories) % kCategories);
@@ -514,6 +615,16 @@ namespace ui
         ImGui::SameLine();
         if (ImGui::Button("Close"))
             CloseSettings();
+#if SB_QUIT_GAME
+        // Last, after Close: Down from the rows lands on the footer's first
+        // button, so Quit Game takes a Right more, and then asks.
+        ImGui::SameLine();
+        if (ImGui::Button("Quit Game") && s_quit.Choose() == quit::Outcome::Asking)
+        {
+            fprintf(stderr, "[ui] Quit Game: asking\n");
+            ImGui::OpenPopup(kQuitPopup);
+        }
+#endif
         ImGui::SameLine();
         {
             const char* legend = "D-pad: choose, change   LB RB: page   B: close";
@@ -546,6 +657,10 @@ namespace ui
         }
         if (DrawUpdateDialog())
             popup = true;
+#if SB_QUIT_GAME
+        if (DrawQuitPrompt())
+            popup = true;
+#endif
         if (!popup && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::IsAnyItemActive() &&
             (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
             CloseSettings();
@@ -560,5 +675,13 @@ namespace ui
         if (ImGuiContext* g = ImGui::GetCurrentContext(); g && g->OpenPopupStack.Size > 0)
             ImGui::ClosePopupToLevel(0, false);
         ForgetUpdateDialog();
+    }
+
+    void ForgetQuitPrompt()
+    {
+#if SB_QUIT_GAME
+        if (s_quit.Dismiss() == quit::Outcome::Cancelled)
+            fprintf(stderr, "[ui] Quit Game: cancelled (the menu closed)\n");
+#endif
     }
 }

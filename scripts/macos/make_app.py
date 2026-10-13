@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SpeedBreaker. GPL-3.0-or-later (see COPYING).
 #
-# make_app.py [build dir] [output dir] [--dmg] [--min-macos=<version>]:
+# make_app.py [build dir] [output dir] [--dmg] [--min-macos=<version>] [--test]:
 # SpeedBreaker.app for macOS (Apple silicon) from a build (default
 # build/main), in build/app:
 #   Contents/MacOS/SpeedBreaker      the game
@@ -53,6 +53,11 @@
 # <output>/symbols/SpeedBreaker-<version>-<commit>-macos.dSYM, for us: never
 # published, they map a player's report back to the exact build.
 #
+# --test: an app to try a build with, named so it can't be taken for a
+# release: "SpeedBreaker (test).app", its displayed name likewise, and its
+# bundle identifier with ".test" (not with --dmg: a test app is never a
+# download). Its game, saves and settings are the release's (user/paths.h).
+#
 # --dmg: also <output>/SpeedBreaker-macos.dmg (the app and a shortcut to
 # Applications, to drag it onto) with its .sha256, the release download, and
 # a copy named by the version (SpeedBreaker-<version>-macos.dmg, a hard link).
@@ -75,13 +80,22 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 ARGS = [a for a in sys.argv[1:] if not a.startswith('--')]
 OPTIONS = [a for a in sys.argv[1:] if a.startswith('--')]
 DMG = '--dmg' in OPTIONS
+TEST = '--test' in OPTIONS
 MIN_MACOS = next((a.split('=', 1)[1] for a in OPTIONS if a.startswith('--min-macos=')), None)
 DMG_TOOL = os.environ.get('DMG_TOOL', '')  # '' (hdiutil, else diskutil), 'hdiutil' or 'diskutil'
 if DMG_TOOL not in ('', 'hdiutil', 'diskutil'):
     raise SystemExit(f'make_app.py: DMG_TOOL={DMG_TOOL}: use hdiutil or diskutil, or leave it unset')
 for a in OPTIONS:
-    if a != '--dmg' and not a.startswith('--min-macos='):
-        raise SystemExit(f'make_app.py: unknown option {a} (usage: make_app.py [build dir] [output dir] [--dmg] [--min-macos=<version>])')
+    if a not in ('--dmg', '--test') and not a.startswith('--min-macos='):
+        raise SystemExit(f'make_app.py: unknown option {a} (usage: make_app.py [build dir] [output dir] [--dmg] '
+                         f'[--min-macos=<version>] [--test])')
+if TEST and DMG:
+    raise SystemExit('make_app.py: --test and --dmg: a test app is never a download')
+# The app's name (the bundle's, the displayed one and the menu bar's), bundle
+# identifier and symbols' name; --test's are its own.
+NAME = 'SpeedBreaker (test)' if TEST else 'SpeedBreaker'
+BUNDLE_ID = 'local.speedbreaker.SpeedBreaker' + ('.test' if TEST else '')
+FILE = 'SpeedBreaker-test' if TEST else 'SpeedBreaker'
 BUILD = os.path.abspath(ARGS[0] if len(ARGS) > 0 else os.path.join(ROOT, 'build/main'))
 OUT = os.path.abspath(ARGS[1] if len(ARGS) > 1 else os.path.join(ROOT, 'build/app'))
 BIN = os.path.join(BUILD, 'runtime/SpeedBreaker')
@@ -492,7 +506,7 @@ def main():
         print(f'make_app.py: warning: {BUILD} is configured for macOS {minimum}, not the project\'s {default} '
               f'(CMakeLists.txt): not for release', file=sys.stderr)
     mvk_version = moltenvk_version()
-    app = os.path.join(OUT, 'SpeedBreaker.app')
+    app = os.path.join(OUT, NAME + '.app')
     shutil.rmtree(app, ignore_errors=True)
     contents = os.path.join(app, 'Contents')
     macos, frameworks = os.path.join(contents, 'MacOS'), os.path.join(contents, 'Frameworks')
@@ -505,7 +519,7 @@ def main():
     # The full symbols for us, then the debug map out of the app's copy.
     symbols = os.path.join(OUT, 'symbols')
     os.makedirs(symbols, exist_ok=True)
-    dsym = os.path.join(symbols, f'SpeedBreaker-{version}-{commit}{"-dirty" if dirty else ""}-macos.dSYM')
+    dsym = os.path.join(symbols, f'{FILE}-{version}-{commit}{"-dirty" if dirty else ""}-macos.dSYM')
     shutil.rmtree(dsym, ignore_errors=True)
     subprocess.run(['dsymutil', BIN, '-o', dsym], check=True, capture_output=True)
     run('strip', '-S', exe)
@@ -602,10 +616,10 @@ def main():
             'CFBundleDevelopmentRegion': 'en',
             'CFBundleExecutable': 'SpeedBreaker',
             'CFBundleIconFile': 'AppIcon',
-            'CFBundleIdentifier': 'local.speedbreaker.SpeedBreaker',
+            'CFBundleIdentifier': BUNDLE_ID,
             'CFBundleInfoDictionaryVersion': '6.0',
-            'CFBundleName': 'SpeedBreaker',
-            'CFBundleDisplayName': 'SpeedBreaker',
+            'CFBundleName': NAME,
+            'CFBundleDisplayName': NAME,
             'CFBundlePackageType': 'APPL',
             'CFBundleShortVersionString': version,
             'CFBundleVersion': build_number(commit),

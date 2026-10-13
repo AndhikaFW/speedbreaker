@@ -147,6 +147,9 @@ namespace ui
     // The menu closed or reopened: the dialog is gone (a check still running
     // then ends in a toast).
     void ForgetUpdateDialog();
+    // The menu closed: Quit Game's prompt (settings_menu.cpp, quit_game.h),
+    // if it was asking, is cancelled.
+    void ForgetQuitPrompt();
 
     // Shared look (ui.cpp).
     SDL_Window* GetWindow();
