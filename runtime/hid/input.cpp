@@ -826,6 +826,16 @@ uint32_t XamInputGetCapabilities(uint32_t userIndex, uint32_t flags, XAMINPUT_CA
     return ERROR_SUCCESS;
 }
 
+namespace hid
+{
+    namespace
+    {
+        std::atomic<uint8_t> s_gameRightTrigger{ 0 }, s_gameLeftTrigger{ 0 };
+    }
+    uint8_t GameRightTrigger() { return s_gameRightTrigger.load(std::memory_order_relaxed); }
+    uint8_t GameLeftTrigger() { return s_gameLeftTrigger.load(std::memory_order_relaxed); }
+}
+
 uint32_t XamInputGetState(uint32_t userIndex, uint32_t flags, XAMINPUT_STATE* state)
 {
     Pad p;
@@ -838,11 +848,18 @@ uint32_t XamInputGetState(uint32_t userIndex, uint32_t flags, XAMINPUT_STATE* st
         static Pad last;
         if (memcmp(&p, &last, sizeof(p)) != 0)
         {
+            // NFSMW_LOG_BUTTONS=1: every change of the pad the game sees, with the time, to line effects up with presses.
+            static const bool logButtons = std::getenv("NFSMW_LOG_BUTTONS") != nullptr;
+            if (logButtons)
+                fprintf(stderr, "[button] t=%.3f buttons %04X lt %u rt %u\n", std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(),
+                    p.buttons, p.leftTrigger, p.rightTrigger);
             s_packet++;
             last = p;
         }
         packet = s_packet;
     }
+    hid::s_gameRightTrigger.store(p.rightTrigger, std::memory_order_relaxed);
+    hid::s_gameLeftTrigger.store(p.leftTrigger, std::memory_order_relaxed);
     state->dwPacketNumber = ByteSwap(packet);
     state->Gamepad.wButtons = ByteSwap(p.buttons);
     state->Gamepad.bLeftTrigger = p.leftTrigger;

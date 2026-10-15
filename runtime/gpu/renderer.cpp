@@ -26,6 +26,7 @@
 #include <video/picture_fit.h>
 #include <video/scale_budget.h>
 #include <user/paths.h>
+#include <hid/input.h>
 #include <user/settings.h>
 #include <game/ultrawide.h>
 
@@ -44,6 +45,7 @@
 #include <sys/resource.h>
 #include <time.h>
 #include <unistd.h>
+#include <regex>
 #include <memory>
 #include <unordered_map>
 
@@ -1758,6 +1760,7 @@ namespace gpu::renderer
             gpu::RenderScale scale;            // host pixels per guest pixel (gpu/render_scale.h)
             VkFormat vkFormat;
             bool blendable;
+            bool storage = false;  // a colour target the ambient occlusion pass can write (compute)
             Image image;
             VkImageView sampleView = VK_NULL_HANDLE;  // depth aspect only, for resolves
             // NFSMW_UNTILED_AREA: in the last frame untiled draws drew it (until
@@ -2009,6 +2012,10 @@ namespace gpu::renderer
             VkImageAspectFlags aspect = depth ? VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
             VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                 (depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+            // Only the 8-bit colour target: the occlusion shader writes it as rgba8.
+            rt->storage = !depth && rt->vkFormat == VK_FORMAT_R8G8B8A8_UNORM && (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT);
+            if (rt->storage)
+                usage |= VK_IMAGE_USAGE_STORAGE_BIT;
             rt->image = CreateImage(VK_IMAGE_TYPE_2D, rt->vkFormat, { rt->width, rt->height, 1 }, 1, usage,
                 VK_IMAGE_VIEW_TYPE_2D, aspect);
             if (depth)
@@ -5056,6 +5063,533 @@ void main()
                 p.srcBase, p.rect, p.frame, p.seconds }).detach();
         }
 
+        // ---------------------------------------------------------------
+        // Ambient occlusion (Settings > Display > Ambient Occlusion)
+        //
+        // The scene is drawn whole into its colour and depth targets during the
+        // first tile band of the frame (untiled), so the first colour resolve
+        // of a multisampled 1280-pitch surface finds all of it. Before that
+        // resolve a compute pass darkens the colour where the depth is
+        // concave. The game's own post-processing then sees the result.
+        //
+        // No normals and no projection are known here, so it measures, for
+        // pairs of samples either side of a pixel, how far the pixel's 1/z lies
+        // below their mean: on any plane 1/z is affine in screen space, so a
+        // flat surface at any slope reads 0 and a crease or a contact reads
+        // positive. (The depth buffer's 1 - d is affine in 1/z.) A pair whose
+        // samples jump in depth is a silhouette and counts for nothing.
+        void CreateComputePipeline(const char* glsl, const VkDescriptorSetLayoutBinding* bindings, uint32_t bindingCount,
+            uint32_t pushSize, VkDescriptorSetLayout& setLayout, VkPipelineLayout& layout, VkPipeline& pipeline,
+            const char* preamble);
+
+        uint64_t s_ssaoFrame = UINT64_MAX;
+
+        // ---------------------------------------------------------------
+        // Scene post: motion blur, and ambient occlusion (Settings > Graphics)
+        //
+        // Run just before the resolve copies the scene's colour target (the HUD is drawn later, so it stays
+        // sharp). The colour grade, tonemapper and bloom are not here: they are the game's own (the final
+        // grade's shaders and constants, game/colour_grade.cpp).
+        //   motion blur: a radial blur toward the screen's centre that grows with the distance from it and
+        //   with the car's speed (the colour target -> scratch, then copied back); only while moving fast
+        //   enough to show, so a stopped car, a menu or a cutscene costs nothing;
+        //   ambient occlusion (off by default): half-size occlusion, blurred, applied.
+        const char* kPostMotionGlsl = R"(#version 460
+#extension GL_EXT_samplerless_texture_functions : require
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform texture2D u_depth;
+layout(set = 0, binding = 1) uniform sampler2D u_color;
+layout(set = 0, binding = 2, rgba8) uniform writeonly image2D u_out;
+layout(push_constant) uniform P { ivec2 size; float a; float b; ivec2 i; } p;
+
+// 1/z, up to scale (the depth buffer holds 1 - it): large near the camera.
+float W(vec2 q)
+{
+    return 1.0 - texelFetch(u_depth, clamp(ivec2(q), ivec2(0), p.size - 1), 0).r;
+}
+
+// The player's car stays put in the picture in the chase view, so it is not blurred: a pixel is "the car"
+// when it lies in a generous area where the car sits (low centre) and its depth is close to the
+// depth sampled where the car's rear is (the median of three points, so a stray one doesn't decide).
+// The same test keeps the car's colour out of the blur of the pixels around it.
+float carMask(vec2 q, float anchorW)
+{
+    vec2 u = q / vec2(p.size);
+    float ell = 1.0 - smoothstep(0.85, 1.15, length((u - vec2(0.5, 0.74)) / vec2(0.28, 0.27)));
+    if (ell <= 0.0)
+        return 0.0;
+    float dw = abs(W(q) - anchorW) / max(anchorW, 1e-5);
+    return ell * (1.0 - smoothstep(0.12, 0.32, dw));
+}
+
+void main()
+{
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= p.size.x || px.y >= p.size.y)
+        return;
+    vec2 size = vec2(p.size);
+    vec2 ts = vec2(textureSize(u_color, 0));  // the target is taller than the scene: sample in texels
+    vec2 pos = vec2(px) + 0.5;
+    float wa = W(size * vec2(0.50, 0.80)), wb = W(size * vec2(0.44, 0.78)), wc = W(size * vec2(0.56, 0.78));
+    float anchorW = max(min(wa, wb), min(max(wa, wb), wc));
+    float mask = carMask(pos, anchorW);
+    vec2 d = pos / size - vec2(0.5, 0.5);
+    float edge = smoothstep(0.10, 0.65, length(d * vec2(1.0, 0.8)) * 1.6);
+    float road = 1.0 + 1.3 * smoothstep(0.52, 0.95, pos.y / size.y);  // the road, the lower half, streaks the most
+    float len = p.a * 0.15 * edge * road * (1.0 - mask);
+    vec3 acc = textureLod(u_color, pos / ts, 0.0).rgb;
+    float wsum = 1.0;
+    if (len > 0.0008)
+    {
+        const int N = 16;
+        for (int k = 1; k <= N; k++)
+        {
+            float t = float(k) / float(N);
+            float w = 1.0 - 0.6 * t;
+            vec2 q = clamp(pos - d * len * t * size, vec2(0.5), size - 0.5);
+            w *= 1.0 - carMask(q, anchorW);  // the car's own pixels are not smeared onto its surroundings
+            acc += textureLod(u_color, q / ts, 0.0).rgb * w;
+            wsum += w;
+        }
+    }
+    imageStore(u_out, px, vec4(acc / wsum, 1.0));
+}
+)";
+
+        // Ambient occlusion in three steps (see the comment above): the occlusion at half
+        // size, a depth-aware blur across and down, and an application to the colour
+        // that upsamples it by depth. (Per-pixel noise would shimmer.)
+        const char* kAoGenGlsl = R"(#version 460
+#extension GL_EXT_samplerless_texture_functions : require
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform texture2D u_depth;
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D u_ao;
+layout(push_constant) uniform P { ivec2 size; float radius; float b; ivec2 i; } p;
+float W(ivec2 q)
+{
+    return 1.0 - texelFetch(u_depth, clamp(q, ivec2(0), p.size - 1), 0).r;
+}
+void main()
+{
+    ivec2 hp = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 hs = (p.size + 1) / 2;
+    if (hp.x >= hs.x || hp.y >= hs.y)
+        return;
+    ivec2 px = hp * 2;
+    float wc = W(px);
+    if (wc < 2e-6)  // the sky
+    {
+        imageStore(u_ao, hp, vec4(0.0));
+        return;
+    }
+    float noise = fract(52.9829189 * fract(dot(vec2(hp), vec2(0.06711056, 0.00583715))));
+    float radiusPx = clamp(p.radius * wc * 4000.0, 3.0, 56.0);
+    float ao = 0.0;
+    const int kDirs = 8, kSteps = 3;
+    for (int d = 0; d < kDirs; d++)
+    {
+        float a = (float(d) + noise) * (3.14159265 / float(kDirs));
+        vec2 dir = vec2(cos(a), sin(a));
+        for (int s = 1; s <= kSteps; s++)
+        {
+            float t = radiusPx * float(s * s) / float(kSteps * kSteps);
+            ivec2 o = ivec2(round(dir * t));
+            float wa = W(px + o), wb = W(px - o);
+            float rel = (0.5 * (wa + wb) - wc) / wc;
+            float edge = max(abs(wa - wc), abs(wb - wc)) / wc;
+            ao += clamp(rel * 2.0, 0.0, 1.0) * (1.0 - smoothstep(0.35, 0.8, edge));
+        }
+    }
+    ao /= float(kDirs * kSteps);
+    imageStore(u_ao, hp, vec4(min(ao * 2.0, 1.0), 0.0, 0.0, 1.0));  // stored doubled
+}
+)";
+
+        const char* kAoBlurGlsl = R"(#version 460
+#extension GL_EXT_samplerless_texture_functions : require
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform texture2D u_depth;
+layout(set = 0, binding = 1) uniform sampler2D u_in;
+layout(set = 0, binding = 2, rgba8) uniform writeonly image2D u_out;
+layout(push_constant) uniform P { ivec2 size; float a; float b; ivec2 dir; } p;
+float W(ivec2 q)
+{
+    return 1.0 - texelFetch(u_depth, clamp(q * 2, ivec2(0), p.size - 1), 0).r;
+}
+void main()
+{
+    ivec2 hp = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 hs = (p.size + 1) / 2;
+    if (hp.x >= hs.x || hp.y >= hs.y)
+        return;
+    float wc = W(hp);
+    float sum = 0.0, wsum = 0.0;
+    for (int k = -5; k <= 5; k++)
+    {
+        ivec2 q = clamp(hp + p.dir * k, ivec2(0), hs - 1);
+        float ws = W(q);
+        float wd = exp(-abs(ws - wc) / max(wc, 1e-5) * 25.0) * exp(-float(k * k) / 10.0);
+        sum += texelFetch(u_in, q, 0).r * wd;
+        wsum += wd;
+    }
+    imageStore(u_out, hp, vec4(sum / max(wsum, 1e-5), 0.0, 0.0, 1.0));
+}
+)";
+
+        const char* kAoApplyGlsl = R"(#version 460
+#extension GL_EXT_samplerless_texture_functions : require
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform texture2D u_depth;
+layout(set = 0, binding = 1) uniform sampler2D u_ao;
+layout(set = 0, binding = 2, rgba8) uniform image2D u_color;
+layout(push_constant) uniform P { ivec2 size; float strength; float b; ivec2 i; } p;
+float W(ivec2 q)
+{
+    return 1.0 - texelFetch(u_depth, clamp(q, ivec2(0), p.size - 1), 0).r;
+}
+void main()
+{
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= p.size.x || px.y >= p.size.y)
+        return;
+    float wc = W(px);
+    if (wc < 2e-6)
+        return;
+    ivec2 hs = (p.size + 1) / 2;
+    vec2 hp = (vec2(px) + 0.5) * 0.5 - 0.5;
+    ivec2 b = ivec2(floor(hp));
+    vec2 f = hp - vec2(b);
+    float acc = 0.0, ws = 0.0;
+    for (int j = 0; j < 2; j++)
+        for (int i = 0; i < 2; i++)
+        {
+            ivec2 q = clamp(b + ivec2(i, j), ivec2(0), hs - 1);
+            float bw = (i == 0 ? 1.0 - f.x : f.x) * (j == 0 ? 1.0 - f.y : f.y);
+            float wd = exp(-abs(W(q * 2) - wc) / max(wc, 1e-5) * 40.0) + 1e-3;
+            acc += texelFetch(u_ao, q, 0).r * bw * wd;
+            ws += bw * wd;
+        }
+    float ao = acc / max(ws, 1e-5) * 0.5;
+    vec4 c = imageLoad(u_color, px);
+    if (p.i.x == 1)
+        c.rgb = vec3(0.2 + ao * 2.0);
+    else
+        c.rgb *= 1.0 - clamp(ao * p.strength * 1.2, 0.0, 0.7);
+    imageStore(u_color, px, c);
+}
+)";
+
+        struct PostPush
+        {
+            int32_t w, h;
+            float a, b;
+            int32_t i0, i1;
+        };
+        struct PostPass
+        {
+            VkDescriptorSetLayout set = VK_NULL_HANDLE;
+            VkPipelineLayout layout = VK_NULL_HANDLE;
+            VkPipeline pipeline = VK_NULL_HANDLE;
+        };
+        struct PostFx
+        {
+            uint32_t w = 0, h = 0;
+            Image scratch, aoA, aoB;  // the motion blur's output; the occlusion's half-size images (made when used)
+            bool aoMade = false;
+            VkSampler sampler = VK_NULL_HANDLE;
+            PostPass motion, aoGen, aoBlur, aoApply;
+        } s_post;
+
+        void ReleasePostFx()
+        {
+            if (s_post.w)
+            {
+                DestroyImage(s_post.scratch);
+                if (s_post.aoMade)
+                {
+                    DestroyImage(s_post.aoA);
+                    DestroyImage(s_post.aoB);
+                }
+            }
+            s_post.w = s_post.h = 0;
+            s_post.aoMade = false;
+        }
+
+        void MakePostPass(PostPass& pass, const char* glsl, std::initializer_list<VkDescriptorType> types)
+        {
+            VkDescriptorSetLayoutBinding b[6]{};
+            uint32_t n = 0;
+            for (VkDescriptorType t : types)
+            {
+                b[n] = { n, t, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr };
+                n++;
+            }
+            CreateComputePipeline(glsl, b, n, sizeof(PostPush), pass.set, pass.layout, pass.pipeline, "");
+        }
+
+        // The images for a w x h scene: the scratch always, the occlusion's half-size pair only when `ao`
+        // (the images of an effect that is off are never made, and a size change frees them).
+        bool EnsurePostFx(uint32_t w, uint32_t h, bool ao)
+        {
+            const VkDescriptorType tex = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, comb = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                store = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            if (!s_post.sampler)
+            {
+                VkSamplerCreateInfo sci{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+                sci.magFilter = sci.minFilter = VK_FILTER_LINEAR;
+                sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+                sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+                sci.maxLod = 0.0f;
+                Check(vkCreateSampler(s_dev, &sci, nullptr, &s_post.sampler), "vkCreateSampler(post)");
+                MakePostPass(s_post.motion, kPostMotionGlsl, { tex, comb, store });
+                fprintf(stderr, "[renderer] scene post pipelines made\n");
+            }
+            if (ao && !s_post.aoGen.pipeline)
+            {
+                MakePostPass(s_post.aoGen, kAoGenGlsl, { tex, store });
+                MakePostPass(s_post.aoBlur, kAoBlurGlsl, { tex, comb, store });
+                MakePostPass(s_post.aoApply, kAoApplyGlsl, { tex, comb, store });
+            }
+            if (s_post.w != w || s_post.h != h)
+            {
+                ReleasePostFx();
+                s_post.scratch = CreateImage(VK_IMAGE_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM, { w, h, 1 }, 1,
+                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_VIEW_TYPE_2D,
+                    VK_IMAGE_ASPECT_COLOR_BIT);
+                ToGeneral(s_post.scratch.image, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+                s_post.w = w;
+                s_post.h = h;
+                fprintf(stderr, "[renderer] scene post image %ux%u\n", w, h);
+            }
+            if (ao && !s_post.aoMade)
+            {
+                const uint32_t hw = std::max(1u, (w + 1) / 2), hh = std::max(1u, (h + 1) / 2);
+                const VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+                s_post.aoA = CreateImage(VK_IMAGE_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM, { hw, hh, 1 }, 1, usage, VK_IMAGE_VIEW_TYPE_2D,
+                    VK_IMAGE_ASPECT_COLOR_BIT);
+                s_post.aoB = CreateImage(VK_IMAGE_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM, { hw, hh, 1 }, 1, usage, VK_IMAGE_VIEW_TYPE_2D,
+                    VK_IMAGE_ASPECT_COLOR_BIT);
+                ToGeneral(s_post.aoA.image, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+                ToGeneral(s_post.aoB.image, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+                s_post.aoMade = true;
+            }
+            return true;
+        }
+
+        // One dispatch of a post pass: `views` in binding order.
+        void PostDispatch(const PostPass& pass, std::initializer_list<std::pair<VkDescriptorType, VkImageView>> views, const PostPush& pc,
+            uint32_t gx, uint32_t gy)
+        {
+            VkDescriptorImageInfo info[6]{};
+            VkWriteDescriptorSet w[6]{};
+            uint32_t n = 0;
+            for (auto& [type, view] : views)
+            {
+                info[n] = { type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ? s_post.sampler : VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL };
+                w[n] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, VK_NULL_HANDLE, n, 0, 1, type, &info[n], nullptr, nullptr };
+                n++;
+            }
+            s_stateEpoch++;
+            vkCmdBindPipeline(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pass.pipeline);
+            s_pushDescriptorSet(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pass.layout, 0, n, w);
+            vkCmdPushConstants(s_cmd, pass.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+            vkCmdDispatch(s_cmd, (gx + 7) / 8, (gy + 7) / 8, 1);
+            FullBarrier();
+        }
+
+        // The motion blur: the colour target -> scratch, blurred, then copied back.
+        void RunMotionBlur(RenderTarget* source, RenderTarget* depth, uint32_t w, uint32_t h, float motion)
+        {
+            if (!EnsurePostFx(w, h, false))
+                return;
+            PostDispatch(s_post.motion, { { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, depth->sampleView }, { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, source->image.view },
+                { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, s_post.scratch.view } }, { int32_t(w), int32_t(h), motion, 0.0f, 0, 0 }, w, h);
+            VkImageCopy copy{};
+            copy.srcSubresource = copy.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+            copy.extent = { w, h, 1 };
+            vkCmdCopyImage(s_cmd, s_post.scratch.image, VK_IMAGE_LAYOUT_GENERAL, source->image.image, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
+            FullBarrier();
+        }
+
+        // Ambient occlusion on the colour target: the occlusion at half size, blurred, applied.
+        void RunSsao(RenderTarget* source, RenderTarget* depth, uint32_t w, uint32_t h, float strength, float radius, int32_t debug)
+        {
+            if (!EnsurePostFx(w, h, true))
+                return;
+            const VkDescriptorType tex = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, comb = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                store = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            const uint32_t hw = std::max(1u, (w + 1) / 2), hh = std::max(1u, (h + 1) / 2);
+            PostDispatch(s_post.aoGen, { { tex, depth->sampleView }, { store, s_post.aoA.view } },
+                { int32_t(w), int32_t(h), radius, 0.0f, 0, 0 }, hw, hh);
+            PostDispatch(s_post.aoBlur, { { tex, depth->sampleView }, { comb, s_post.aoA.view }, { store, s_post.aoB.view } },
+                { int32_t(w), int32_t(h), 0.0f, 0.0f, 1, 0 }, hw, hh);
+            PostDispatch(s_post.aoBlur, { { tex, depth->sampleView }, { comb, s_post.aoB.view }, { store, s_post.aoA.view } },
+                { int32_t(w), int32_t(h), 0.0f, 0.0f, 0, 1 }, hw, hh);
+            PostDispatch(s_post.aoApply, { { tex, depth->sampleView }, { comb, s_post.aoA.view }, { store, source->image.view } },
+                { int32_t(w), int32_t(h), strength, 0.0f, debug, 0 }, w, h);
+        }
+
+        // The player's speed in km/h, a float the game keeps in its guest memory
+        // (found by comparing two snapshots against the speedometer: 16 and 96
+        // mph read 25.7 and 154.5 here, and it is smooth through a race). Four
+        // copies of it, of which the median sane one is taken: one stale copy (another object, an old car)
+        // can't hold the blur on while stopped, nor one dead copy hold it off.
+        // NFSMW_LOG_SPEED=1 prints the four every half second.
+        float ReadSpeedKph()
+        {
+            static const uint32_t kAddresses[] = { 0xB3F2D648, 0xB3F2D668, 0xB3F2DB68, 0xB3F0E6F8 };
+            static const bool logSpeed = std::getenv("NFSMW_LOG_SPEED") != nullptr;
+            float values[4];
+            int n = 0;
+            float raw[4];
+            for (int i = 0; i < 4; i++)
+            {
+                uint32_t bits = __builtin_bswap32(LoadPhysical(kAddresses[i] & 0x1FFFFFFC));
+                float v;
+                memcpy(&v, &bits, 4);
+                raw[i] = v;
+                if (std::isfinite(v) && v >= 0.0f && v < 450.0f)
+                    values[n++] = v;
+            }
+            if (logSpeed)
+            {
+                static auto last = std::chrono::steady_clock::now();
+                const auto now = std::chrono::steady_clock::now();
+                if (now - last > std::chrono::milliseconds(500))
+                {
+                    last = now;
+                    fprintf(stderr, "[speed] f%llu: %.2f %.2f %.2f %.2f (%d sane)\n", (unsigned long long)s_frame, raw[0], raw[1], raw[2], raw[3], n);
+                }
+            }
+            if (n == 0)
+                return -1.0f;
+            std::sort(values, values + n);
+            return n % 2 ? values[n / 2] : 0.5f * (values[n / 2 - 1] + values[n / 2]);
+        }
+
+        // The factor (0..1) that scales the motion blur: it comes on when the car moves and builds up as it
+        // speeds up. The car's speed is estimated from the accelerator and brake the game reads (the triggers,
+        // W and S on the keyboard): it rises while the accelerator is held (about 0 to 100 km/h in 4 s, slower as
+        // it nears 280), falls fast when it is released (about 6 s from 150 km/h) and faster under the brake. No memory address
+        // and nothing from the picture, so it is the same in every race and car; the cost is that it follows
+        // the player's pedals, not collisions or a cutscene's driving. (The speed the game keeps at a heap
+        // address that moves between launches was read before and could stick on junk.)
+        // NFSMW_LOG_SPEED=1 prints the estimate next to that address's reading (valid in some launches only).
+        float MotionSpeedFactor(bool singlePass)
+        {
+            static float speed = 0.0f;  // the estimate, km/h
+            static float smooth = 0.0f;
+            static std::chrono::steady_clock::time_point lastTime = std::chrono::steady_clock::now();
+            static bool haveTime = false;
+            static const bool logSpeed = std::getenv("NFSMW_LOG_SPEED") != nullptr;
+            static auto lastLog = std::chrono::steady_clock::now();
+            (void)singlePass;
+            const auto now = std::chrono::steady_clock::now();
+            const float gap = haveTime ? std::chrono::duration<float>(now - lastTime).count() : 0.0f;
+            lastTime = now;
+            haveTime = true;
+            if (gap > 1.0f)
+                speed = smooth = 0.0f;  // out of the scene for a while (menus, loading): start from standing
+            const float dt = std::clamp(gap, 0.0f, 0.25f);
+            const float throttle = float(hid::GameRightTrigger()) / 255.0f, brake = float(hid::GameLeftTrigger()) / 255.0f;
+            const float drive = 30.0f * throttle * (1.0f - speed / 280.0f);  // km/h per second
+            // Lifting off sheds speed fast (about 6 s from 150 km/h to a standstill), so the blur fades with it;
+            // a held accelerator only fights a little drag.
+            const float drag = throttle < 0.1f ? (18.0f + 0.12f * speed) : 0.3f * (4.0f + 0.02f * speed);
+            speed = std::max(0.0f, speed + (drive - brake * 70.0f - drag) * dt);
+            if (speed < 0.5f && throttle < 0.05f)
+                speed = 0.0f;
+            // A little softening on top, so a jerky press doesn't make the blur twitch.
+            smooth += (speed - smooth) * (1.0f - std::exp(-dt / 0.15f));
+            if (logSpeed && now - lastLog > std::chrono::milliseconds(500))
+            {
+                lastLog = now;
+                fprintf(stderr, "[speed] f%llu: estimate %.1f km/h (accelerator %.2f, brake %.2f); memory reading %.1f\n", (unsigned long long)s_frame,
+                    smooth, throttle, brake, ReadSpeedKph());
+            }
+            const float t = std::clamp((smooth - 10.0f) / 140.0f, 0.0f, 1.0f);
+            return t * t * (3.0f - 2.0f * t);
+        }
+
+        // Called with a colour resolve about to read `source` (no pass open).
+        void ApplyAmbientOcclusion(RenderTarget* source, const Rect& r, uint32_t pitch)
+        {
+            static const float envRadius = [] { const char* v = std::getenv("NFSMW_SSAO_RADIUS"); return v ? float(std::atof(v)) : 1.0f; }();
+            static const int32_t envDebug = [] { const char* v = std::getenv("NFSMW_SSAO_DEBUG"); return v ? std::atoi(v) : 0; }();
+            const float strength = settings::GetFloat(settings::Id::AmbientOcclusion);
+            const float motionSetting = settings::GetFloat(settings::Id::MotionBlur);
+            if ((strength <= 0.0f && motionSetting <= 0.0f) || pitch != 1280)
+                return;
+            if (s_ssaoFrame == s_frame)
+                return;
+            bool race = false;  // a race frame is one 720p pass, resolved whole
+            if (Reg<reg::RB_SURFACE_INFO>().msaa_samples == xenos::MsaaSamples::k1X)
+            {
+                if (r.x1 - r.x0 < 1280 || r.y1 - r.y0 < 704)
+                    return;
+                race = true;
+            }
+            else
+            {
+                auto [shiftX, shiftY] = TileShift();
+                if (shiftX != 0 || shiftY != 0 || r.y0 != 0)
+                    return;  // not the first tile band
+            }
+            // The blur's strength from the car's speed: nothing to do (and nothing recorded) while it would not show.
+            const float motion = motionSetting > 0.0f ? motionSetting * MotionSpeedFactor(race) : 0.0f;
+            const bool blur = motion > 0.02f;
+            if (strength <= 0.0f && !blur)
+                return;
+            if (!source->storage)
+            {
+                LogOnce(0x4100, "scene post: the colour target (format %u) can't be written by compute", source->format);
+                return;
+            }
+            auto di = Reg<reg::RB_DEPTH_INFO>();
+            RenderTarget* depth = GetTarget(di.depth_base, uint32_t(di.depth_format), true, pitch);
+            if (!depth || depth->width != source->width)
+            {
+                LogOnce(0x4300, "scene post: depth target b%u %ux%u doesn't match colour %ux%u", di.depth_base,
+                    depth ? depth->width : 0, depth ? depth->height : 0, source->width, source->height);
+                return;
+            }
+            s_ssaoFrame = s_frame;
+            // The scene is the top 1280x720 guest pixels of the targets.
+            const uint32_t regionW = std::min({ depth->width, source->width, source->scale.x.Size(1280) });
+            const uint32_t regionH = std::min({ depth->height, source->height, source->scale.y.Size(720) });
+            FlushPendingClears(source);
+            FlushPendingClears(depth);
+            FullBarrier();
+            if (strength > 0.0f)
+                RunSsao(source, depth, regionW, regionH, std::clamp(strength, 0.0f, 1.0f), envRadius, envDebug);
+            if (blur)
+                RunMotionBlur(source, depth, regionW, regionH, motion);
+        }
+
+        // The car reflection cube map: six passes a frame into a surface of pitch 280 (colour and its own depth),
+        // each ending in one resolve into the cube texture. With Reflection Refresh at N > 1 only the faces whose
+        // turn it is are drawn and resolved in a frame (the others keep the texture's last picture); a skipped
+        // face still does its clears, so the next one draws on a clean target. A face is the pass's number among
+        // the frame's pitch-280 resolves, which the draws before it share (so the draws are skipped by the same count).
+        constexpr uint32_t kCubePitch = 280;
+        uint32_t s_cubeResolves = 0;  // pitch-280 resolves so far this frame
+
+        bool CubeFaceSkipped()
+        {
+            const int32_t n = settings::GetInt(settings::Id::ReflectionRefresh);
+            if (n <= 1)
+                return false;
+            const bool active = (uint64_t(s_cubeResolves) + s_frame) % uint64_t(n) == 0;
+            static bool logged = false;
+            if (!logged)
+            {
+                logged = true;
+                fprintf(stderr, "[reflections] the car reflection cube map's faces are redrawn in turn: each every %d frames\n", n);
+            }
+            return !active;
+        }
+
+
         void Resolve()
         {
             s_stats.resolves++;
@@ -5164,6 +5698,13 @@ void main()
                 : uint32_t(destInfo.copy_dest_format);
             bool copy = copyControl.copy_command == xenos::CopyCommand::kRaw ||
                 copyControl.copy_command == xenos::CopyCommand::kConvert;
+            if (pitch == kCubePitch)
+            {
+                const bool skipped = CubeFaceSkipped();
+                s_cubeResolves++;
+                if (skipped)
+                    copy = false;  // the face keeps the texture's last picture; its clears below still run
+            }
             if (copy && destBase != 0)
             {
                 auto [extentStart, extentEnd] = ResolveExtent(r, (destPitch.copy_dest_pitch + 31) & ~31u, ResolveBppLog2(format));
@@ -5235,6 +5776,8 @@ void main()
                     }
                     EndPass();
                     Begin();
+                    if (!depthSource && copyControl.copy_src_select == 0)
+                        ApplyAmbientOcclusion(source, r, pitch);
                     ResolveConstants rc{};
                     rc.originX = r.x0;
                     rc.originY = r.y0;
@@ -5755,7 +6298,11 @@ void main()
                 return false;
             VkPhysicalDeviceProperties props;
             vkGetPhysicalDeviceProperties(s_vk->physical, &props);
-            uint64_t megabytes = 512;
+            // The pool is committed up front (shared memory on an integrated GPU) and a 1.5x race used about
+            // 35 MB of it a frame with no evictions at 128 MB, so it is sized from the scale (the area a scaled
+            // sample costs grows with it) with room to spare, not a flat 512 MB (400 MB of unused memory).
+            const double areaFactor = double(s_scaled.scale.x.num) / double(s_scaled.scale.x.den) * double(s_scaled.scale.y.num) / double(s_scaled.scale.y.den);
+            uint64_t megabytes = areaFactor <= 2.5 ? 192 : areaFactor <= 4.5 ? 256 : 512;
             if (const char* v = std::getenv("NFSMW_SCALED_MB"))
                 megabytes = std::clamp<uint64_t>(std::strtoull(v, nullptr, 10), 16, 4096);
             // The whole budget, whatever the scale: kept across live changes
@@ -6631,6 +7178,7 @@ void main()
             auto start = std::chrono::steady_clock::now();
             const gpu::RenderScale old = s_renderScale;
             Flush();
+            ReleasePostFx();
             s_renderScale = scale;
             PrewarmResolvePipelines(scale);
             size_t targets = 0;
@@ -6939,6 +7487,78 @@ void main()
         return s_vk != nullptr;
     }
 
+    // The game's two final-grade pixel shaders (with and without depth of field) get a tone stage
+    // inserted into their own code: the tonemapper (AgX, or the filmic curve) and the Modern Look
+    // saturation and contrast, applied to the colour they have just graded, before they write it.
+    // Its settings reach it in the shader's drawInfo[0] (floats: x Modern Lighting strength,
+    // y tonemapper 0/1, z Modern Look), written with the constants.
+    constexpr uint64_t kGradeShaderHashes[2] = { 0x74c891970bd63fcaull, 0xd52a5eb6c17f9598ull };
+
+    const char* kNativeToneGlsl = R"(
+// ---- tone stage added to the game's final grade (SpeedBreaker) ----
+vec3 nt_aces(vec3 c)
+{
+    return (c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14);
+}
+vec3 nt_agxContrast(vec3 x)
+{
+    vec3 x2 = x * x, x4 = x2 * x2;
+    return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
+}
+vec3 nt_agx(vec3 c)
+{
+    const mat3 toRec2020 = mat3(vec3(0.6274, 0.0691, 0.0164), vec3(0.3293, 0.9195, 0.0880), vec3(0.0433, 0.0113, 0.8956));
+    const mat3 fromRec2020 = mat3(vec3(1.6605, -0.1246, -0.0182), vec3(-0.5876, 1.1329, -0.1006), vec3(-0.0728, -0.0083, 1.1187));
+    const mat3 inset = mat3(vec3(0.856627153315983, 0.137318972929847, 0.11189821299995),
+        vec3(0.0951212405381588, 0.761241990602591, 0.0767994186031903), vec3(0.0482516061458583, 0.101439036467562, 0.811302368396859));
+    const mat3 outset = mat3(vec3(1.1271005818144368, -0.1413297634984383, -0.14132976349843826),
+        vec3(-0.11060664309660323, 1.157823702216272, -0.11060664309660294), vec3(-0.016493938717834573, -0.016493938717834257, 1.2519364065950405));
+    c = inset * (toRec2020 * c);
+    c = clamp((log2(max(c, 1e-10)) + 12.47393) / 16.500, 0.0, 1.0);
+    c = outset * nt_agxContrast(c);
+    c = fromRec2020 * pow(max(c, 0.0), vec3(2.2));
+    return pow(clamp(c, 0.0, 1.0), vec3(1.0 / 2.2));
+}
+vec3 nativeTone(vec3 col)
+{
+    vec4 p = uintBitsToFloat(u.drawInfo[0]);
+    if (p.x <= 0.0 && p.z <= 0.0)
+        return col;
+    vec3 c = max(col, 0.0);
+    if (p.x > 0.0)
+    {
+        // AgX works on linear light: the picture is taken as gamma 2.2, given an exposure that puts
+        // the shoulder where its highlights are, and the white point is renormalised.
+        vec3 f = p.y > 0.5 ? clamp(nt_agx(pow(c, vec3(2.2)) * 0.6) / 0.708, 0.0, 1.0) : clamp(nt_aces(c) / 0.8038, 0.0, 1.0);
+        c = mix(c, f, (p.y > 0.5 ? 0.7 : 0.5) * p.x);
+    }
+    if (p.z > 0.0)
+    {
+        // Modern Look: vibrance-weighted saturation, then an S-curve.
+        float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+        float sat = max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
+        c = clamp(mix(vec3(l), c, 1.0 + p.z * (0.25 + 0.35 * (1.0 - sat))), 0.0, 1.0);
+        c = mix(c, c * c * (3.0 - 2.0 * c), 0.35 * p.z);
+    }
+    return c;
+}
+// ---- end of the tone stage ----
+)";
+
+    // Inserts the tone stage into a grade shader's GLSL: its functions before main(), and the call
+    // after the shader has written its colour (before the alpha test). False if the shape is not as expected.
+    bool InjectNativeTone(std::string& glsl)
+    {
+        const size_t mainAt = glsl.find("void main()");
+        const size_t alphaAt = glsl.find("#ifdef ALPHA_TEST");
+        if (mainAt == std::string::npos || alphaAt == std::string::npos || alphaAt < mainAt)
+            return false;
+        glsl.insert(alphaAt, "    o_color[0].xyz = nativeTone(o_color[0].xyz);\n");
+        glsl.insert(mainAt, kNativeToneGlsl);
+        return true;
+    }
+
+
     void LoadShader(uint32_t type, const uint32_t* words, uint32_t dwords)
     {
         if (!s_vk || dwords == 0 || type > 1)
@@ -6998,6 +7618,84 @@ void main()
             if (!slot->info.ok)
                 fprintf(stderr, "[renderer] %s_%016llx: translation failed: %s\n", type == 0 ? "vs" : "ps",
                     (unsigned long long)h, slot->info.error.c_str());
+            if (slot->info.ok && type == 1 && (h == kGradeShaderHashes[0] || h == kGradeShaderHashes[1]))
+            {
+                if (InjectNativeTone(slot->info.glsl))
+                    fprintf(stderr, "[renderer] ps_%016llx: the game's final grade, with the tone stage added\n", (unsigned long long)h);
+                else
+                    fprintf(stderr, "[renderer] ps_%016llx: the final grade's shape is not as expected; no tone stage\n", (unsigned long long)h);
+            }
+            // NFSMW_PCF_TEST=1: the game's shadow filter taps (a 3x3 pattern of bilinear fetches around the shadow
+            // coordinate, 0.5 texel apart) get a live level, from drawInfo[1].y (file /tmp/ao/pcf): 0 as the game
+            // does it, 1 the four corner taps fetch the centre instead, 2 every tap does (one bilinear fetch).
+            if (slot->info.ok && type == 1)
+            {
+                static const bool pcfTest = std::getenv("NFSMW_PCF_TEST") != nullptr;
+                if (pcfTest)
+                {
+                    std::string& g = slot->info.glsl;
+                    static const std::regex tap(R"(texture\((t2d_\d+), \((vec2\([^()]*\)) \+ vec2\((-?[0-9.]+), (-?[0-9.]+)\) / vec2\(textureSize\(\1, 0\)\)\), ((?:texLod \+ )?fetchLodBias\(\d+u\))\))");
+                    int count = 0;
+                    std::string out;
+                    out.reserve(g.size() + 256);
+                    auto it = std::sregex_iterator(g.begin(), g.end(), tap);
+                    size_t last = 0;
+                    for (; it != std::sregex_iterator(); ++it)
+                    {
+                        const std::smatch& m = *it;
+                        const bool corner = std::stod(m[3]) != 0.0 && std::stod(m[4]) != 0.0;
+                        out.append(g, last, size_t(m.position(0)) - last);
+                        out += std::format("texture({}, ({} + (u.drawInfo[1].y >= {}u ? vec2(0.0) : vec2({}, {}) / vec2(textureSize({}, 0)))), {})",
+                            m[1].str(), m[2].str(), corner ? 1 : 2, m[3].str(), m[4].str(), m[1].str(), m[5].str());
+                        last = size_t(m.position(0) + m.length(0));
+                        count++;
+                    }
+                    if (count)
+                    {
+                        out.append(g, last, std::string::npos);
+                        g = std::move(out);
+                        fprintf(stderr, "[renderer] ps_%016llx: %d shadow filter taps have the NFSMW_PCF_TEST level\n", (unsigned long long)h, count);
+                    }
+                }
+            }
+            // NFSMW_SHADER_STUB=<hash>[,<hash>...]: those pixel shaders (16 hex digits, as logged) get a live switch: while
+            // /tmp/ao/stub exists their code is skipped for one constant colour (the picture is wrong), so a run can
+            // alternate the two in one still scene and read what the shader costs off the GPU time.
+            if (slot->info.ok && type == 1)
+            {
+                static const std::string stubs = [] { const char* v = std::getenv("NFSMW_SHADER_STUB"); return std::string(v ? v : ""); }();
+                if (!stubs.empty() && stubs.find(std::format("{:016x}", h)) != std::string::npos)
+                {
+                    std::string& g = slot->info.glsl;
+                    const size_t from = g.find("r[15] = i_i15;");
+                    const size_t to = g.find("#ifdef ALPHA_TEST");
+                    const size_t start = from == std::string::npos ? from : g.find("#endif", from);
+                    if (start != std::string::npos && to != std::string::npos && start < to)
+                    {
+                        g.insert(to, "    } else { o_color[0] = vec4(0.45, 0.45, 0.45, 1.0); }\n");
+                        g.insert(start + 6, "\n    if (u.drawInfo[1].x == 0u) {\n");
+                        fprintf(stderr, "[renderer] ps_%016llx: has the NFSMW_SHADER_STUB switch\n", (unsigned long long)h);
+                    }
+                }
+            }
+            // NFSMW_DUMP_GLSL=<dir>: the translated GLSL of each shader, with what it reads, for studying the game's own passes.
+            if (const char* dir = std::getenv("NFSMW_DUMP_GLSL"); dir && slot->info.ok)
+            {
+                char path[512];
+                snprintf(path, sizeof(path), "%s/%s_%016llx.glsl", dir, type == 0 ? "vs" : "ps", (unsigned long long)h);
+                if (FILE* f = fopen(path, "w"))
+                {
+                    fprintf(f, "// %s_%016llx: %u dwords, 2D textures %08X, 3D %08X, cube %08X, interpolators %08X, color targets %X%s%s\n", type == 0 ? "vs" : "ps",
+                        (unsigned long long)h, dwords, slot->info.texture2DMask, slot->info.texture3DMask, slot->info.textureCubeMask,
+                        slot->info.interpolatorMask, slot->info.colorTargetMask, slot->info.usesKill ? ", kills" : "", slot->info.writesDepth ? ", writes depth" : "");
+                    fprintf(f, "// float constants used:");
+                    for (int i = 0; i < 256; i++)
+                        if (slot->info.constUsed[i / 64] >> (i % 64) & 1)
+                            fprintf(f, " c%d", i);
+                    fprintf(f, "\n%s\n", slot->info.glsl.c_str());
+                    fclose(f);
+                }
+            }
             // Compiled to SPIR-V with its first pipeline, on a pipeline worker.
         }
         if (e)
@@ -7005,18 +7703,58 @@ void main()
         (type == 0 ? s_vs : s_ps) = slot.get();
     }
 
+    std::atomic<uint32_t> g_pcfLevel{ 0 };  // the NFSMW_PCF_TEST level
+    std::atomic<uint32_t> g_stubFlag{ 0 };  // the NFSMW_SHADER_STUB switch (see the translation hook)
+    std::string s_scenePassLog;  // NFSMW_LOG_SCENE_PASSES: this frame's scene-sized passes, flushed in OnSwap
+
     void Draw(uint32_t initiatorValue, uint32_t dmaBase, uint32_t dmaSizeValue)
     {
         if (!s_vk)
             return;
         reg::VGT_DRAW_INITIATOR initiator;
         initiator.value = initiatorValue;
+        // NFSMW_LOG_SCENE_PASSES=1: one line a frame listing the pixel shaders drawn into 1280-pitch surfaces
+        // (the scene-sized passes), so a game pass can be followed through a cutscene (see OnSwap).
+        {
+            static const bool on = std::getenv("NFSMW_LOG_SCENE_PASSES") != nullptr;
+            if (on && s_ps && (std::getenv("NFSMW_LOG_ALL_PASSES") || Reg<reg::RB_SURFACE_INFO>().surface_pitch == 1280) &&
+                Reg<reg::RB_MODECONTROL>().edram_mode != xenos::EdramMode::kCopy)
+            {
+                std::string token = std::format(" {:016x}(p{} msaa{} d{})", s_ps->hash, uint32_t(Reg<reg::RB_SURFACE_INFO>().surface_pitch),
+                    uint32_t(Reg<reg::RB_SURFACE_INFO>().msaa_samples), uint32_t(Reg<reg::RB_DEPTH_INFO>().depth_base));
+                if (s_scenePassLog.size() < token.size() || s_scenePassLog.compare(s_scenePassLog.size() - token.size(), token.size(), token) != 0)
+                    s_scenePassLog += token;  // (a run of draws with one shader counts once)
+            }
+        }
+        // NFSMW_LOG_FRAME_DRAWS=<first>[,<last>]: every draw of those frames (pixel shader, vertices, targets), for studying the game's passes.
+        {
+            static const std::pair<uint64_t, uint64_t> range = [] {
+                const char* v = std::getenv("NFSMW_LOG_FRAME_DRAWS");
+                if (!v) return std::pair<uint64_t, uint64_t>{ 1, 0 };
+                uint64_t a = std::strtoull(v, nullptr, 10), b = a;
+                if (const char* c = std::strchr(v, ',')) b = std::strtoull(c + 1, nullptr, 10);
+                return std::pair<uint64_t, uint64_t>{ a, b };
+            }();
+            if (s_frame >= range.first && s_frame <= range.second)
+            {
+                auto mode = Reg<reg::RB_MODECONTROL>().edram_mode;
+                fprintf(stderr, "[draw] f%llu mode %u %s prim %u verts %u ps %016llx vs %016llx | colour b%u fmt %u | depth b%u | surf pitch %u msaa %u\n",
+                    (unsigned long long)s_frame, uint32_t(mode), mode == xenos::EdramMode::kCopy ? "RESOLVE" : "draw", uint32_t(initiator.prim_type),
+                    uint32_t(initiator.num_indices), (unsigned long long)(s_ps ? s_ps->hash : 0), (unsigned long long)(s_vs ? s_vs->hash : 0),
+                    uint32_t(Reg<reg::RB_COLOR_INFO>().color_base), uint32_t(Reg<reg::RB_COLOR_INFO>().color_format),
+                    uint32_t(Reg<reg::RB_DEPTH_INFO>().depth_base), uint32_t(Reg<reg::RB_SURFACE_INFO>().surface_pitch),
+                    uint32_t(Reg<reg::RB_SURFACE_INFO>().msaa_samples));
+            }
+        }
         auto edramMode = Reg<reg::RB_MODECONTROL>().edram_mode;
         if (edramMode == xenos::EdramMode::kCopy)
         {
             Resolve();
             return;
         }
+        if (Reg<reg::RB_SURFACE_INFO>().surface_pitch == kCubePitch && CubeFaceSkipped() &&
+            (edramMode == xenos::EdramMode::kColorDepth || edramMode == xenos::EdramMode::kDepthOnly))
+            return;  // a face that is not drawn this frame (see CubeFaceSkipped)
         if (edramMode != xenos::EdramMode::kColorDepth && edramMode != xenos::EdramMode::kDepthOnly)
             return;
         // Depth-only: no pixel shader runs (depth_only.h); the guest's stays
@@ -7512,6 +8250,17 @@ void main()
         // were 9 KB an upload, ~2,500 uploads a frame into the BAR ring.
         const Shader* constLayoutVs = s_vs->info.constPacked ? s_vs : nullptr;
         const Shader* constLayoutPs = s_ps->info.constPacked ? s_ps : nullptr;
+        // The tone stage added to the game's final grade reads its settings from the constants: upload them when they change.
+        {
+            static float lastKey[3] = { -1.0f, -1.0f, -1.0f };
+            const float key[3] = { std::clamp(settings::GetFloat(settings::Id::ModernLighting), 0.0f, 1.0f), float(settings::GetInt(settings::Id::Tonemapper)),
+                std::clamp(settings::GetFloat(settings::Id::ModernLook), 0.0f, 1.0f) };
+            if (memcmp(key, lastKey, sizeof(key)) != 0)
+            {
+                memcpy(lastKey, key, sizeof(key));
+                g_constantsDirty.store(true, std::memory_order_relaxed);
+            }
+        }
         while (true)
         {
             bool uploadConstants = g_constantsDirty.load(std::memory_order_relaxed) ||
@@ -7544,12 +8293,65 @@ void main()
                 };
                 copyStage(constLayoutVs, 0);    // pc.vsConstBase
                 copyStage(constLayoutPs, 256);  // pc.psConstBase
+                {
+                    // NFSMW_LOG_GRADE=1: the gains the final grade's constants give each channel at w = 1, as uploaded.
+                    static const bool logGrade = std::getenv("NFSMW_LOG_GRADE") != nullptr;
+                    static uint64_t lastLog = 0;
+                    if (logGrade && constLayoutPs && s_frame >= lastLog + 120 && (s_ps->hash == kGradeShaderHashes[0] || s_ps->hash == kGradeShaderHashes[1]))
+                    {
+                        const uint32_t first = s_ps->hash == kGradeShaderHashes[0] ? 9 : 6;  // the block's first constant in each variant
+                        const float* v = reinterpret_cast<const float*>(c + (256 + first) * 16);
+                        float g[3] = {};
+                        for (int i = 0; i < 4; i++)
+                            for (int ch = 0; ch < 3; ch++)
+                                g[ch] += v[i * 4 + 1 + ch];
+                        lastLog = s_frame;
+                        fprintf(stderr, "[grade] f%llu: ps %016llx uploads gains %.3f : %.3f : %.3f at w = 1 (x weight sums to %.3f)\n", (unsigned long long)s_frame,
+                            (unsigned long long)s_ps->hash, g[0], g[1], g[2], v[0] + v[4] + v[8] + v[12]);
+                    }
+                }
+                {
+                    // NFSMW_LOG_GRADE_CONSTS=1: which pixel constants of the final grade shaders change, and when (the file the
+                    // game writes, before this host's own edits are blind to: register numbers are the game's).
+                    static const bool logConsts = std::getenv("NFSMW_LOG_GRADE_CONSTS") != nullptr;
+                    if (logConsts && (s_ps->hash == kGradeShaderHashes[0] || s_ps->hash == kGradeShaderHashes[1]))
+                    {
+                        static float last[2][256][4];
+                        static bool have[2] = {};
+                        const int which = s_ps->hash == kGradeShaderHashes[0] ? 0 : 1;
+                        float now[256][4];
+                        for (int i = 0; i < 256; i++)
+                            for (int k = 0; k < 4; k++)
+                            {
+                                const uint32_t bits = s_regs[XE_GPU_REG_SHADER_CONSTANT_000_X + (256 + i) * 4 + k];
+                                memcpy(&now[i][k], &bits, 4);
+                            }
+                        if (have[which])
+                            for (int i = 0; i < 256; i++)
+                                if (memcmp(now[i], last[which][i], 16) != 0 && i < 64)
+                                    fprintf(stderr, "[gconst] f%llu t=%.3f ps %c c%d: %.4f %.4f %.4f %.4f -> %.4f %.4f %.4f %.4f\n", (unsigned long long)s_frame, std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(),
+                                        which ? 'd' : '7', i, last[which][i][0], last[which][i][1], last[which][i][2], last[which][i][3],
+                                        now[i][0], now[i][1], now[i][2], now[i][3]);
+                        memcpy(last[which], now, sizeof(now));
+                        have[which] = true;
+                    }
+                }
                 s_lastConstLayoutVs = constLayoutVs;
                 s_lastConstLayoutPs = constLayoutPs;
                 memcpy(c + 512 * 16, &s_regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0], 48 * 16);
                 memcpy(c + 560 * 16, &s_regs[XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031], 2 * 16);
                 memcpy(c + 562 * 16, &s_regs[XE_GPU_REG_SHADER_CONSTANT_LOOP_00], 8 * 16);
                 memset(c + 570 * 16, 0, 4 * 16);
+                {
+                    // drawInfo[0]: the tone stage added to the game's final grade (kNativeToneGlsl).
+                    // Tonemapper Off (2): no strength, so the stage leaves the game's own tone (Modern Look is its own setting).
+                    const int32_t curve = settings::GetInt(settings::Id::Tonemapper);
+                    const float tone[4] = { curve == 2 ? 0.0f : std::clamp(settings::GetFloat(settings::Id::ModernLighting), 0.0f, 1.0f),
+                        float(curve == 1 ? 1 : 0), std::clamp(settings::GetFloat(settings::Id::ModernLook), 0.0f, 1.0f), 0.0f };
+                    memcpy(c + 570 * 16, tone, sizeof(tone));
+                    const uint32_t stubWords[4] = { g_stubFlag.load(std::memory_order_relaxed), g_pcfLevel.load(std::memory_order_relaxed), 0, 0 };
+                    memcpy(c + 571 * 16, stubWords, sizeof(stubWords));
+                }
                 s_lastConstantsOffset = at;
                 s_lastConstantsSubmission = s_submissionCounter;
                 s_stats.constantUploads++;
@@ -9000,6 +9802,57 @@ void main()
             }
             log.now = frame >= log.first && frame <= log.last;
             writewatch::SetWriterFrame(frame);
+        }
+        if (!s_scenePassLog.empty())
+        {
+            fprintf(stderr, "[passes] f%llu t=%.3f:%s\n", (unsigned long long)s_frame, std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(), s_scenePassLog.c_str());
+            s_scenePassLog.clear();
+        }
+        s_cubeResolves = 0;
+        if (s_frame % 20 == 0)
+        {
+            static const bool pcfTesting = std::getenv("NFSMW_PCF_TEST") != nullptr;
+            if (pcfTesting)
+            {
+                uint32_t level = 0;
+                if (FILE* f = fopen("/tmp/ao/pcf", "r"))
+                {
+                    int v = 0;
+                    if (fscanf(f, "%d", &v) == 1)
+                        level = uint32_t(std::clamp(v, 0, 2));
+                    fclose(f);
+                }
+                if (g_pcfLevel.exchange(level) != level)
+                {
+                    g_constantsDirty.store(true, std::memory_order_relaxed);
+                    fprintf(stderr, "[pcf] frame %llu: level %u\n", (unsigned long long)s_frame, level);
+                }
+            }
+            // NFSMW_AF_TEST=1: the anisotropic filtering setting follows the number in /tmp/ao/af (1, 2, 4, 8, 16), live.
+            static const bool afTesting = std::getenv("NFSMW_AF_TEST") != nullptr;
+            if (afTesting)
+            {
+                if (FILE* f = fopen("/tmp/ao/af", "r"))
+                {
+                    int v = 0;
+                    if (fscanf(f, "%d", &v) == 1 && v >= 1 && v <= 16 && int(settings::GetInt(settings::Id::Anisotropy)) != v)
+                    {
+                        settings::Set(settings::Id::Anisotropy, double(v));
+                        fprintf(stderr, "[af] frame %llu: %dx\n", (unsigned long long)s_frame, v);
+                    }
+                    fclose(f);
+                }
+            }
+            static const bool stubbing = std::getenv("NFSMW_SHADER_STUB") != nullptr;
+            if (stubbing)
+            {
+                const uint32_t on = access("/tmp/ao/stub", F_OK) == 0 ? 1u : 0u;
+                if (g_stubFlag.exchange(on) != on)
+                {
+                    g_constantsDirty.store(true, std::memory_order_relaxed);
+                    fprintf(stderr, "[stub] frame %llu: %s\n", (unsigned long long)s_frame, on ? "ON" : "off");
+                }
+            }
         }
         s_frame = frame;
         if (s_zpdOn)

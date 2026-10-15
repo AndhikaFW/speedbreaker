@@ -1,0 +1,36 @@
+--- a/libavcodec/wmaprodec.c
++++ b/libavcodec/wmaprodec.c
+@@ -114,7 +114,11 @@
+ #define MAX_SUBFRAMES  32                                    ///< max number of subframes per channel
+ #define MAX_BANDS      29                                    ///< max number of scale factor bands
+ #define MAX_FRAMESIZE  32768                                 ///< maximum compressed frame size
+-#define XMA_MAX_STREAMS         8
++/* nfsmw-recomp: one stream a decoder. The Xbox 360's XMA hardware decodes one
++ * stream of 1 or 2 channels per context (all the host passes in), and the
++ * decoder's context holds a full WMA Pro state per possible stream: 8 of them
++ * were 3.2 MB (zeroed, so resident) for each of ~300 contexts: ~900 MB. */
++#define XMA_MAX_STREAMS         1
+ #define XMA_MAX_CHANNELS_STREAM 2
+ #define XMA_MAX_CHANNELS        (XMA_MAX_STREAMS * XMA_MAX_CHANNELS_STREAM)
+ 
+@@ -2017,7 +2021,10 @@
+     if (start_channels != avctx->ch_layout.nb_channels)
+         return AVERROR_INVALIDDATA;
+ 
+-    for (int i = 0; i < XMA_MAX_STREAMS; i++) {
++    /* nfsmw-recomp: a FIFO pair per stream the file has, not per possible
++     * stream (8 pairs of ~112 KB a decoder, one in use: 300 decoders held
++     * ~500 MB). The ones past num_streams stay NULL (free accepts it). */
++    for (int i = 0; i < s->num_streams; i++) {
+         s->samples[0][i] = av_audio_fifo_alloc(avctx->sample_fmt, 1, 64 * 512);
+         s->samples[1][i] = av_audio_fifo_alloc(avctx->sample_fmt, 1, 64 * 512);
+         if (!s->samples[0][i] || !s->samples[1][i])
+@@ -2077,6 +2084,8 @@
+     int i;
+ 
+     for (i = 0; i < XMA_MAX_STREAMS; i++) {
++        if (!s->samples[0][i])
++            continue;
+         av_audio_fifo_reset(s->samples[0][i]);
+         av_audio_fifo_reset(s->samples[1][i]);
+     }

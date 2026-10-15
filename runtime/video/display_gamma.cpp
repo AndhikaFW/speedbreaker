@@ -60,6 +60,16 @@ namespace video::display_gamma
             uint64_t n = s_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
             fprintf(stderr, "[video] display gamma ramp #%llu from the game at %.1f s: %s\n", (unsigned long long)n, Seconds(),
                 Describe(t).c_str());
+            if (std::getenv("NFSMW_LOG_RAMP_RAW"))
+            {
+                fprintf(stderr, "[ramp] #%llu red[0..15]:", (unsigned long long)n);
+                for (int i = 0; i < 16; i++)
+                    fprintf(stderr, " %u", unsigned(t.entry[i][0]));
+                fprintf(stderr, " | red[128..135]:");
+                for (int i = 128; i < 136; i++)
+                    fprintf(stderr, " %u", unsigned(t.entry[i][0]));
+                fprintf(stderr, "\n");
+            }
         }
     }
 

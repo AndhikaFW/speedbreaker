@@ -1166,10 +1166,25 @@ vec3 toneOf(vec3 c)
         textureLod(toneTable, vec2(t.b, 0.5), 0.0).b);
 }
 
+// Modern Look: vibrance-weighted saturation, then a filmic S-curve. The
+// strength is 2 * (1 - alpha) of the table's first texel.
+vec3 modernOf(vec3 c, float s)
+{
+    float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    float sat = max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
+    c = mix(vec3(l), c, 1.0 + s * (0.25 + 0.35 * (1.0 - sat)));
+    c = clamp(c, 0.0, 1.0);
+    return mix(c, c * c * (3.0 - 2.0 * c), 0.35 * s);
+}
+
 void main()
 {
     scaleMain();
-    color = vec4(toneOf(color.rgb), color.a);
+    vec3 c = toneOf(color.rgb);
+    float s = 2.0 * (1.0 - textureLod(toneTable, vec2(0.5 / 256.0, 0.5), 0.0).a);
+    if (s > 0.0)
+        c = modernOf(c, s);
+    color = vec4(c, color.a);
 }
 )";
 
@@ -1205,6 +1220,7 @@ void main()
             bool filled = false;
             int32_t brightness = 0;
             bool ramp = false;
+            double cast = 0.0, modern = 0.0, rich = 0.0;
             uint64_t rampGeneration = 0;
         } s_tone;
 
@@ -1515,14 +1531,17 @@ void main()
         {
             const int32_t brightness = std::clamp(settings::GetInt(settings::Id::Brightness), tone::kBrightnessMin, tone::kBrightnessMax);
             const bool useRamp = settings::GetBool(settings::Id::DisplayGamma);
-            if (tone::Neutral(brightness, useRamp) || !EnsureTone())
+            const double cast = 0.0;  // the orange tint is now removed at its source: the game's own composite shader (gpu/renderer.cpp)
+            const double modern = 0.0;  // Modern Look is part of the game's own final grade now (gpu/renderer.cpp)
+            const double rich = 0.0;  // Rich Blacks deepens the game's own ramp where it builds it (game/colour_grade.cpp)
+            if (tone::Neutral(brightness, useRamp, cast, modern, rich) || !EnsureTone())
                 return false;
             const uint64_t rampGeneration = useRamp ? display_gamma::Generation() : 0;
-            if (s_tone.filled && s_tone.brightness == brightness && s_tone.ramp == useRamp && s_tone.rampGeneration == rampGeneration)
+            if (s_tone.filled && s_tone.brightness == brightness && s_tone.ramp == useRamp && s_tone.cast == cast && s_tone.modern == modern && s_tone.rich == rich && s_tone.rampGeneration == rampGeneration)
                 return true;
             display_gamma::Table ramp;
             const bool haveRamp = useRamp && display_gamma::Latest(ramp) != 0;
-            const tone::Lut lut = tone::BuildLut(brightness, haveRamp ? &ramp : nullptr);
+            const tone::Lut lut = tone::BuildLut(brightness, haveRamp ? &ramp : nullptr, cast, modern, rich);
             const auto texels = tone::ToHalfTexels(lut);
             // The frames in flight may be reading the table: rare (a setting
             // or the game's own ramp changed), so wait for them.
@@ -1542,6 +1561,9 @@ void main()
             s_tone.filled = true;
             s_tone.brightness = brightness;
             s_tone.ramp = useRamp;
+            s_tone.cast = cast;
+            s_tone.modern = modern;
+            s_tone.rich = rich;
             s_tone.rampGeneration = rampGeneration;
             return true;
         }

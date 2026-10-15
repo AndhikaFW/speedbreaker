@@ -48,6 +48,16 @@ namespace settings
         AspectRatio,
         Brightness,    // the game's picture (video/display_tone.h)
         DisplayGamma,  // the 360's display gamma ramp (video/display_gamma.h)
+        OrangeTint,    // strength of the cast removal (video/display_tone.h)
+        ModernLook,    // saturation and contrast in the final pass (video/display_tone.h)
+        AmbientOcclusion,  // darkening in creases, from the depth buffer (gpu/renderer.cpp)
+        MotionBlur,        // radial speed blur, race scenes (gpu/renderer.cpp)
+        Bloom,             // glow around bright areas (gpu/renderer.cpp)
+        ModernLighting,    // the tonemapper's strength (gpu/renderer.cpp)
+        Tonemapper,        // 0 filmic, 1 AgX (gpu/renderer.cpp)
+        RichBlacks,    // the shadows pinned to a deep ramp (video/display_tone.h)
+        ShadowResolution,  // the sun shadow map's size (game/colour_grade.cpp)
+        ReflectionRefresh, // how often the car reflection cube map's faces are redrawn (gpu/renderer.cpp)
         Sharpening,
         Anisotropy,
         Mipmaps,

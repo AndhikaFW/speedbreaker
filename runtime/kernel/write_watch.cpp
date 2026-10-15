@@ -717,6 +717,22 @@ namespace writewatch
         // above a frame of GPU latency: below it, each give-up would reload
         // the texture and the next store would wait again, every frame.
         constexpr auto kUntileWait = std::chrono::milliseconds(100);
+        // Lazy readback: a CPU read of a small GPU-resolved buffer (the 64x64 luminance targets and the 320x180
+        // bloom chain NFSMW's auto-exposure reads back) does not wait for the GPU: it gets the GPU's copy as it
+        // is now (last frame's, or part of this one's: exposure adapts over many frames), and the page opens
+        // for reads until the next submission boundary. Waiting made the CPU idle through the GPU's whole frame
+        // before it could start the next (GPU-bound: 20-100 ms stalls, and no overlap of CPU and GPU work).
+        // NFSMW_LAZY_READBACK=0 waits as before; NFSMW_LAZY_READBACK_BYTES sets the largest buffer (default 256 KB).
+        const bool s_lazyReadback = [] { const char* v = std::getenv("NFSMW_LAZY_READBACK"); return !(v && v[0] == '0'); }();
+        const uint32_t s_lazyBytes = [] { const char* v = std::getenv("NFSMW_LAZY_READBACK_BYTES"); return v ? uint32_t(std::strtoul(v, nullptr, 0)) : 0x40000u; }();
+        bool LazyReadback(uint32_t sub, bool write)
+        {
+            if (!s_lazyReadback || write || t_gpuThread)
+                return false;
+            const char* tag = s_gpuTag[sub].load();
+            return tag && strcmp(tag, "resolve") == 0 && s_gpuRange[1][sub].load() <= s_lazyBytes;
+        }
+
         bool WaitForGpu(uint32_t sub, bool write, bool untile = false)
         {
             uint64_t use = untile ? s_gpuUntile[sub].load() : Hazard(sub, write);
@@ -776,7 +792,7 @@ namespace writewatch
                 auto& use = uses[sub];
                 if (use.load(std::memory_order_relaxed) < submission)
                     Put(use, submission);
-                if (s_logGuard)
+                if (s_logGuard || s_lazyReadback)
                 {
                     s_gpuTag[sub].store(tag);
                     s_gpuRange[0][sub].store(physical);
@@ -847,7 +863,7 @@ namespace writewatch
             if (dladdr(reinterpret_cast<const void*>(&Initialize), &dl))
                 s_imageBase = static_cast<const uint8_t*>(dl.dli_fbase);
         }
-        if (s_logGuard)
+        if (s_logGuard || s_lazyReadback)
         {
             s_gpuTag.reset(new std::atomic<const char*>[kSubCount]);
             s_gpuRange[0].reset(new std::atomic<uint32_t>[kSubCount]);
@@ -1012,9 +1028,11 @@ namespace writewatch
         bool markUntiles = false;  // a wait for another guest page's untile gave up
         while (true)
         {
-            WaitForGpu(sub, write);
+            const bool lazy = LazyReadback(sub, write);
+            if (!lazy)
+                WaitForGpu(sub, write);
             std::unique_lock lock(s_protectMutex);
-            if (!t_gpuThread && Hazard(sub, write) > s_completed.load())
+            if (!lazy && !t_gpuThread && Hazard(sub, write) > s_completed.load())
                 continue;
             if (t_gpuThread)
             {
@@ -1031,13 +1049,20 @@ namespace writewatch
                 for (uint32_t i = 0, s2 = page * s_subsPerPage; i < s_subsPerPage; i++, s2++)
                     if (!t_gpuThread && s_gpuWrite[s2].load() > s_completed.load())
                         pendingSub = s2;
-                if (pendingSub != UINT32_MAX)
+                if (pendingSub != UINT32_MAX && !lazy)
                 {
                     lock.unlock();
                     WaitForGpu(pendingSub, false);
                     continue;
                 }
                 ReadBackLocked(page);
+                if (lazy && pendingSub != UINT32_MAX)
+                {
+                    static std::atomic<uint64_t> lazyCount{ 0 };
+                    if (lazyCount.fetch_add(1) == 0)
+                        fprintf(stderr, "[guard] lazy readback: a CPU read of a small GPU-resolved buffer (%08X, %s) is served without waiting for the GPU\n",
+                            uint32_t(physical), s_gpuTag[sub].load());
+                }
             }
             if (write)
             {

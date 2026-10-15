@@ -56,9 +56,9 @@ namespace video::tone
     }
 
     // Nothing to apply: the presenter keeps its plain pipeline.
-    inline bool Neutral(int32_t brightness, bool useRamp)
+    inline bool Neutral(int32_t brightness, bool useRamp, double cast = 0.0, double modern = 0.0, double rich = 0.0)
     {
-        return std::clamp(brightness, kBrightnessMin, kBrightnessMax) == 0 && !useRamp;
+        return std::clamp(brightness, kBrightnessMin, kBrightnessMax) == 0 && !useRamp && cast <= 0.0 && modern <= 0.0 && rich <= 0.0;
     }
 
     // out[k][c]: what framebuffer value k/255 of channel c (red, green, blue)
@@ -66,18 +66,37 @@ namespace video::tone
     struct Lut
     {
         std::array<std::array<float, 3>, 256> entry{};
+        // Modern Look strength, 0..1: handed to the shader in the texels'
+        // alpha as 1 - modern / 2 (alpha 1 is off).
+        double modern = 0.0;
     };
 
     // The table for a Brightness step and, when `ramp` is given, the 360's
     // display ramp before it.
-    inline Lut BuildLut(int32_t brightness, const display_gamma::Table* ramp)
+    // `cast` (0..1) removes the game's orange grade: a power per channel
+    // (red up, blue down), so black and white stay put.
+    constexpr double kCastRedExponent = 0.20, kCastBlueExponent = -0.18;
+
+    // `rich` (0..1) moves the picture toward a fixed deep ramp, v^1.4 (about the
+    // deeper of the two ramps Most Wanted programs: 64 -> 34 of 255, against 52
+    // for the other), whichever ramp the game has set: richer blacks and darks, and
+    // no jump when the game changes its ramp (respawning does).
+    constexpr double kRichGamma = 1.4;
+
+    inline Lut BuildLut(int32_t brightness, const display_gamma::Table* ramp, double cast = 0.0, double modern = 0.0, double rich = 0.0)
     {
+        rich = std::clamp(rich, 0.0, 1.0);
+        cast = std::clamp(cast, 0.0, 1.0);
+        const double castExp[3] = { 1.0 + kCastRedExponent * cast, 1.0, 1.0 + kCastBlueExponent * cast };
         Lut lut;
+        lut.modern = std::clamp(modern, 0.0, 1.0);
         for (uint32_t k = 0; k < 256; k++)
             for (uint32_t c = 0; c < 3; c++)
             {
                 double v = ramp ? ramp->entry[k][c] / 1023.0 : k / 255.0;
-                lut.entry[k][c] = float(ApplyBrightness(v, brightness));
+                if (rich > 0.0)
+                    v = v * (1.0 - rich) + std::pow(k / 255.0, kRichGamma) * rich;
+                lut.entry[k][c] = float(std::pow(ApplyBrightness(v, brightness), castExp[c]));
             }
         return lut;
     }
@@ -126,7 +145,7 @@ namespace video::tone
         {
             for (uint32_t c = 0; c < 3; c++)
                 texels[k * 4 + c] = ToHalf(lut.entry[k][c]);
-            texels[k * 4 + 3] = ToHalf(1.0f);
+            texels[k * 4 + 3] = ToHalf(float(1.0 - lut.modern / 2.0));
         }
         return texels;
     }

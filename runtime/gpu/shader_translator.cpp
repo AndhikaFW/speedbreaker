@@ -109,6 +109,24 @@ bool boolConst(uint i) { return ((u.bools[i >> 7][(i >> 5) & 3u] >> (i & 31u)) &
 // No `precise` anywhere: MoltenVK (SPIRV-Cross) implements it with
 // optnone helper calls per operation, making shaders ~20x slower. Positions
 // stay identical across passes through `invariant gl_Position` instead.
+// NFSMW_XMUL (read when a shader is translated): exact (the default, the rule as above), nan (a plain
+// multiply, with a NaN result, which is what 0 * infinity or NaN gives, made 0: one compare and a select),
+// fast (a plain multiply: 0 * infinity or NaN stays NaN; no extra work).
+#if defined(XMUL_FAST)
+vec4 xmul(vec4 a, vec4 b) { return a * b; }
+float xmul(float a, float b) { return a * b; }
+#elif defined(XMUL_NAN)
+vec4 xmul(vec4 a, vec4 b)
+{
+    vec4 r = a * b;
+    return mix(r, vec4(0.0), isnan(r));
+}
+float xmul(float a, float b)
+{
+    float r = a * b;
+    return isnan(r) ? 0.0 : r;
+}
+#else
 vec4 xmul(vec4 a, vec4 b)
 {
     vec4 r = a * b;
@@ -120,6 +138,7 @@ float xmul(float a, float b)
     float r = a * b;
     return (abs(a) == 0.0 || abs(b) == 0.0) ? 0.0 : r;
 }
+#endif
 )";
     }
 
@@ -1035,6 +1054,11 @@ vec3 cubeDirection(vec3 c)
         result.registerCount = regCount;
 
         std::string g = ShaderCommonGlsl();
+        {
+            static const std::string mode = [] { const char* v = std::getenv("NFSMW_XMUL"); return std::string(v ? v : "exact"); }();
+            if (mode == "fast" || mode == "nan")
+                g.insert(g.find('\n') + 1, mode == "fast" ? "#define XMUL_FAST 1\n" : "#define XMUL_NAN 1\n");
+        }
         g += kHelpers;
         g += std::format("#define R_COUNT {}\n", regCount);
         for (uint32_t n = 0; n < 32; n++)
