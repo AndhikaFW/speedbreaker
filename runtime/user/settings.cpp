@@ -86,9 +86,12 @@ namespace settings
         // The scale in half steps (settings.h); the tokens are what
         // settings.toml and NFSMW_RESOLUTION hold, so older files read as
         // before.
+        // 0x32 and 0x23 hold an axis each (half steps of x in the high nibble, of y in the low one): 1.5x1 and 1x1.5.
         constexpr EnumEntry kResolutionEntries[] = {
             { kResolutionAuto, "auto", "Auto" },
             { 2, "1x", "1x (720p)" },
+            { 0x32, "1.5x1", "1.5x wide only (1.5x1)" },
+            { 0x23, "1x1.5", "1.5x tall only (1x1.5)" },
             { 3, "1.5x", "1.5x (1080p)" },
             { 4, "2x", "2x (1440p)" },
             { 6, "3x", "3x (2160p)" },

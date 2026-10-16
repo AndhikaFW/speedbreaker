@@ -1880,6 +1880,8 @@ namespace gpu::renderer
         // now: video::AutoRenderScale) could pick 1.5x by returning one.
         gpu::RenderScale WantedRenderScale(int32_t setting, uint32_t regionW, uint32_t regionH)
         {
+            if (setting >= 0x20)  // an axis each: half steps of x in the high nibble, of y in the low one (0x32: 1.5x1)
+                return { gpu::AxisFromHalves(uint32_t(std::clamp(setting >> 4, 2, 6))), gpu::AxisFromHalves(uint32_t(std::clamp(setting & 15, 2, 6))) };
             if (setting > 0)
             {
                 gpu::AxisScale a = gpu::AxisFromHalves(uint32_t(std::clamp(setting, 2, 6)));
