@@ -176,3 +176,14 @@ applied once the game's table holds `old`), `NFSMW_XMUL`, `NFSMW_LOG_SPEED`, `NF
 `runtime/CMakeLists.txt` adds `-mcpu=native` on aarch64 Linux (`-DSB_NATIVE_ARM=OFF` for a generic binary; clang
 resolves it to `apple-m1` on this machine). **Not yet built or measured**: it needs a full rebuild of the
 recompiled sources, and the game is GPU-bound (CPU about 79 % idle), so expect little.
+
+## Motion blur by depth
+The blur's streak length now follows scene depth (relative to the player's car, which the chase camera keeps at a fixed
+distance): near scenery streaks more, distant scenery and the sky much less, instead of scaling by screen position only.
+It takes 12 taps with a fixed per-pixel offset (no shimmer, less banding than 16 even steps) and gives little weight to a
+tap well in front of the pixel, so a pole or rail does not smear over the scenery behind it. The first version stays
+selectable: `NFSMW_MOTION_OLD=1`; `NFSMW_MOTION_AB=1` switches to it live while `/tmp/ao/mb` exists, and
+`NFSMW_MOTION_FORCE=<0..1>` fixes the speed factor for testing.
+**Evidence:** GPU time 17.8 ms (new) vs 17.4 ms (old), 11 samples each, +2 %, inside the noise (the scenes differed between
+windows, so this is a rough check, not a same-scene measurement). The new look was only viewed in one frame; no same-scene
+side-by-side exists yet.

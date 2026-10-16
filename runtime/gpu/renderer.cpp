@@ -5158,6 +5158,75 @@ void main()
 }
 )";
 
+        // The motion blur by depth: a forward-moving camera shifts a pixel along the line from the vanishing point
+        // by an amount that grows with the distance from it and with 1/depth, so near scenery streaks more than far
+        // scenery and the sky hardly at all (the first version scaled by screen position only). The depth is
+        // taken relative to the car's, which the chase camera keeps at a fixed distance. The 12 taps are offset by
+        // a fixed per-pixel pattern (no shimmer, less banding than 16 even steps), and a tap that lies well in
+        // front of the pixel counts for little, so a pole or a rail doesn't smear across the scenery behind it.
+        const char* kPostMotionDepthGlsl = R"(#version 460
+#extension GL_EXT_samplerless_texture_functions : require
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform texture2D u_depth;
+layout(set = 0, binding = 1) uniform sampler2D u_color;
+layout(set = 0, binding = 2, rgba8) uniform writeonly image2D u_out;
+layout(push_constant) uniform P { ivec2 size; float a; float b; ivec2 i; } p;
+
+float W(vec2 q)
+{
+    return 1.0 - texelFetch(u_depth, clamp(ivec2(q), ivec2(0), p.size - 1), 0).r;
+}
+
+// The player's car (see the first version): inside the area where it sits and at its depth.
+float carMaskW(vec2 q, float wq, float anchorW)
+{
+    vec2 u = q / vec2(p.size);
+    float ell = 1.0 - smoothstep(0.85, 1.15, length((u - vec2(0.5, 0.74)) / vec2(0.28, 0.27)));
+    if (ell <= 0.0)
+        return 0.0;
+    float dw = abs(wq - anchorW) / max(anchorW, 1e-5);
+    return ell * (1.0 - smoothstep(0.12, 0.32, dw));
+}
+
+void main()
+{
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= p.size.x || px.y >= p.size.y)
+        return;
+    vec2 size = vec2(p.size);
+    vec2 ts = vec2(textureSize(u_color, 0));
+    vec2 pos = vec2(px) + 0.5;
+    float wa = W(size * vec2(0.50, 0.80)), wb = W(size * vec2(0.44, 0.78)), wc3 = W(size * vec2(0.56, 0.78));
+    float anchorW = max(min(wa, wb), min(max(wa, wb), wc3));
+    float wc = W(pos);
+    float mask = carMaskW(pos, wc, anchorW);
+    vec2 d = pos / size - vec2(0.5, 0.5);
+    float edge = smoothstep(0.10, 0.65, length(d * vec2(1.0, 0.8)) * 1.6);
+    float rel = wc / max(anchorW, 1e-5);  // 1 at the car's depth, less beyond it, more in front
+    float depthK = wc < 2e-6 ? 0.1 : clamp(1.9 * sqrt(rel), 0.2, 2.5);
+    float len = p.a * 0.15 * edge * depthK * (1.0 - mask);
+    vec3 acc = textureLod(u_color, pos / ts, 0.0).rgb;
+    float wsum = 1.0;
+    if (len > 0.0008)
+    {
+        const int N = 12;
+        float jitter = fract(52.9829189 * fract(dot(pos, vec2(0.06711056, 0.00583715))));
+        for (int k = 1; k <= N; k++)
+        {
+            float t = (float(k) - jitter) / float(N);
+            vec2 q = clamp(pos - d * len * t * size, vec2(0.5), size - 0.5);
+            float wq = W(q);
+            float w = 1.0 - 0.6 * t;
+            w *= 1.0 - carMaskW(q, wq, anchorW);
+            w *= 1.0 - 0.8 * smoothstep(1.3, 2.0, wq / max(wc, 1e-5));  // well in front of this pixel: mostly left out
+            acc += textureLod(u_color, q / ts, 0.0).rgb * w;
+            wsum += w;
+        }
+    }
+    imageStore(u_out, px, vec4(acc / wsum, 1.0));
+}
+)";
+
         // Ambient occlusion in three steps (see the comment above): the occlusion at half
         // size, a depth-aware blur across and down, and an application to the colour
         // that upsamples it by depth. (Per-pixel noise would shimmer.)
@@ -5299,7 +5368,7 @@ void main()
             Image scratch, aoA, aoB;  // the motion blur's output; the occlusion's half-size images (made when used)
             bool aoMade = false;
             VkSampler sampler = VK_NULL_HANDLE;
-            PostPass motion, aoGen, aoBlur, aoApply;
+            PostPass motion, motionDepth, aoGen, aoBlur, aoApply;
         } s_post;
 
         void ReleasePostFx()
@@ -5344,6 +5413,7 @@ void main()
                 sci.maxLod = 0.0f;
                 Check(vkCreateSampler(s_dev, &sci, nullptr, &s_post.sampler), "vkCreateSampler(post)");
                 MakePostPass(s_post.motion, kPostMotionGlsl, { tex, comb, store });
+                MakePostPass(s_post.motionDepth, kPostMotionDepthGlsl, { tex, comb, store });
                 fprintf(stderr, "[renderer] scene post pipelines made\n");
             }
             if (ao && !s_post.aoGen.pipeline)
@@ -5404,7 +5474,11 @@ void main()
         {
             if (!EnsurePostFx(w, h, false))
                 return;
-            PostDispatch(s_post.motion, { { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, depth->sampleView }, { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, source->image.view },
+            // NFSMW_MOTION_OLD=1: the first, screen-position-only blur; with NFSMW_MOTION_AB it is used while /tmp/ao/mb exists (for
+            // comparing the two in one scene).
+            static const bool oldOnly = std::getenv("NFSMW_MOTION_OLD") != nullptr, ab = std::getenv("NFSMW_MOTION_AB") != nullptr;
+            const bool useOld = oldOnly || (ab && access("/tmp/ao/mb", F_OK) == 0);
+            PostDispatch(useOld ? s_post.motion : s_post.motionDepth, { { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, depth->sampleView }, { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, source->image.view },
                 { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, s_post.scratch.view } }, { int32_t(w), int32_t(h), motion, 0.0f, 0, 0 }, w, h);
             VkImageCopy copy{};
             copy.srcSubresource = copy.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
@@ -5538,7 +5612,8 @@ void main()
                     return;  // not the first tile band
             }
             // The blur's strength from the car's speed: nothing to do (and nothing recorded) while it would not show.
-            const float motion = motionSetting > 0.0f ? motionSetting * MotionSpeedFactor(race) : 0.0f;
+            static const float forcedMotion = [] { const char* v = std::getenv("NFSMW_MOTION_FORCE"); return v ? float(std::atof(v)) : -1.0f; }();
+            const float motion = motionSetting > 0.0f ? motionSetting * (forcedMotion >= 0.0f ? forcedMotion : MotionSpeedFactor(race)) : 0.0f;
             const bool blur = motion > 0.02f;
             if (strength <= 0.0f && !blur)
                 return;
