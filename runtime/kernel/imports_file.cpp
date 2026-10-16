@@ -9,6 +9,7 @@
 #include <cerrno>
 #include <kernel/write_watch.h>
 #include <report/report.h>
+#include <game/startup_movies.h>
 #include "dispatcher.h"
 #include "function.h"
 #include "vfs.h"
@@ -289,6 +290,7 @@ uint32_t NtCreateFile(be<uint32_t>* handleOut, uint32_t desiredAccess, XOBJECT_A
     }
 
     *handleOut = GetKernelHandle(file);
+    startup_movies::NoteOpen(guestPath->c_str());
     fprintf(stderr, "[file] open \"%s\" -> %s%s\n", guestPath->c_str(), resolved->host.c_str(),
         action == FILE_CREATED ? " (created)" : "");
     Complete(iosb, STATUS_SUCCESS, action);

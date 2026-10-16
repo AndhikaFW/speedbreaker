@@ -187,3 +187,11 @@ selectable: `NFSMW_MOTION_OLD=1`; `NFSMW_MOTION_AB=1` switches to it live while 
 **Evidence:** GPU time 17.8 ms (new) vs 17.4 ms (old), 11 samples each, +2 %, inside the noise (the scenes differed between
 windows, so this is a rough check, not a same-scene measurement). The new look was only viewed in one frame; no same-scene
 side-by-side exists yet.
+
+## Skip Startup Movies
+Settings > Advanced > Skip Startup Movies (on by default; `NFSMW_SKIP_STARTUP_MOVIES=0` turns it off). The game plays
+`eahd_bumper`, `ealogo` and `psa`, then the title screen's `attract_movie`. `runtime/game/startup_movies.cpp` recognises them by
+the file the game opens and pulses the A button (the game's own skip) while the XMV player is rendering, until the attract movie
+has started and stopped; later movies (tutorials, story videos) are untouched. Nothing is faked: the game receives a normal button
+press. **Checked:** with it on, the game reached the "Press START to begin" title screen about 9 s after launch (24 s screenshot).
+Not checked: a controller held down at the same time.

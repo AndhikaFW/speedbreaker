@@ -75,6 +75,7 @@ namespace settings
         // Advanced
         AsyncShaders,
         PerformanceOverlay,
+        SkipStartupMovies,  // press A through the logos and the title movie at launch (game/startup_movies.cpp)
         Count
     };
     constexpr size_t kCount = size_t(Id::Count);
