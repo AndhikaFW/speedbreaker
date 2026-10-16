@@ -3,6 +3,7 @@
 #include <xbox.h>
 
 #define MSGID(Area, Number) (uint32_t)((uint16_t)(Area) << 16 | (uint16_t)(Number))
+void XamNotifyLiveConnected();
 #define MSG_AREA(msgid)     (((msgid) >> 16) & 0xFFFF)
 #define MSG_NUMBER(msgid)   ((msgid) & 0xFFFF)
 

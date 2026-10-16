@@ -173,6 +173,31 @@ uint32_t XamNotifyCreateListener(uint64_t qwAreas)
     return GetKernelHandle(listener);
 }
 
+// NFSMW_FAKE_LIVE=1 (a probe of the game's own online flow, see kernel/imports_user.cpp): called when the game asks for the multiplayer privilege,
+// i.e. when the player opens Xbox Live. The listeners that cover the right areas are told, as a console's are at connection, that the user
+// signed in and that Xbox Live is connected and linked. (The message's area is bits 25-30 of its id.)
+void XamNotifyLiveConnected()
+{
+    static bool done = false;
+    if (done)
+        return;
+    done = true;
+    std::lock_guard lock(gListenersMutex);
+    auto send = [&](uint32_t id, uint32_t param) {
+        int n = 0;
+        for (const auto& listener : gListeners)
+            if ((1ull << ((id >> 25) & 0x3F)) & listener->areas)
+            {
+                listener->notifications.emplace_back(id, param);
+                n++;
+            }
+        fprintf(stderr, "[live] notification %08X (%08X) queued for %d listeners\n", id, param, n);
+    };
+    send(0x0000000A, 1);          // XN_SYS_SIGNINCHANGED: one user signed in
+    send(0x02000001, 0x001510F0);  // XN_LIVE_CONNECTIONCHANGED: XONLINE_S_LOGON_CONNECTION_ESTABLISHED
+    send(0x02000002, 1);          // XN_LIVE_LINK_STATE_CHANGED: linked
+}
+
 void XamNotifyEnqueueEvent(uint32_t dwId, uint32_t dwParam)
 {
     std::lock_guard lock(gListenersMutex);

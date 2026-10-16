@@ -98,3 +98,26 @@ Cost: the second car's physics on every machine; benefit: nothing in the game's 
   the camera; which object is the player's vehicle, and which fields are position, orientation and velocity of its rigid body, is not yet known.
 - Next: identify the vehicle object by a second signal (the speedometer value and the race clock), then find the game's own reset/teleport function
   for step 3 (the code behind the "Reset car" button and the respawn after a wreck), and confirm the controller-1 input moves the second car.
+
+## The game already has an online stack: the native path (found 2026-10-16)
+Strings in the executable show the game's own networking: `ConnectionCore::ResetSession_HaveMutex` ("removing all players from my session"), the
+Xbox Live menu item, and EA web calls (`XeRecoverAccount.ashx`). Its imports are the plain Xbox networking set: `NetDll_XNet*` (startup, XNADDR, key
+registration, DNS, QoS) and Winsock (`socket`, `bind`, `sendto`, `recvfrom`, `select`, `WSAWaitForMultipleEvents`, ...), 89 of them stubbed here; it uses
+no `XSession*` functions. So the native route is to supply what the game's own online code asks of the runtime, with a server as the network, instead
+of adding a second system beside it.
+**Probe (`NFSMW_FAKE_LIVE=1`, off by default):** `XamUserCheckPrivilege` grants every privilege (the game asks for 254, multiplayer sessions),
+`XamUserGetSigninState` says signed in to Live (2), and when the game asks for privilege 254 (the player opened Xbox Live) the listeners are sent
+`XN_SYS_SIGNINCHANGED`, `XN_LIVE_CONNECTIONCHANGED` (0x001510F0) and `XN_LIVE_LINK_STATE_CHANGED`. (Sent at boot instead, the game crashed on a null object:
+the notifications must come when it asks.) With `NFSMW_STUB_CONTINUE=1 NFSMW_TRACE=1` the game's own flow then ran:
+1. `NetDll_XNetStartup`, `NetDll_WSAStartup` (twice, versions 2.2 and 0.2) from the online module (0x8281xxxx / 0x8282xxxx);
+2. `NetDll_XNetGetTitleXnAddr` polled (56 times): it is waiting for the console to have a network address;
+3. a networking thread loops on `NetDll_WSAWaitForMultipleEvents` / `NetDll_WSAResetEvent` (40,000 calls: the stubs return at once, so it spins);
+4. `XamAlloc` (unimplemented) returns 0, and the game dereferences it: SIGSEGV at guest address 8, `lr=0x828100E4`, about 146 s in.
+So the next steps are concrete and visible in the log:
+- `XamAlloc`/`XamFree`; `XNetStartup`/`Cleanup`; `WSAStartup`/`Cleanup`; `XNetGetTitleXnAddr` returning a static address with the right flags;
+- the Winsock event calls (`WSACreateEvent`, `WSAEventSelect`, `WSAWaitForMultipleEvents`, `WSAResetEvent`, `WSASetEvent`) on host primitives;
+- sockets on host UDP/TCP (`socket`, `bind`, `sendto`, `recvfrom`, `select`, `ioctlsocket`, `getsockname`, ...), with the Xbox's secure addresses
+  (`XNetXnAddrToInAddr`, `XNetServerToInAddr`, key registration) mapped to ordinary host addresses;
+- then whatever the game's lobby needs to find a session: it was a hosted matchmaking, so the server has to provide that, and it is not known yet
+  which web calls the game makes (EA's services are gone). That is the unknown to measure next.
+The probe, as it stands, only gets the game to the start of its network bring-up.

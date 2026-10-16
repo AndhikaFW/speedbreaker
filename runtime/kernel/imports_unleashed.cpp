@@ -31,6 +31,18 @@ uint32_t XGetGameRegion()
 
 uint32_t XamUserGetSigninState(uint32_t userIndex)
 {
+    // 0 not signed in, 1 signed in locally, 2 signed in to Xbox Live. NFSMW_FAKE_LIVE=1 (a probe, see imports_user.cpp) claims Live.
+    static const bool fakeLive = std::getenv("NFSMW_FAKE_LIVE") != nullptr;
+    if (fakeLive)
+    {
+        static bool logged = false;
+        if (!logged)
+        {
+            logged = true;
+            fprintf(stderr, "[live] sign-in state asked for user %u: signed in to Xbox Live (NFSMW_FAKE_LIVE)\n", userIndex);
+        }
+        return 2;
+    }
     return true;
 }
 

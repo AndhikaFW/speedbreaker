@@ -7,6 +7,7 @@
 #include <stdafx.h>
 #include <kernel/function.h>
 #include <kernel/overlapped.h>
+#include <kernel/xam.h>
 #include <user/paths.h>
 
 #include <fstream>
@@ -291,7 +292,15 @@ uint32_t XamUserCheckPrivilege(uint32_t userIndex, uint32_t privilege, be<uint32
 {
     if (userIndex != 0 && userIndex != 0xFF)
         return X_ERROR_NO_SUCH_USER;
-    *result = 0;
+    // NFSMW_FAKE_LIVE=1 (a probe of what the game's own online flow asks for): every privilege is granted, and each one asked for is logged.
+    static const bool fakeLive = std::getenv("NFSMW_FAKE_LIVE") != nullptr;
+    *result = fakeLive ? 1 : 0;
+    if (fakeLive)
+    {
+        fprintf(stderr, "[live] privilege %u asked: granted\n", privilege);
+        if (privilege == 254)  // multiplayer sessions: the player opened Xbox Live
+            XamNotifyLiveConnected();
+    }
     return X_ERROR_SUCCESS;
 }
 
