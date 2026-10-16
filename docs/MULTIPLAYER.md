@@ -70,20 +70,31 @@ runs still differ with identical inputs on the same frames, the game has sources
 repeat the two-run comparison. If lockstep proves out of reach, other designs: ghost racing (record and replay a run, no live sync) or a
 host-authoritative design where one machine runs the race and the other only draws.
 
-## Revised design (with a server): state relay, not lockstep
-Each player's machine runs its own normal race. A server relays each player's car state (position, orientation, velocity, wheel and steering state,
-plus race progress) to the others, and each machine shows the remote players as extra cars. This needs no determinism: the cars do not have to
-evolve identically, only be drawn where the server says. (Lockstep over the two-player mode was tried first; see Phase 2 above.)
-What it needs from the game, none of it done yet:
-1. **Find the car objects.** Names from the game's own strings (the class names exist in the data segment): `PVehicle`, `AIVehicle`, `AIVehicleHuman`,
-   `AIVehicleRacecar`, `AIVehicleTraffic`, `AIVehicleCopCar`, `RigidBody`, `SimpleRigidBody`. In a Quick Play sprint with one opponent, the globals hold
-   about 3000 aligned heap pointers, of which 471 point at objects with a vtable-like first word (373 share one vtable, 0x8208A794). The car
-   objects have to be found by walking from these, not by fixed addresses (the heap moves between launches; the old speed addresses read garbage).
-2. **Read the local player's state** each frame (position, orientation, velocity, steering, throttle) and send it.
-3. **Drive a remote car:** make an opponent slot (AIVehicleRacecar) follow received state instead of its AI: write its rigid body's position and
-   velocity every frame, or replace its controller's output. The simplest version is a single opponent (as in Quick Play) driven this way.
-4. Server (any small UDP service: join a room, relay states at 20-30 Hz, interpolate on the receiver), and race setup (same track, same car list).
-Risks: forcing a rigid body's state may fight the game's own physics for that car (teleport it each frame and zero its forces); collisions between
-a real player and a remote car then behave oddly; cops and traffic will not match across machines.
-First step: log the player's car position and the opponent's every frame in a Quick Play sprint, to find the structures and confirm which
-fields hold position, orientation and velocity.
+## Design (with a server): native, reusing the game's own two-player mode
+Rule for this work: no poking at cars in memory. Every car is a real game vehicle created and simulated by the game's own code, and every change goes
+through a path the game already has (its input, its split-screen setup, its reset and teleport routines).
+The game already has everything a second car needs: the split-screen mode makes player 2 a full native car whose controller input comes from XInput
+controller 1, which `hid/input.cpp` already supplies (Phase 1). So an online race is the game's own two-player race in which controller 1's input
+comes from the network:
+1. **Input relay (native input path).** Each machine sends its local pad state once per game frame to the server, and the server forwards it. On
+   each machine the remote player's input is what the game reads for its second controller. The local pad maps to controller 0 on one machine and
+   controller 1 on the other, so both machines have the same grid (the "Player 2 press START" screen picks whichever pad presses Start).
+2. **Both cars simulated natively on both machines**, with a few frames of input delay so inputs arrive before they are used.
+3. **Resync with the game's own routines.** The two simulations will drift (see Phase 2: not shown deterministic). The server periodically sends one
+   machine's car states (position, orientation, velocity) and the other applies them through the same code the game uses to put a car back on the
+   road (the respawn/reset routine), at a moment when that is not visible, not by writing the rigid body.
+4. **One view.** The game draws both viewports; each machine should draw only its own (skip the other viewport's draws in the renderer: about 1.6x
+   GPU time saved), without changing what the game simulates.
+5. Server: any small UDP relay (rooms, input forwarding, state sync).
+Cost: the second car's physics on every machine; benefit: nothing in the game's rules has to be re-implemented.
+
+### Findings so far on the game's own structures
+- The data segment names the classes: `PVehicle`, `AIVehicle`, `AIVehicleHuman`, `AIVehicleRacecar`, `AIVehicleTraffic`, `AIVehicleCopCar`, `RigidBody`,
+  `SimpleRigidBody`. In a race the globals hold about 3000 aligned heap pointers; 471 point at objects with a vtable-like first word (373 share
+  0x8208A794). The heap moves between launches: objects have to be found by walking pointers.
+- Two snapshots of about 52,000 objects reachable from the globals (two levels), taken at the start of a circuit with one opponent and about 10 s
+  later, showed world positions of the form (x, y, z) = (377, 4525, 234) in 4x4 matrices with the translation in the fourth row, in arrays with a
+  0x40-byte stride (one object holds a history of such poses: spacing about 0x40, positions moving along the road). These are poses of a car or
+  the camera; which object is the player's vehicle, and which fields are position, orientation and velocity of its rigid body, is not yet known.
+- Next: identify the vehicle object by a second signal (the speedometer value and the race clock), then find the game's own reset/teleport function
+  for step 3 (the code behind the "Reset car" button and the respawn after a wreck), and confirm the controller-1 input moves the second car.
