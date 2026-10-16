@@ -2,7 +2,6 @@
 #include <stdafx.h>
 #include "input.h"
 #include <cpu/guest_time.h>
-#include <game/startup_movies.h>
 #include <kernel/function.h>
 #include <ui/ui.h>
 #include <user/settings.h>
@@ -846,8 +845,6 @@ uint32_t XamInputGetState(uint32_t userIndex, uint32_t flags, XAMINPUT_STATE* st
         if ((userIndex != 0 && userIndex != 0xFF) || !(s_deviceConnected || !s_script.empty()))
             return ERROR_DEVICE_NOT_CONNECTED;
         p = CurrentPadLocked();
-        if (startup_movies::WantA())
-            p.buttons |= XAMINPUT_GAMEPAD_A;
         static Pad last;
         if (memcmp(&p, &last, sizeof(p)) != 0)
         {

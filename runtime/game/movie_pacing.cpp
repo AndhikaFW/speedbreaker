@@ -47,7 +47,6 @@
 #include <stdafx.h>
 
 #include <cpu/guest_time.h>
-#include "startup_movies.h"
 #include <kernel/function.h>
 #include <video/presenter.h>
 #include <video/refresh_fit.h>
@@ -110,7 +109,6 @@ PPC_FUNC(sub_826E8CF8)
 {
     __imp__sub_826E8CF8(ctx, base);
     s_movieRenders.fetch_add(1, std::memory_order_release);
-    startup_movies::NoteMovieFrame();
 }
 
 PPC_FUNC(sub_825985A0)

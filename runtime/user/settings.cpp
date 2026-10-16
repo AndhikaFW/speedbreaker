@@ -268,7 +268,7 @@ namespace settings
               .env = "NFSMW_PERF_OVERLAY", .defaultValue = 0 },
             { .id = Id::SkipStartupMovies, .category = Category::Advanced, .type = Type::Bool, .apply = Apply::Live,
               .table = "advanced", .key = "skip_startup_movies", .label = "Skip Startup Movies",
-              .description = "Press A through the logos and the title-screen movie at launch.",
+              .description = "Skip the logos and the title-screen movie at launch.",
               .env = "NFSMW_SKIP_STARTUP_MOVIES", .defaultValue = 1 },
         };
         static_assert(std::size(kOptions) == kCount, "one row per settings::Id");

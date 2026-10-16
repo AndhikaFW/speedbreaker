@@ -190,10 +190,14 @@ side-by-side exists yet.
 
 ## Skip Startup Movies
 Settings > Advanced > Skip Startup Movies (on by default; `NFSMW_SKIP_STARTUP_MOVIES=0` turns it off). The game plays
-`eahd_bumper`, `ealogo` and `psa`, then the title screen's `attract_movie`. A does not skip the three logos (measured: they
-rendered 121, 93 and more frames, to the end), so `runtime/game/startup_movies.cpp` makes their file opens report "not found"
-(`runtime/kernel/imports_file.cpp`) and the game goes on without them. The attract movie is skipped by A: the same module pulses A
-(60 ms in every 100 ms) while the XMV player renders, until that movie has started and stopped; later movies (tutorials, story
-videos) are untouched. **Checked:** all four opens follow each other at once in the log, the attract movie renders 4 frames, and
-the "Press START to begin" title screen is up at 22 s. A first version that stopped the logo frames from being drawn hung the
-game on the first logo (the player needs its frames), so it was dropped. Not checked: a controller held down at the same time.
+`eahd_bumper`, `ealogo` and `psa`, then the title screen's `attract_movie`. The game starts a movie in `sub_8245DBF8`; when
+opening the file fails it sends its own "movie finished" event (0xC3A00EB9) to the waiting screens and the front end goes on. So
+`runtime/kernel/imports_file.cpp` makes the opens of those four files report "not found" (the list is in
+`runtime/game/startup_movies.cpp`), and the game takes its path for an ended movie. No button is pressed. Other movies (tutorials,
+story videos, blacklist rivals) are untouched. **Checked:** with it on, the log shows the four opens hidden at once and the
+"Press START to begin" title screen is up at 20 s.
+**Tried and rejected:** pressing A (skips the attract movie, but not the three logos, which play to the end: 121 and 93 frames);
+making the player's open (`sub_826D74B8`) return an error, or pointing it at a path with no such drive (both leave the front end
+on a black screen: it needs the failure from inside the player's file open); not drawing the logo frames (hangs on the first logo).
+This is still a workaround at the file layer, not an edit of the game's boot sequence (which would mean changing the front end's
+screen list, not done).

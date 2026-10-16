@@ -220,10 +220,9 @@ uint32_t NtCreateFile(be<uint32_t>* handleOut, uint32_t desiredAccess, XOBJECT_A
         return STATUS_INVALID_HANDLE;
     }
 
-    startup_movies::NoteOpen(guestPath->c_str());
     if (startup_movies::HideFile(guestPath->c_str()))
     {
-        fprintf(stderr, "[file] open \"%s\": hidden (Skip Startup Movies)\n", guestPath->c_str());
+        fprintf(stderr, "[file] open \"%s\": hidden (Skip Startup Movies): the game goes on as if the movie had ended\n", guestPath->c_str());
         Complete(iosb, STATUS_OBJECT_NAME_NOT_FOUND, FILE_DOES_NOT_EXIST);
         return STATUS_OBJECT_NAME_NOT_FOUND;
     }
