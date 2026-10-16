@@ -3,6 +3,7 @@
 #include "input.h"
 #include <cpu/guest_time.h>
 #include <game/frame_time.h>
+#include <net/netplay.h>
 #include <kernel/function.h>
 #include <ui/ui.h>
 #include <user/settings.h>
@@ -821,6 +822,25 @@ namespace hid
             p2.leftTrigger = Trigger(axis2(SDL_GAMEPAD_AXIS_LEFT_TRIGGER), triggerDeadzone);
             p2.rightTrigger = Trigger(axis2(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER), triggerDeadzone);
         }
+        // Online play (net/netplay.h): the local pad goes to the other machine, and the other player's pad arrives as the game's other controller.
+        // Which of the game's two controllers is the local one is this machine's slot, so that both machines have the same player 1 and 2.
+        if (netplay::Enabled())
+        {
+            auto toNet = [](const Pad& q) { return netplay::PadState{ q.buttons, q.leftTrigger, q.rightTrigger, q.lx, q.ly, q.rx, q.ry }; };
+            netplay::SendLocal(toNet(p));
+            netplay::PadState remote;
+            Pad other;
+            if (netplay::Remote(remote))
+                other = Pad{ remote.buttons, remote.leftTrigger, remote.rightTrigger, remote.lx, remote.ly, remote.rx, remote.ry };
+            if (netplay::LocalSlot() == 0)
+                p2 = other;
+            else
+            {
+                p2 = p;
+                p = other;
+            }
+            netplay::Tick();
+        }
         uint16_t low, high, low2, high2;
         bool rumble, rumble2;
         {
@@ -883,7 +903,7 @@ namespace
     // Player 2 (controller 1): present with a second pad or a script. Caller holds s_mutex.
     bool Player2PresentLocked()
     {
-        return s_gamepad2 != nullptr || !s_script2.empty();
+        return s_gamepad2 != nullptr || !s_script2.empty() || netplay::Enabled();
     }
 
     Pad Player2PadLocked()

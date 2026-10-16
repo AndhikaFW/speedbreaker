@@ -121,3 +121,19 @@ So the next steps are concrete and visible in the log:
 - then whatever the game's lobby needs to find a session: it was a hosted matchmaking, so the server has to provide that, and it is not known yet
   which web calls the game makes (EA's services are gone). That is the unknown to measure next.
 The probe, as it stands, only gets the game to the start of its network bring-up.
+
+## Decision: our own small netplay layer instead of the game's online stack
+The game's own online code (`ConnectionCore`, Xbox Live, EA's services) was brought up as far as its first network calls (probe above), but it
+depends on servers that no longer exist and a lobby layer of session objects I would have to emulate completely. So it is replaced, not repaired:
+- `runtime/net/netplay.{h,cpp}`: a UDP client (about 150 lines) that sends the local pad about 30 times a second and receives the other player's.
+  `NFSMW_NETPLAY=<host>:<port>/<room>[/<slot>]` turns it on; the slot (0 or 1) says whether this machine's pad is player 1 or 2 of the game's own
+  two-player race, so both machines agree.
+- `hid/input.cpp`: the remote pad is delivered as XInput controller 1 (or 0, by slot), the same path as a real second pad. The cars are the game's own;
+  nothing in the game's memory is written.
+- `scripts/netplay/server.py`: the relay (rooms of two, forwards INPUT as RELAY, 15 s timeout). `scripts/netplay/bot.py`: a scripted second player for tests.
+**Checked (this machine, localhost, throw-away save):** the game joined a room, a bot joined as the second player; the bot's START was accepted
+at "Player 2 press START" (no local controller involved), the bot chose a car, and in the race the bot's throttle moved the bottom car (67 mph) while
+the local throttle moved the top car; about 290 inputs arrived in each 10-second window from the bot (30 a second) with no loss counted.
+**Not done:** the two machines' simulations will drift (determinism was not shown); input delay and a periodic resync through the game's own reset
+routine; hiding the other viewport; a second real machine and the internet (the server must be reachable: a public host or a port-forward);
+authentication and cheating (inputs are trusted); more than two players (the game's own mode has two).
