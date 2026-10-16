@@ -28,6 +28,13 @@ namespace
     bool s_rumbleDirty = false;
 
     SDL_Gamepad* s_gamepad = nullptr;
+
+    // Player 2 (XInput controller 1: the game's split-screen mode): a second SDL gamepad, or NFSMW_INPUT_SCRIPT2 for tests
+    // without one. No keyboard, no Back/Start chord: only the pad, through the same deadzones.
+    Pad s_pad2;
+    SDL_Gamepad* s_gamepad2 = nullptr;
+    uint16_t s_rumbleLow2 = 0, s_rumbleHigh2 = 0;
+    bool s_rumbleDirty2 = false;
     std::atomic<bool> s_blocked{ false };
     // Main thread: buttons held when a menu closed, hidden from the game
     // until each is released (the B, Start or A that closed it).
@@ -94,6 +101,7 @@ namespace
     // stick) held over [time, time + duration).
     struct ScriptTap { double time; uint16_t buttons; int16_t lx, ly; double duration = 0.15; uint8_t lt = 0, rt = 0; };
     std::vector<ScriptTap> s_script;
+    std::vector<ScriptTap> s_script2;  // player 2: NFSMW_INPUT_SCRIPT2, same syntax
     // Guest ns at launch: the script and the virtual pad run on guest time,
     // so a press due while the game is suspended comes after it instead of
     // being lost.
@@ -146,9 +154,9 @@ namespace
         return 0;
     }
 
-    void ParseScript()
+    void ParseScript(const char* envName, std::vector<ScriptTap>& out)
     {
-        const char* s = std::getenv("NFSMW_INPUT_SCRIPT");
+        const char* s = std::getenv(envName);
         if (!s)
             return;
         std::string all = s;
@@ -183,7 +191,7 @@ namespace
                 ScriptTap hold = proto;
                 hold.time = std::atof(when.substr(0, tilde).c_str());
                 hold.duration = std::atof(when.substr(tilde + 1).c_str()) - hold.time;
-                s_script.push_back(hold);
+                out.push_back(hold);
                 continue;
             }
             size_t dash = when.find('-'), slash = when.find('/');
@@ -196,26 +204,26 @@ namespace
                 {
                     ScriptTap tap = proto;
                     tap.time = t;
-                    s_script.push_back(tap);
+                    out.push_back(tap);
                 }
             }
             else
             {
                 ScriptTap tap = proto;
                 tap.time = std::atof(when.c_str());
-                s_script.push_back(tap);
+                out.push_back(tap);
             }
         }
-        fprintf(stderr, "[input] script: %zu taps\n", s_script.size());
+        fprintf(stderr, "[input] script (%s): %zu taps\n", envName, out.size());
     }
 
     // Apply the scripted inputs active now on top of the device state.
-    void ApplyScript(Pad& p)
+    void ApplyScriptTo(const std::vector<ScriptTap>& script, Pad& p)
     {
-        if (s_script.empty())
+        if (script.empty())
             return;
         double t = SecondsSinceLaunch();
-        for (const auto& tap : s_script)
+        for (const auto& tap : script)
             if (t >= tap.time && t < tap.time + tap.duration)
             {
                 p.buttons |= tap.buttons;
@@ -226,7 +234,9 @@ namespace
             }
     }
 
-    const bool s_scriptParsed = (ParseScript(), true);
+    void ApplyScript(Pad& p) { ApplyScriptTo(s_script, p); }
+
+    const bool s_scriptParsed = (ParseScript("NFSMW_INPUT_SCRIPT", s_script), ParseScript("NFSMW_INPUT_SCRIPT2", s_script2), true);
 
     // NFSMW_VIRTUAL_PAD="2:LX=0.05,4:LX=0.2,6:RT=0.01": an SDL virtual
     // controller, the only one opened, whose axes move to those values at
@@ -397,9 +407,13 @@ namespace
         }
         int count = 0;
         SDL_JoystickID* ids = SDL_GetGamepads(&count);
-        if (ids && count > 0)
+        // The first pad that is not player 2's.
+        int first = 0;
+        while (first < count && s_gamepad2 && ids[first] == SDL_GetGamepadID(s_gamepad2))
+            first++;
+        if (ids && first < count)
         {
-            s_gamepad = SDL_OpenGamepad(ids[0]);
+            s_gamepad = SDL_OpenGamepad(ids[first]);
             if (s_gamepad)
             {
                 // What it can do: a pad without motors takes rumble and ignores it.
@@ -409,6 +423,24 @@ namespace
                     SDL_GetBooleanProperty(props, SDL_PROP_GAMEPAD_CAP_TRIGGER_RUMBLE_BOOLEAN, false) ? "yes" : "no");
             }
         }
+        SDL_free(ids);
+    }
+
+    // Player 2's pad: the first one that player 1 isn't using (only once player 1 has one: a lone controller is player 1's).
+    void OpenSecondGamepad()
+    {
+        if (s_gamepad2 || !s_gamepad || s_virtualPad)
+            return;
+        int count = 0;
+        SDL_JoystickID* ids = SDL_GetGamepads(&count);
+        for (int i = 0; ids && i < count; i++)
+            if (ids[i] != SDL_GetGamepadID(s_gamepad))
+            {
+                s_gamepad2 = SDL_OpenGamepad(ids[i]);
+                if (s_gamepad2)
+                    fprintf(stderr, "[input] player 2 gamepad: %s\n", SDL_GetGamepadName(s_gamepad2));
+                break;
+            }
         SDL_free(ids);
     }
 
@@ -494,6 +526,7 @@ namespace hid
             settings::GetFloat(settings::Id::TriggerDeadzone));
         AttachVirtualPad();
         OpenFirstGamepad();
+        OpenSecondGamepad();
         std::lock_guard lock(s_mutex);
         s_deviceConnected = true;  // the keyboard always counts as controller 0
     }
@@ -510,10 +543,19 @@ namespace hid
         if (e.type == SDL_EVENT_GAMEPAD_ADDED)
         {
             OpenFirstGamepad();
+            OpenSecondGamepad();
 #if defined(__APPLE__) && TARGET_OS_IOS
             if (s_gamepad)
                 WithdrawNoControllerNotice();
 #endif
+        }
+        else if (e.type == SDL_EVENT_GAMEPAD_REMOVED && s_gamepad2 && e.gdevice.which == SDL_GetGamepadID(s_gamepad2))
+        {
+            SDL_CloseGamepad(s_gamepad2);
+            s_gamepad2 = nullptr;
+            fprintf(stderr, "[input] player 2 gamepad removed\n");
+            std::lock_guard lock(s_mutex);
+            s_pad2 = Pad{};
         }
         else if (e.type == SDL_EVENT_GAMEPAD_REMOVED && s_gamepad && e.gdevice.which == SDL_GetGamepadID(s_gamepad))
         {
@@ -521,6 +563,7 @@ namespace hid
             s_gamepad = nullptr;
             fprintf(stderr, "[input] gamepad removed\n");
             OpenFirstGamepad();
+            OpenSecondGamepad();
 #if defined(__APPLE__) && TARGET_OS_IOS
             if (!s_gamepad)
                 NoControllerNoticeIn(1'000'000'000, kControllerGone);
@@ -534,6 +577,12 @@ namespace hid
 
     void Shutdown()
     {
+        if (s_gamepad2)
+        {
+            SDL_RumbleGamepad(s_gamepad2, 0, 0, 0);
+            SDL_CloseGamepad(s_gamepad2);
+            s_gamepad2 = nullptr;
+        }
         if (s_gamepad)
         {
             SDL_RumbleGamepad(s_gamepad, 0, 0, 0);
@@ -673,10 +722,45 @@ namespace hid
         else
             p.buttons &= ~s_latchedButtons;
 
-        uint16_t low, high;
-        bool rumble;
+        // Player 2: the second pad, through the same deadzones (no keyboard, no Back/Start chord, no latch).
+        Pad p2;
+        if (s_gamepad2 && !blocked)
+        {
+            static const std::pair<SDL_GamepadButton, uint16_t> map2[] = {
+                { SDL_GAMEPAD_BUTTON_SOUTH, XAMINPUT_GAMEPAD_A }, { SDL_GAMEPAD_BUTTON_EAST, XAMINPUT_GAMEPAD_B },
+                { SDL_GAMEPAD_BUTTON_WEST, XAMINPUT_GAMEPAD_X }, { SDL_GAMEPAD_BUTTON_NORTH, XAMINPUT_GAMEPAD_Y },
+                { SDL_GAMEPAD_BUTTON_BACK, XAMINPUT_GAMEPAD_BACK }, { SDL_GAMEPAD_BUTTON_START, XAMINPUT_GAMEPAD_START },
+                { SDL_GAMEPAD_BUTTON_LEFT_STICK, XAMINPUT_GAMEPAD_LEFT_THUMB },
+                { SDL_GAMEPAD_BUTTON_RIGHT_STICK, XAMINPUT_GAMEPAD_RIGHT_THUMB },
+                { SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, XAMINPUT_GAMEPAD_LEFT_SHOULDER },
+                { SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, XAMINPUT_GAMEPAD_RIGHT_SHOULDER },
+                { SDL_GAMEPAD_BUTTON_DPAD_UP, XAMINPUT_GAMEPAD_DPAD_UP }, { SDL_GAMEPAD_BUTTON_DPAD_DOWN, XAMINPUT_GAMEPAD_DPAD_DOWN },
+                { SDL_GAMEPAD_BUTTON_DPAD_LEFT, XAMINPUT_GAMEPAD_DPAD_LEFT }, { SDL_GAMEPAD_BUTTON_DPAD_RIGHT, XAMINPUT_GAMEPAD_DPAD_RIGHT },
+            };
+            for (auto& [button, bit] : map2)
+                if (SDL_GetGamepadButton(s_gamepad2, button))
+                    p2.buttons |= bit;
+            auto axis2 = [](SDL_GamepadAxis a) { return float(SDL_GetGamepadAxis(s_gamepad2, a)) / 32767.0f; };
+            float lx2 = axis2(SDL_GAMEPAD_AXIS_LEFTX), ly2 = -axis2(SDL_GAMEPAD_AXIS_LEFTY);
+            float rx2 = axis2(SDL_GAMEPAD_AXIS_RIGHTX), ry2 = -axis2(SDL_GAMEPAD_AXIS_RIGHTY);
+            ApplyDeadzone(lx2, ly2, deadzone);
+            ApplyDeadzone(rx2, ry2, deadzone);
+            p2.lx = ToShort(lx2);
+            p2.ly = ToShort(ly2);
+            p2.rx = ToShort(rx2);
+            p2.ry = ToShort(ry2);
+            p2.leftTrigger = Trigger(axis2(SDL_GAMEPAD_AXIS_LEFT_TRIGGER), triggerDeadzone);
+            p2.rightTrigger = Trigger(axis2(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER), triggerDeadzone);
+        }
+        uint16_t low, high, low2, high2;
+        bool rumble, rumble2;
         {
             std::lock_guard lock(s_mutex);
+            s_pad2 = p2;
+            rumble2 = s_rumbleDirty2;
+            s_rumbleDirty2 = false;
+            low2 = s_rumbleLow2;
+            high2 = s_rumbleHigh2;
             s_pad = p;
             s_scriptSuppressed = blocked;
             rumble = s_rumbleDirty;
@@ -709,6 +793,10 @@ namespace hid
             low = high = 0;
         if (rumble && s_gamepad)
             SDL_RumbleGamepad(s_gamepad, low, high, low || high ? 5000 : 0);
+        if (!vibration)
+            low2 = high2 = 0;
+        if (rumble2 && s_gamepad2)
+            SDL_RumbleGamepad(s_gamepad2, low2, high2, low2 || high2 ? 5000 : 0);
     }
 }
 
@@ -721,6 +809,28 @@ namespace
         if (!s_scriptSuppressed)
             ApplyScript(p);
         return p;
+    }
+
+    // Player 2 (controller 1): present with a second pad or a script. Caller holds s_mutex.
+    bool Player2PresentLocked()
+    {
+        return s_gamepad2 != nullptr || !s_script2.empty();
+    }
+
+    Pad Player2PadLocked()
+    {
+        Pad p = s_pad2;
+        if (!s_scriptSuppressed)
+            ApplyScriptTo(s_script2, p);
+        return p;
+    }
+
+    // NFSMW_LOG_PLAYER2=1: the first time the game asks about controller 1, and what it was told.
+    void NoteAskedForPlayer2(bool present)
+    {
+        static std::atomic<bool> noted{ false };
+        if (!noted.exchange(true) && std::getenv("NFSMW_LOG_PLAYER2"))
+            fprintf(stderr, "[input] the game asked for controller 1 (player 2): %s\n", present ? "connected" : "not connected");
     }
 
     // Keystrokes (XamInputGetKeystroke[Ex]): edges of buttons, triggers and
@@ -810,7 +920,14 @@ uint32_t XamInputGetCapabilities(uint32_t userIndex, uint32_t flags, XAMINPUT_CA
     bool scripted = !s_script.empty();
     {
         std::lock_guard lock(s_mutex);
-        if ((userIndex != 0 && userIndex != 0xFF) || !(s_deviceConnected || scripted))
+        if (userIndex == 1)
+        {
+            const bool present = Player2PresentLocked();
+            NoteAskedForPlayer2(present);
+            if (!present)
+                return ERROR_DEVICE_NOT_CONNECTED;
+        }
+        else if ((userIndex != 0 && userIndex != 0xFF) || !(s_deviceConnected || scripted))
             return ERROR_DEVICE_NOT_CONNECTED;
     }
     memset(caps, 0, sizeof(*caps));
@@ -838,6 +955,36 @@ namespace hid
 
 uint32_t XamInputGetState(uint32_t userIndex, uint32_t flags, XAMINPUT_STATE* state)
 {
+    if (userIndex == 1)
+    {
+        Pad p2;
+        uint32_t packet2;
+        {
+            std::lock_guard lock(s_mutex);
+            const bool present = Player2PresentLocked();
+            NoteAskedForPlayer2(present);
+            if (!present)
+                return ERROR_DEVICE_NOT_CONNECTED;
+            p2 = Player2PadLocked();
+            static Pad last2;
+            static uint32_t packetCounter2 = 0;
+            if (memcmp(&p2, &last2, sizeof(p2)) != 0)
+            {
+                packetCounter2++;
+                last2 = p2;
+            }
+            packet2 = packetCounter2;
+        }
+        state->dwPacketNumber = ByteSwap(packet2);
+        state->Gamepad.wButtons = ByteSwap(p2.buttons);
+        state->Gamepad.bLeftTrigger = p2.leftTrigger;
+        state->Gamepad.bRightTrigger = p2.rightTrigger;
+        state->Gamepad.sThumbLX = ByteSwap(p2.lx);
+        state->Gamepad.sThumbLY = ByteSwap(p2.ly);
+        state->Gamepad.sThumbRX = ByteSwap(p2.rx);
+        state->Gamepad.sThumbRY = ByteSwap(p2.ry);
+        return ERROR_SUCCESS;
+    }
     Pad p;
     uint32_t packet;
     {
@@ -874,6 +1021,15 @@ uint32_t XamInputGetState(uint32_t userIndex, uint32_t flags, XAMINPUT_STATE* st
 uint32_t XamInputSetState(uint32_t userIndex, uint32_t flags, XAMINPUT_VIBRATION* vibration)
 {
     std::lock_guard lock(s_mutex);
+    if (userIndex == 1)
+    {
+        if (!Player2PresentLocked())
+            return ERROR_DEVICE_NOT_CONNECTED;
+        s_rumbleLow2 = ByteSwap(vibration->wLeftMotorSpeed);
+        s_rumbleHigh2 = ByteSwap(vibration->wRightMotorSpeed);
+        s_rumbleDirty2 = true;
+        return ERROR_SUCCESS;
+    }
     if ((userIndex != 0 && userIndex != 0xFF) || !(s_deviceConnected || !s_script.empty()))
         return ERROR_DEVICE_NOT_CONNECTED;
     s_rumbleLow = ByteSwap(vibration->wLeftMotorSpeed);

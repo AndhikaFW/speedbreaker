@@ -24,6 +24,10 @@
 //     "6:DOWN" for a tap), which reach the menus as a real controller's do.
 //     Both count seconds of guest time (cpu/guest_time.h): a suspension
 //     doesn't count, so what falls due during one happens after it.
+//   - Player 2 (XInput controller 1: the game's two-player split-screen mode): a second SDL gamepad, once player 1 has its own
+//     (a lone pad is player 1's; the keyboard is player 1's only). Same deadzones, rumble to its own motors.
+//     NFSMW_INPUT_SCRIPT2 takes the NFSMW_INPUT_SCRIPT syntax for player 2, for tests without a second pad;
+//     NFSMW_LOG_PLAYER2=1 logs the first time the game asks about controller 1 and what it was told.
 //   - NFSMW_INPUT_LOG=1: the left stick and triggers once a second, raw and
 //     as the game gets them.
 //   - iOS: with no controller (and no keyboard attached) a toast says the
