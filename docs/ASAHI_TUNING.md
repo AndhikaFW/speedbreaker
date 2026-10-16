@@ -190,14 +190,14 @@ side-by-side exists yet.
 
 ## Skip Startup Movies
 Settings > Advanced > Skip Startup Movies (on by default; `NFSMW_SKIP_STARTUP_MOVIES=0` turns it off). The game plays
-`eahd_bumper`, `ealogo` and `psa`, then the title screen's `attract_movie`. The game starts a movie in `sub_8245DBF8`; when
-opening the file fails it sends its own "movie finished" event (0xC3A00EB9) to the waiting screens and the front end goes on. So
-`runtime/kernel/imports_file.cpp` makes the opens of those four files report "not found" (the list is in
-`runtime/game/startup_movies.cpp`), and the game takes its path for an ended movie. No button is pressed. Other movies (tutorials,
-story videos, blacklist rivals) are untouched. **Checked:** with it on, the log shows the four opens hidden at once and the
-"Press START to begin" title screen is up at 20 s.
-**Tried and rejected:** pressing A (skips the attract movie, but not the three logos, which play to the end: 121 and 93 frames);
-making the player's open (`sub_826D74B8`) return an error, or pointing it at a path with no such drive (both leave the front end
-on a black screen: it needs the failure from inside the player's file open); not drawing the logo frames (hangs on the first logo).
-This is still a workaround at the file layer, not an edit of the game's boot sequence (which would mean changing the front end's
-screen list, not done).
+`eahd_bumper`, `ealogo` and `psa`, then the title screen's `attract_movie`, each started by one "play movie" message to the front end's
+movie screen, handled by `sub_82282F18` (r3 the screen, r4 the message: type 7 at +24, the movie's name at `*(+36)`). The handler builds the
+file name and asks whether the file exists (`sub_823BCA60`); if not, it sends the "movie finished" event `0xC3960EB9` (`sub_822FEB98`) to the waiting screens and
+returns 0, and the front end goes on. `runtime/game/startup_movies.cpp` hooks that handler and, for the four names, takes that same branch with
+the game's own call: the movie is never opened or drawn, no file is hidden and no button is pressed. Other movies (tutorials, story videos,
+blacklist rivals) go through the original. **Checked:** the log shows the four skips at once and no movie file opened; the "Press START to
+begin" title screen is up at 20 s. **How it was found:** the file-hiding version worked, so the events of that run were traced
+(`lr = 0x82283080` in this handler, one per movie), which showed the game never reached the code that starts a movie. **Tried and rejected:**
+pressing A (skips the attract movie, not the three logos); failing the player's open (`sub_826D74B8`) or the start function (`sub_8245DBF8`) after the
+request is recorded (black screen); not drawing the logo frames (hangs). A bug along the way: the event id is `0xC3960EB9` (`-1013579776 | 3769`),
+not `0xC3A00EB9`; with the wrong id the game waited for ever.

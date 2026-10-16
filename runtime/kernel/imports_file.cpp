@@ -9,7 +9,6 @@
 #include <cerrno>
 #include <kernel/write_watch.h>
 #include <report/report.h>
-#include <game/startup_movies.h>
 #include "dispatcher.h"
 #include "function.h"
 #include "vfs.h"
@@ -218,13 +217,6 @@ uint32_t NtCreateFile(be<uint32_t>* handleOut, uint32_t desiredAccess, XOBJECT_A
     {
         Complete(iosb, STATUS_INVALID_HANDLE, 0);
         return STATUS_INVALID_HANDLE;
-    }
-
-    if (startup_movies::HideFile(guestPath->c_str()))
-    {
-        fprintf(stderr, "[file] open \"%s\": hidden (Skip Startup Movies): the game goes on as if the movie had ended\n", guestPath->c_str());
-        Complete(iosb, STATUS_OBJECT_NAME_NOT_FOUND, FILE_DOES_NOT_EXIST);
-        return STATUS_OBJECT_NAME_NOT_FOUND;
     }
 
     bool wantsWrite = (desiredAccess & (GENERIC_WRITE_ | FILE_WRITE_DATA | FILE_APPEND_DATA)) != 0;
