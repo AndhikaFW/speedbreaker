@@ -155,6 +155,12 @@ target_compile_options(SpeedBreaker PRIVATE -Wno-unused-label -Wno-unused-variab
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     target_compile_options(SpeedBreaker PRIVATE -march=x86-64-v3)
 endif()
+# aarch64 Linux (Asahi, Raspberry Pi, ...): tune for the CPU the game is built on. -DSB_NATIVE_ARM=OFF builds for
+# generic aarch64 instead (a binary meant to run on another machine).
+option(SB_NATIVE_ARM "Tune for the build machine's CPU on aarch64 Linux" ON)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64" AND NOT APPLE AND SB_NATIVE_ARM)
+    target_compile_options(SpeedBreaker PRIVATE -mcpu=native)
+endif()
 if(IOS)
     # The CPU level both the iPad Pro (M2) and the iPhone 15 Pro (A17 Pro)
     # have; Apple clang's iOS default is far older.

@@ -152,8 +152,13 @@ time. That is an upper bound, not a saving.
 ## What can still be improved (by the evidence)
 1. **Internal resolution** is the biggest lever: 1x ran about 3-4x faster than 1.5x in an early, noisy
    comparison. A user setting, not code.
-2. **The lit world shaders** (about 30 %): the cost is not the shadow taps; candidates are their ALU
-   work and the translator's branch-per-predicate structure. High effort, gain unproven.
+2. **The lit world shaders** (about 30 %): the cost is not the shadow taps. The translator now emits
+   forward-only jump programs as structured code (not a `while/switch` state machine) and shares one
+   `if (p0 ...)` between consecutive predicated instructions (`NFSMW_NO_FORWARD_CF=1` and
+   `NFSMW_NO_PRED_MERGE=1` restore the old output). **Measured effect: none that could be told from the
+   noise** (3 alternating pairs of runs, medians old 27.8/28.4/21.8 ms vs new 21.4/24.8/27.4 ms, scenes
+   differed in draw count); kept because the output is equivalent and smaller, not because it is proven faster.
+   A fair test needs both variants live in one scene.
 3. **The sun shadow pass** (about 18 %): a lower size is already available (800); cascades are not.
 4. **Motion blur**: a true speed source would need the game's own speed code found (not found), and
    excluding rivals needs car pixels tagged while the scene is drawn.
@@ -166,3 +171,8 @@ applied once the game's table holds `old`), `NFSMW_XMUL`, `NFSMW_LOG_SPEED`, `NF
 `NFSMW_LOG_GRADE_CONSTS`, `NFSMW_LOG_GRADE_SENDS`, `NFSMW_FIND_SEND`, `NFSMW_LOG_PARAM_NAMES`,
 `NFSMW_LOG_SCENE_PASSES`, `NFSMW_LOG_ALL_PASSES`, `NFSMW_LOG_FRAME_DRAWS`, `NFSMW_DUMP_GLSL`,
 `NFSMW_LOG_RAMP_RAW`, `NFSMW_LOG_BUTTONS`.
+
+## ARM build flag
+`runtime/CMakeLists.txt` adds `-mcpu=native` on aarch64 Linux (`-DSB_NATIVE_ARM=OFF` for a generic binary; clang
+resolves it to `apple-m1` on this machine). **Not yet built or measured**: it needs a full rebuild of the
+recompiled sources, and the game is GPU-bound (CPU about 79 % idle), so expect little.
