@@ -7,6 +7,7 @@
 #include <user/settings.h>
 
 #include <SDL3/SDL.h>
+#include <unistd.h>
 
 namespace
 {
@@ -235,6 +236,52 @@ namespace
     }
 
     void ApplyScript(Pad& p) { ApplyScriptTo(s_script, p); }
+
+    // NFSMW_INPUT_CMD=<file>: a file the game empties once a frame, one command a line: "1 A", "2 START", "1 RIGHT", "2 RT", "1 DOWN 1.0"
+    // (player, button or LL/LR/LU/LD/RT/LT, optional seconds held, default 0.15), pressed from now on. For driving the menus of a session
+    // step by step, looking at the screen between the steps (the timed scripts drift with the load times).
+    void PollCommandFile()
+    {
+        static const char* path = std::getenv("NFSMW_INPUT_CMD");
+        if (!path)
+            return;
+        FILE* f = fopen(path, "r+");
+        if (!f)
+            return;
+        char line[128];
+        std::vector<std::pair<int, ScriptTap>> taps;
+        while (fgets(line, sizeof(line), f))
+        {
+            char name[32] = {};
+            int player = 1;
+            double seconds = 0.15;
+            if (sscanf(line, "%d %31s %lf", &player, name, &seconds) < 2)
+                continue;
+            ScriptTap tap{ SecondsSinceLaunch(), ButtonByName(name), 0, 0, seconds };
+            const std::string n = name;
+            if (n == "RT") tap.rt = 255;
+            else if (n == "LT") tap.lt = 255;
+            else if (n == "LL") tap.lx = -32767;
+            else if (n == "LR") tap.lx = 32767;
+            else if (n == "LU") tap.ly = 32767;
+            else if (n == "LD") tap.ly = -32767;
+            else if (tap.buttons == 0)
+                continue;
+            taps.emplace_back(player, tap);
+        }
+        if (!taps.empty())
+        {
+            if (ftruncate(fileno(f), 0) != 0)
+                perror("ftruncate");
+            std::lock_guard lock(s_mutex);
+            for (auto& [player, tap] : taps)
+            {
+                (player == 2 ? s_script2 : s_script).push_back(tap);
+                fprintf(stderr, "[input] command: player %d buttons %04X lt %u rt %u lx %d ly %d for %.2f s\n", player, tap.buttons, tap.lt, tap.rt, int(tap.lx), int(tap.ly), tap.duration);
+            }
+        }
+        fclose(f);
+    }
 
     const bool s_scriptParsed = (ParseScript("NFSMW_INPUT_SCRIPT", s_script), ParseScript("NFSMW_INPUT_SCRIPT2", s_script2), true);
 
@@ -617,6 +664,7 @@ namespace hid
 #if defined(__APPLE__) && TARGET_OS_IOS
         NoControllerNotice();
 #endif
+        PollCommandFile();
         Pad p;
         float lx = 0, ly = 0, rx = 0, ry = 0, lt = 0, rt = 0;
         bool padBack = false;  // the controller's Back, as the device reports it

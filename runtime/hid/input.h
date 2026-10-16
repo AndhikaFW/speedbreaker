@@ -28,6 +28,9 @@
 //     (a lone pad is player 1's; the keyboard is player 1's only). Same deadzones, rumble to its own motors.
 //     NFSMW_INPUT_SCRIPT2 takes the NFSMW_INPUT_SCRIPT syntax for player 2, for tests without a second pad;
 //     NFSMW_LOG_PLAYER2=1 logs the first time the game asks about controller 1 and what it was told.
+//   - NFSMW_INPUT_CMD=<file>: commands for either player, one a line ("1 A", "2 START", "1 RT 5": player, button, seconds held),
+//     read and emptied once a frame, so a session can be driven step by step with a look at the screen between steps (the timed
+//     scripts drift with the load times).
 //   - NFSMW_INPUT_LOG=1: the left stick and triggers once a second, raw and
 //     as the game gets them.
 //   - iOS: with no controller (and no keyboard attached) a toast says the
