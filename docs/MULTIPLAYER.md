@@ -69,3 +69,21 @@ runs still differ with identical inputs on the same frames, the game has sources
 **Next:** find the race's own clock or start flag in the game's state (the heap structures reached from a global pointer), key the inputs to it, and
 repeat the two-run comparison. If lockstep proves out of reach, other designs: ghost racing (record and replay a run, no live sync) or a
 host-authoritative design where one machine runs the race and the other only draws.
+
+## Revised design (with a server): state relay, not lockstep
+Each player's machine runs its own normal race. A server relays each player's car state (position, orientation, velocity, wheel and steering state,
+plus race progress) to the others, and each machine shows the remote players as extra cars. This needs no determinism: the cars do not have to
+evolve identically, only be drawn where the server says. (Lockstep over the two-player mode was tried first; see Phase 2 above.)
+What it needs from the game, none of it done yet:
+1. **Find the car objects.** Names from the game's own strings (the class names exist in the data segment): `PVehicle`, `AIVehicle`, `AIVehicleHuman`,
+   `AIVehicleRacecar`, `AIVehicleTraffic`, `AIVehicleCopCar`, `RigidBody`, `SimpleRigidBody`. In a Quick Play sprint with one opponent, the globals hold
+   about 3000 aligned heap pointers, of which 471 point at objects with a vtable-like first word (373 share one vtable, 0x8208A794). The car
+   objects have to be found by walking from these, not by fixed addresses (the heap moves between launches; the old speed addresses read garbage).
+2. **Read the local player's state** each frame (position, orientation, velocity, steering, throttle) and send it.
+3. **Drive a remote car:** make an opponent slot (AIVehicleRacecar) follow received state instead of its AI: write its rigid body's position and
+   velocity every frame, or replace its controller's output. The simplest version is a single opponent (as in Quick Play) driven this way.
+4. Server (any small UDP service: join a room, relay states at 20-30 Hz, interpolate on the receiver), and race setup (same track, same car list).
+Risks: forcing a rigid body's state may fight the game's own physics for that car (teleport it each frame and zero its forces); collisions between
+a real player and a remote car then behave oddly; cops and traffic will not match across machines.
+First step: log the player's car position and the opponent's every frame in a Quick Play sprint, to find the structures and confirm which
+fields hold position, orientation and velocity.
