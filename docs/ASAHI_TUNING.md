@@ -190,8 +190,10 @@ side-by-side exists yet.
 
 ## Skip Startup Movies
 Settings > Advanced > Skip Startup Movies (on by default; `NFSMW_SKIP_STARTUP_MOVIES=0` turns it off). The game plays
-`eahd_bumper`, `ealogo` and `psa`, then the title screen's `attract_movie`. `runtime/game/startup_movies.cpp` recognises them by
-the file the game opens and pulses the A button (the game's own skip) while the XMV player is rendering, until the attract movie
-has started and stopped; later movies (tutorials, story videos) are untouched. Nothing is faked: the game receives a normal button
-press. **Checked:** with it on, the game reached the "Press START to begin" title screen about 9 s after launch (24 s screenshot).
-Not checked: a controller held down at the same time.
+`eahd_bumper`, `ealogo` and `psa`, then the title screen's `attract_movie`. A does not skip the three logos (measured: they
+rendered 121, 93 and more frames, to the end), so `runtime/game/startup_movies.cpp` makes their file opens report "not found"
+(`runtime/kernel/imports_file.cpp`) and the game goes on without them. The attract movie is skipped by A: the same module pulses A
+(60 ms in every 100 ms) while the XMV player renders, until that movie has started and stopped; later movies (tutorials, story
+videos) are untouched. **Checked:** all four opens follow each other at once in the log, the attract movie renders 4 frames, and
+the "Press START to begin" title screen is up at 22 s. A first version that stopped the logo frames from being drawn hung the
+game on the first logo (the player needs its frames), so it was dropped. Not checked: a controller held down at the same time.
