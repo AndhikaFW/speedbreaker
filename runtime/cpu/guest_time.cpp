@@ -9,6 +9,8 @@
 namespace guesttime
 {
     State g_state;
+    std::atomic<uint64_t> g_detFrame{ kDetOff };
+    std::atomic<uint64_t> g_detTicksPerFrame{ 0 };
 
     namespace
     {

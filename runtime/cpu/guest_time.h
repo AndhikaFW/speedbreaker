@@ -90,8 +90,31 @@ namespace guesttime
         }
     }
 
+    // Deterministic timebase (NFSMW_FIXED_STEPS, game/frame_time.cpp): while g_detFrame is not kDetOff the mftb the game reads is a function
+    // of the game frame, not of the host clock: ticks-per-frame times the frame, plus a few ticks for each read the thread has made in that
+    // frame (so a loop that waits for time to pass still ends, with nothing moving between frames but the frame). Whatever the game does
+    // with the time (animation, random seeds, effects) is then the same on every run that makes the same frames.
+    inline constexpr uint64_t kDetOff = ~uint64_t(0);
+    extern std::atomic<uint64_t> g_detFrame;
+    extern std::atomic<uint64_t> g_detTicksPerFrame;
+    inline int64_t DetTimebase(uint64_t frame)
+    {
+        thread_local uint64_t lastFrame = kDetOff, reads = 0;
+        if (frame != lastFrame)
+        {
+            lastFrame = frame;
+            reads = 0;
+        }
+        reads++;
+        return int64_t(1'000'000'000ull + frame * g_detTicksPerFrame.load(std::memory_order_relaxed) + reads * 20);
+    }
+
     // Guest time in each domain.
-    inline int64_t Timebase() { return Read<RawTimebase, &State::timebase>(); }
+    inline int64_t Timebase()
+    {
+        const uint64_t f = g_detFrame.load(std::memory_order_relaxed);
+        return f != kDetOff ? DetTimebase(f) : Read<RawTimebase, &State::timebase>();
+    }
     inline int64_t NowNs() { return Read<RawNs, &State::ns>(); }
     inline int64_t SystemTime100ns() { return Read<RawSystem, &State::system>(); }
 

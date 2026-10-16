@@ -44,6 +44,7 @@
 #include "frame_time.h"
 #include "whole_vblanks.h"
 
+#include <cpu/guest_time.h>
 #include <kernel/function.h>
 #include <video/presenter.h>
 #include <video/vblank_lock.h>
@@ -63,6 +64,15 @@ namespace
         const char* v = std::getenv("NFSMW_FIXED_STEPS");
         int n = v ? std::atoi(v) : 0;
         n = std::clamp(n, 0, 4);
+        if (n)
+        {
+            // The game's mftb follows the frame too (cpu/guest_time.h), unless NFSMW_REAL_TIMEBASE keeps the host's.
+            if (!std::getenv("NFSMW_REAL_TIMEBASE"))
+            {
+                guesttime::g_detTicksPerFrame.store(uint64_t(guesttime::kTimebaseHz) * uint64_t(n) / 60, std::memory_order_relaxed);
+                guesttime::g_detFrame.store(0, std::memory_order_relaxed);
+            }
+        }
         if (n)
             fprintf(stderr, "[game] fixed game time: %d world steps (%.2f ms) a frame, whatever the frame took (NFSMW_FIXED_STEPS)\n", n, n * 1000.0 / 60.0);
         return n;
@@ -129,6 +139,8 @@ void GameFrameTime(PPCRegister& r3)
     uint64_t now = video::GuestVblanks(), vblanks = now - last;
     last = now;
     s_frames.fetch_add(1, std::memory_order_relaxed);
+    if (guesttime::g_detFrame.load(std::memory_order_relaxed) != guesttime::kDetOff)
+        guesttime::g_detFrame.fetch_add(1, std::memory_order_relaxed);
     double measuredMs = double(int32_t(r3.u32)) / 65536.0;
     if (s_log)
     {

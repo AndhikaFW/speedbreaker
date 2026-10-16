@@ -45,6 +45,7 @@
 #include <sys/resource.h>
 #include <time.h>
 #include <unistd.h>
+#include <game/frame_time.h>
 #include <regex>
 #include <memory>
 #include <unordered_map>
@@ -7780,6 +7781,12 @@ vec3 nativeTone(vec3 col)
         (type == 0 ? s_vs : s_ps) = slot.get();
     }
 
+    uint64_t s_frameHash = 14695981039346656037ull;  // NFSMW_FRAME_HASH: this frame's draws so far
+    uint32_t s_frameHashDraws = 0;
+    uint64_t s_drawHash = 0;
+    std::vector<uint32_t> s_frameDrawHashes;  // NFSMW_FRAME_HASH_FILE: one hash per draw, written at the swap
+    struct DetailConst { uint32_t draw, stage, slot; uint64_t vs, ps; uint32_t v[4]; };
+    std::vector<DetailConst> s_frameDetail, s_prevDetail;  // NFSMW_FRAME_HASH=detail: this frame's constants and the last one's
     std::atomic<uint32_t> g_pcfLevel{ 0 };  // the NFSMW_PCF_TEST level
     std::atomic<uint32_t> g_stubFlag{ 0 };  // the NFSMW_SHADER_STUB switch (see the translation hook)
     std::string s_scenePassLog;  // NFSMW_LOG_SCENE_PASSES: this frame's scene-sized passes, flushed in OnSwap
@@ -8336,6 +8343,45 @@ vec3 nativeTone(vec3 col)
             {
                 memcpy(lastKey, key, sizeof(key));
                 g_constantsDirty.store(true, std::memory_order_relaxed);
+            }
+        }
+        // NFSMW_FRAME_HASH=1: a hash of the game's shader constants of every draw (the ones its shaders use), in draw order, printed
+        // once a frame at its swap: two runs of the same race that stay in step print the same hashes (a test of determinism).
+        {
+            static const bool on = std::getenv("NFSMW_FRAME_HASH") != nullptr;
+            if (on)
+            {
+                static const bool detail = [] { const char* v = std::getenv("NFSMW_FRAME_HASH"); return v && !strcmp(v, "detail"); }();
+                auto mix = [](uint32_t w) { s_frameHash = (s_frameHash ^ w) * 1099511628211ull; s_drawHash = (s_drawHash ^ w) * 1099511628211ull; };
+                s_drawHash = 14695981039346656037ull ^ (s_vs ? s_vs->hash : 0) ^ ((s_ps ? s_ps->hash : 0) * 31);
+                // detail: every constant a draw's shaders use, keyed by draw, stage and slot, to list what differs between two frames.
+                auto note = [&](uint32_t stage, uint32_t slot, const uint32_t* v) {
+                    if (!detail)
+                        return;
+                    s_frameDetail.push_back({ s_frameHashDraws, stage, slot, s_vs ? s_vs->hash : 0, s_ps ? s_ps->hash : 0, v[0], v[1], v[2], v[3] });
+                };
+                auto addStage = [&](const Shader* packed, uint32_t base) {
+                    const uint32_t* src = &s_regs[XE_GPU_REG_SHADER_CONSTANT_000_X + base * 4];
+                    if (!packed)
+                    {
+                        for (uint32_t k = 0; k < 256 * 4; k++)
+                            mix(src[k]);
+                        return;
+                    }
+                    for (uint32_t q = 0; q < 4; q++)
+                        for (uint64_t bits = packed->info.constUsed[q]; bits; bits &= bits - 1)
+                        {
+                            const uint32_t c = q * 64 + uint32_t(__builtin_ctzll(bits));
+                            mix(c);
+                            for (uint32_t k = 0; k < 4; k++)
+                                mix(src[c * 4 + k]);
+                            note(base ? 1 : 0, c, &src[c * 4]);
+                        }
+                };
+                addStage(constLayoutVs, 0);
+                addStage(constLayoutPs, 256);
+                s_frameHashDraws++;
+                s_frameDrawHashes.push_back(uint32_t(s_drawHash ^ (s_drawHash >> 32)));
             }
         }
         while (true)
@@ -9859,6 +9905,45 @@ vec3 nativeTone(vec3 col)
     {
         if (s_vk)
             ApplyLiveSettings();
+        if (s_frameHashDraws)
+        {
+            fprintf(stderr, "[fh] %llu %llu %016llx %u\n", (unsigned long long)frame, (unsigned long long)game::WorldFrameIndex(),
+                (unsigned long long)s_frameHash, s_frameHashDraws);
+            if (!s_frameDetail.empty())
+            {
+                // The constants that changed since the last frame, counted by (stage, slot, shader): what is still moving.
+                if (s_prevDetail.size() == s_frameDetail.size())
+                {
+                    std::map<std::tuple<uint32_t, uint32_t, uint64_t>, uint32_t> changed;
+                    for (size_t i = 0; i < s_frameDetail.size(); i++)
+                        if (memcmp(s_frameDetail[i].v, s_prevDetail[i].v, 16) != 0)
+                            changed[{ s_frameDetail[i].stage, s_frameDetail[i].slot, s_frameDetail[i].stage ? s_frameDetail[i].ps : s_frameDetail[i].vs }]++;
+                    fprintf(stderr, "[fhd] frame %llu: %zu constants, %zu (stage, slot, shader) groups changed", (unsigned long long)frame, s_frameDetail.size(), changed.size());
+                    int shown = 0;
+                    for (auto& [k, n] : changed)
+                        if (shown++ < 24)
+                            fprintf(stderr, " | %s c%u %016llx x%u", std::get<0>(k) ? "ps" : "vs", std::get<1>(k), (unsigned long long)std::get<2>(k), n);
+                    fprintf(stderr, "\n");
+                }
+                else
+                    fprintf(stderr, "[fhd] frame %llu: %zu constants (the last frame had %zu: not compared)\n", (unsigned long long)frame, s_frameDetail.size(), s_prevDetail.size());
+                s_prevDetail.swap(s_frameDetail);
+                s_frameDetail.clear();
+            }
+            static FILE* const drawFile = [] { const char* p = std::getenv("NFSMW_FRAME_HASH_FILE"); return p ? fopen(p, "wb") : nullptr; }();
+            if (drawFile)
+            {
+                const uint64_t f = frame;
+                const uint32_t n = uint32_t(s_frameDrawHashes.size());
+                fwrite(&f, 8, 1, drawFile);
+                fwrite(&n, 4, 1, drawFile);
+                fwrite(s_frameDrawHashes.data(), 4, n, drawFile);
+                fflush(drawFile);
+            }
+            s_frameDrawHashes.clear();
+            s_frameHash = 14695981039346656037ull;
+            s_frameHashDraws = 0;
+        }
         if (s_uploadLog)
         {
             UploadLog& log = *s_uploadLog;

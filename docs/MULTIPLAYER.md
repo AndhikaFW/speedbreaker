@@ -43,13 +43,23 @@ it back to about single-player cost, but the game draws both views, so the viewp
   addresses move between launches (heap), so the hash needs the cars found by walking the game's own structures, not by a fixed address.
 
 ## Phase 2 status
-Built (default off, nothing changes without it): `NFSMW_FIXED_STEPS=<1-4>` gives every game frame exactly that many world steps whatever the
-frame took (`game/frame_time.cpp`: the frame's time is set to n/60 s and the stepper's elapsed time snapped to n); `NFSMW_INPUT_FRAMES` /
-`NFSMW_INPUT_FRAMES2` key scripted inputs to world frames, with a `SHOT` step that captures the presented frame.
-**First experiment (two identical runs, pause and capture at the same frame): invalid.** Both runs ended in menus, not the race: the world
-stepper also runs in the front end, so frame 0 of the scripts was the first frame of the game, and the steer and Start steps landed in the
-menus. Nothing about determinism was learned.
-**What is needed first:** an exact anchor for "the race's first frame". Candidates: a game state global (front end / loading / racing),
-found by diffing the game's globals between a menu and a race and checking it across launches; or the race world's own clock. The renderer's
-draw count is not exact enough: the presented frame lags the game's by a varying one or two frames. With the anchor in place, repeat:
-two runs, same inputs by race frame, pause with START at a set frame, compare the captured pictures (motion blur and the overlay off).
+Built (all off by default; nothing changes without them):
+- `NFSMW_FIXED_STEPS=<1-4>`: every game frame is exactly that many world steps, whatever it took (`game/frame_time.cpp`). It also makes the
+  game's `mftb` (the timebase it reads, `cpu/guest_time.h`) a function of the game frame (n/60 s a frame, plus a few ticks per read in a frame,
+  so a wait for time to pass still ends); `NFSMW_REAL_TIMEBASE=1` keeps the host's. Changing that header rebuilds all recompiled sources.
+- `NFSMW_INPUT_FRAMES` / `NFSMW_INPUT_FRAMES2`: scripted inputs keyed to world frames, with a `SHOT` step (`hid/input.cpp`).
+- `NFSMW_INPUT_CMD=<file>`: step-by-step commands for either player; `NFSMW_FRAME_HASH=1|detail`, `NFSMW_FRAME_HASH_FILE=<file>`: a hash of the
+  shader constants of every draw, per frame and per draw (`gpu/renderer.cpp`), to compare two runs.
+**Where the first attempts went wrong:** frame-keyed inputs counted frames from launch (the front end also runs the world stepper), so they
+fired in menus. The one state value found (`0x82A38D70`, 0 in the front end, 2 from the start of loading) marks the start of loading, not the first
+race frame, and loading takes a varying number of frames. No exact race-start anchor yet.
+**Where the comparison stands (two identical two-player races, fixed steps, deterministic timebase, async shaders off, throttle held):**
+- Whole-frame hashes never match between runs (0 of about 800 frames), and many constants change every frame even while the game is paused.
+- Per-draw hashes do align: from about race frame 170 on, frame i of one run lines up with frame i+119 of the other (the same offset for 200+
+  frames), and about 13% of a frame's draws match exactly, steady through the countdown and after. Draw counts are about 2700 per frame.
+- So the runs follow the same course frame by frame (same frame structure, constant offset), but 87% of draws differ in some constant. Not yet
+  known whether that is (a) a constant that holds absolute game time (the two runs' game frame counts differ by the offset, 119 frames), harmless
+  to the simulation, or (b) real divergence of the cars and camera. That is the question to answer next.
+**Next:** make the two runs share the same absolute game time at the race start (for example start the deterministic clock from the loading flag
+instead of launch), then compare again; or dump the differing constants of an aligned frame pair and see which shader slots they are (time and
+animation, or the car and camera matrices).
