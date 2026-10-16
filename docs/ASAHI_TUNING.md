@@ -1,5 +1,7 @@
 # Asahi / Apple M1 tuning (fork notes)
 
+> Updating to a new upstream release: see [PORTING.md](PORTING.md) (`scripts/fork/update-from-upstream.sh`).
+
 Notes on the graphics, memory and latency work in this fork, on top of SpeedBreaker v0.1.4.
 Target machine for all measurements: an Apple M1 MacBook Air (13", fanless) running Fedora Asahi
 (Linux, aarch64), the Apple GPU through the Asahi Vulkan driver, 7.5 GB of RAM.
