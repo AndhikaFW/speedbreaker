@@ -53,13 +53,19 @@ Built (all off by default; nothing changes without them):
 **Where the first attempts went wrong:** frame-keyed inputs counted frames from launch (the front end also runs the world stepper), so they
 fired in menus. The one state value found (`0x82A38D70`, 0 in the front end, 2 from the start of loading) marks the start of loading, not the first
 race frame, and loading takes a varying number of frames. No exact race-start anchor yet.
-**Where the comparison stands (two identical two-player races, fixed steps, deterministic timebase, async shaders off, throttle held):**
+**Where the comparison stands (two identical two-player races, fixed steps, deterministic timebase, async shaders off, player 1's throttle held):**
 - Whole-frame hashes never match between runs (0 of about 800 frames), and many constants change every frame even while the game is paused.
-- Per-draw hashes do align: from about race frame 170 on, frame i of one run lines up with frame i+119 of the other (the same offset for 200+
-  frames), and about 13% of a frame's draws match exactly, steady through the countdown and after. Draw counts are about 2700 per frame.
-- So the runs follow the same course frame by frame (same frame structure, constant offset), but 87% of draws differ in some constant. Not yet
-  known whether that is (a) a constant that holds absolute game time (the two runs' game frame counts differ by the offset, 119 frames), harmless
-  to the simulation, or (b) real divergence of the cars and camera. That is the question to answer next.
-**Next:** make the two runs share the same absolute game time at the race start (for example start the deterministic clock from the loading flag
-instead of launch), then compare again; or dump the differing constants of an aligned frame pair and see which shader slots they are (time and
-animation, or the car and camera matrices).
+- Per-draw hashes align: from about race frame 170 on, frame i of one run lines up with frame i+offset of the other for 200+ frames (offsets 119 and
+  -41 in the two pairs compared), and about 13% of a frame's draws match exactly, steady through the countdown and after.
+- Per-slot digests (`NFSMW_FRAME_GROUPS_FILE`, 3200 (stage, slot, shader) groups compared per pair of aligned frames): 61% of the groups differ.
+  The vertex shader slots c0-c3 (the transform) differ in 120 of 123 shaders, and no shift between -120 and +120 frames makes them agree
+  (best 2.8%). So the camera and the transformed objects are not the same in the two runs at any alignment.
+- **Cause not known.** The harness itself is a suspect: the throttle was pressed by wall-clock command during loading, so it was held for a
+  different number of frames before the start in each run (the engine may ramp with it), and the alignment of static draws cannot pin a frame
+  exactly. Real divergence of the world (random seeds, thread timing, streaming) is equally possible.
+**What this means for lockstep:** not yet shown to work, and not shown to be impossible. It needs an exact race-start anchor in the game's own state
+(the first frame of the race world), so that inputs can be keyed to the race's clock and not the wall's; with that, repeat the comparison. If the
+runs still differ with identical inputs on the same frames, the game has sources of nondeterminism beyond the clock that would each have to be found.
+**Next:** find the race's own clock or start flag in the game's state (the heap structures reached from a global pointer), key the inputs to it, and
+repeat the two-run comparison. If lockstep proves out of reach, other designs: ghost racing (record and replay a run, no live sync) or a
+host-authoritative design where one machine runs the race and the other only draws.

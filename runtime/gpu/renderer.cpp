@@ -7784,6 +7784,7 @@ vec3 nativeTone(vec3 col)
     uint64_t s_frameHash = 14695981039346656037ull;  // NFSMW_FRAME_HASH: this frame's draws so far
     uint32_t s_frameHashDraws = 0;
     uint64_t s_drawHash = 0;
+    std::map<std::tuple<uint32_t, uint32_t, uint64_t>, uint64_t> s_frameGroups;  // NFSMW_FRAME_GROUPS_FILE
     std::vector<uint32_t> s_frameDrawHashes;  // NFSMW_FRAME_HASH_FILE: one hash per draw, written at the swap
     struct DetailConst { uint32_t draw, stage, slot; uint64_t vs, ps; uint32_t v[4]; };
     std::vector<DetailConst> s_frameDetail, s_prevDetail;  // NFSMW_FRAME_HASH=detail: this frame's constants and the last one's
@@ -8355,7 +8356,17 @@ vec3 nativeTone(vec3 col)
                 auto mix = [](uint32_t w) { s_frameHash = (s_frameHash ^ w) * 1099511628211ull; s_drawHash = (s_drawHash ^ w) * 1099511628211ull; };
                 s_drawHash = 14695981039346656037ull ^ (s_vs ? s_vs->hash : 0) ^ ((s_ps ? s_ps->hash : 0) * 31);
                 // detail: every constant a draw's shaders use, keyed by draw, stage and slot, to list what differs between two frames.
+                static FILE* const groupsFile = [] { const char* p = std::getenv("NFSMW_FRAME_GROUPS_FILE"); return p ? fopen(p, "wb") : nullptr; }();
                 auto note = [&](uint32_t stage, uint32_t slot, const uint32_t* v) {
+                    if (groupsFile)
+                    {
+                        // A digest per (stage, slot, shader) over the draws of the frame, in draw order, for comparing runs slot by slot.
+                        uint64_t& g = s_frameGroups[{ stage, slot, stage ? (s_ps ? s_ps->hash : 0) : (s_vs ? s_vs->hash : 0) }];
+                        if (!g)
+                            g = 14695981039346656037ull;
+                        for (int k = 0; k < 4; k++)
+                            g = (g ^ v[k]) * 1099511628211ull;
+                    }
                     if (!detail)
                         return;
                     s_frameDetail.push_back({ s_frameHashDraws, stage, slot, s_vs ? s_vs->hash : 0, s_ps ? s_ps->hash : 0, v[0], v[1], v[2], v[3] });
@@ -9939,6 +9950,29 @@ vec3 nativeTone(vec3 col)
                 fwrite(&n, 4, 1, drawFile);
                 fwrite(s_frameDrawHashes.data(), 4, n, drawFile);
                 fflush(drawFile);
+            }
+            if (!s_frameGroups.empty())
+            {
+                static FILE* const groupsFile = std::getenv("NFSMW_FRAME_GROUPS_FILE") ? fopen(std::getenv("NFSMW_FRAME_GROUPS_FILE"), "ab") : nullptr;
+                if (groupsFile)
+                {
+                    const uint64_t f = frame;
+                    const uint32_t n = uint32_t(s_frameGroups.size());
+                    fwrite(&f, 8, 1, groupsFile);
+                    fwrite(&n, 4, 1, groupsFile);
+                    for (auto& [k, v] : s_frameGroups)
+                    {
+                        const uint32_t stage = std::get<0>(k), slot = std::get<1>(k);
+                        const uint64_t shader = std::get<2>(k);
+                        const uint32_t digest = uint32_t(v ^ (v >> 32));
+                        fwrite(&stage, 4, 1, groupsFile);
+                        fwrite(&slot, 4, 1, groupsFile);
+                        fwrite(&shader, 8, 1, groupsFile);
+                        fwrite(&digest, 4, 1, groupsFile);
+                    }
+                    fflush(groupsFile);
+                }
+                s_frameGroups.clear();
             }
             s_frameDrawHashes.clear();
             s_frameHash = 14695981039346656037ull;
