@@ -2,6 +2,7 @@
 #include <stdafx.h>
 #include "input.h"
 #include <cpu/guest_time.h>
+#include <game/frame_time.h>
 #include <kernel/function.h>
 #include <ui/ui.h>
 #include <user/settings.h>
@@ -100,7 +101,7 @@ namespace
 
     // A scripted input: buttons (or analog: RT/LT triggers, LL/LR/LU/LD left
     // stick) held over [time, time + duration).
-    struct ScriptTap { double time; uint16_t buttons; int16_t lx, ly; double duration = 0.15; uint8_t lt = 0, rt = 0; };
+    struct ScriptTap { double time; uint16_t buttons; int16_t lx, ly; double duration = 0.15; uint8_t lt = 0, rt = 0; bool frames = false, shot = false, fired = false; };
     std::vector<ScriptTap> s_script;
     std::vector<ScriptTap> s_script2;  // player 2: NFSMW_INPUT_SCRIPT2, same syntax
     // Guest ns at launch: the script and the virtual pad run on guest time,
@@ -155,7 +156,7 @@ namespace
         return 0;
     }
 
-    void ParseScript(const char* envName, std::vector<ScriptTap>& out)
+    void ParseScript(const char* envName, std::vector<ScriptTap>& out, bool frames = false)
     {
         const char* s = std::getenv(envName);
         if (!s)
@@ -175,12 +176,16 @@ namespace
             std::string when = item.substr(0, colon);
             std::string name = item.substr(colon + 1);
             ScriptTap proto{ 0, ButtonByName(name), 0, 0 };
+            proto.frames = frames;  // times and lengths in world frames (game/frame_time.h: WorldFrameIndex), taps 4 frames long
+            if (frames)
+                proto.duration = 4;
             if (name == "RT") proto.rt = 255;
             else if (name == "LT") proto.lt = 255;
             else if (name == "LL") proto.lx = -32767;
             else if (name == "LR") proto.lx = 32767;
             else if (name == "LU") proto.ly = 32767;
             else if (name == "LD") proto.ly = -32767;
+            else if (name == "SHOT") proto.shot = true;  // a capture of the next presented frame (frames scripts only)
             else if (proto.buttons == 0)
             {
                 fprintf(stderr, "[input] script: unknown button in \"%s\"\n", item.c_str());
@@ -223,9 +228,9 @@ namespace
     {
         if (script.empty())
             return;
-        double t = SecondsSinceLaunch();
+        const double seconds = SecondsSinceLaunch(), frame = double(game::WorldFrameIndex());
         for (const auto& tap : script)
-            if (t >= tap.time && t < tap.time + tap.duration)
+            if (const double t = tap.frames ? frame : seconds; t >= tap.time && t < tap.time + tap.duration)
             {
                 p.buttons |= tap.buttons;
                 p.leftTrigger = std::max(p.leftTrigger, tap.lt);
@@ -283,7 +288,8 @@ namespace
         fclose(f);
     }
 
-    const bool s_scriptParsed = (ParseScript("NFSMW_INPUT_SCRIPT", s_script), ParseScript("NFSMW_INPUT_SCRIPT2", s_script2), true);
+    const bool s_scriptParsed = (ParseScript("NFSMW_INPUT_SCRIPT", s_script), ParseScript("NFSMW_INPUT_SCRIPT2", s_script2),
+                                      ParseScript("NFSMW_INPUT_FRAMES", s_script, true), ParseScript("NFSMW_INPUT_FRAMES2", s_script2, true), true);
 
     // NFSMW_VIRTUAL_PAD="2:LX=0.05,4:LX=0.2,6:RT=0.01": an SDL virtual
     // controller, the only one opened, whose axes move to those values at
@@ -665,6 +671,21 @@ namespace hid
         NoControllerNotice();
 #endif
         PollCommandFile();
+        {
+            // "SHOT" steps of the frame-keyed scripts: due once the world has run that many frames.
+            bool shot = false;
+            const double frame = double(game::WorldFrameIndex());
+            std::lock_guard lock(s_mutex);
+            for (auto* script : { &s_script, &s_script2 })
+                for (auto& tap : *script)
+                    if (tap.shot && !tap.fired && frame >= tap.time)
+                    {
+                        tap.fired = true;
+                        shot = true;
+                    }
+            if (shot)
+                ui::RequestShot();
+        }
         Pad p;
         float lx = 0, ly = 0, rx = 0, ry = 0, lt = 0, rt = 0;
         bool padBack = false;  // the controller's Back, as the device reports it

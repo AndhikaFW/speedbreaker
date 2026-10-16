@@ -21,4 +21,11 @@ namespace game
     // (1/60 s each). It moves once a frame, at the frame's start, paused or
     // not; the game draws the frame after (the nitrous trails, game/light_trails.h).
     double FrameClockMs();
+
+    // Steps the world runs in every game frame when NFSMW_FIXED_STEPS=<n> is set (0: off, the default): the frame is given exactly n/60 s,
+    // whatever it took, so the world's state depends only on the frame count and the inputs, not on timing (lockstep play needs that).
+    int FixedSteps();
+    // Frames the world stepper has run so far (calls of the stepper since launch: the front end has no world, a race does), for
+    // inputs and captures keyed to the race's own clock.
+    uint64_t WorldFrameIndex();
 }

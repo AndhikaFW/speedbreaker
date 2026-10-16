@@ -31,6 +31,9 @@
 //   - NFSMW_INPUT_CMD=<file>: commands for either player, one a line ("1 A", "2 START", "1 RT 5": player, button, seconds held),
 //     read and emptied once a frame, so a session can be driven step by step with a look at the screen between steps (the timed
 //     scripts drift with the load times).
+//   - NFSMW_INPUT_FRAMES / NFSMW_INPUT_FRAMES2: the NFSMW_INPUT_SCRIPT syntax for player 1 / 2, but the times and lengths are
+//     world frames (game/frame_time.h: WorldFrameIndex; taps last 4 frames), so the inputs follow the game's own clock instead of
+//     the wall's; "N:SHOT" captures the next presented frame (build/ui_shot_<n>.ppm) once the world has run N frames.
 //   - NFSMW_INPUT_LOG=1: the left stick and triggers once a second, raw and
 //     as the game gets them.
 //   - iOS: with no controller (and no keyboard attached) a toast says the

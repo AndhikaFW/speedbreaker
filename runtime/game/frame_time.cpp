@@ -58,6 +58,15 @@ namespace
         return on;
     }();
     std::atomic<uint64_t> s_frames{ 0 }, s_snapped{ 0 }, s_noStep{ 0 }, s_multiStep{ 0 };
+    std::atomic<uint64_t> s_worldFrames{ 0 };
+    const int s_fixedSteps = [] {
+        const char* v = std::getenv("NFSMW_FIXED_STEPS");
+        int n = v ? std::atoi(v) : 0;
+        n = std::clamp(n, 0, 4);
+        if (n)
+            fprintf(stderr, "[game] fixed game time: %d world steps (%.2f ms) a frame, whatever the frame took (NFSMW_FIXED_STEPS)\n", n, n * 1000.0 / 60.0);
+        return n;
+    }();
     // Game time handed to the frames so far (game::FrameClockMs), ms in 16.16.
     std::atomic<uint64_t> s_clock{ 0 };
     // NFSMW_GAME_TIME_LOG=<file>: one line per frame, written when the next
@@ -97,6 +106,9 @@ namespace game
             s_multiStep.load(std::memory_order_relaxed), s_snapped.load(std::memory_order_relaxed) };
     }
 
+    int FixedSteps() { return s_fixedSteps; }
+    uint64_t WorldFrameIndex() { return s_worldFrames.load(std::memory_order_relaxed); }
+
     double FrameClockMs()
     {
         return double(s_clock.load(std::memory_order_relaxed)) / 65536.0;
@@ -127,6 +139,13 @@ void GameFrameTime(PPCRegister& r3)
             video::LastGuestVblank();
         s_line = { measuredMs, double(since) / 1e3, vblanks, 0, -1, false, true };
     }
+    if (s_fixedSteps)
+    {
+        // Every frame is exactly n steps long: no measuring, no vblanks.
+        r3.u64 = uint32_t(std::llround(double(s_fixedSteps) * (1000.0 / 60.0) * 65536.0));
+        s_line.given = uint64_t(s_fixedSteps);
+        return;
+    }
     if (!s_enabled)
         return;
     double refreshMs = video::GuestVblank().PeriodNs() / 1e6;
@@ -150,6 +169,13 @@ void GameFrameTime(PPCRegister& r3)
 // the elapsed time in steps (f9 the remainder it joins).
 void WorldStepTime(PPCRegister& f10)
 {
+    if (s_fixedSteps)
+    {
+        // The elapsed time is n steps give or take the rounding of its ticks (and 0 while the game doesn't run its world).
+        if (std::abs(f10.f64 - s_fixedSteps) <= 0.3)
+            f10.f64 = s_fixedSteps;
+        return;
+    }
     if (!s_enabled || !NearSixty(video::GuestVblank().PeriodNs() / 1e6))
         return;
     double k = std::round(f10.f64);
@@ -161,6 +187,7 @@ void WorldStepTime(PPCRegister& f10)
 // steps this frame runs, before the step runner's cap.
 void WorldSteps(PPCRegister& r30)
 {
+    s_worldFrames.fetch_add(1, std::memory_order_relaxed);
     s_line.steps = int(r30.u32);
     if (r30.u32 == 0)
         s_noStep.fetch_add(1, std::memory_order_relaxed);

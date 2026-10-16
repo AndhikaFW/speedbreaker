@@ -41,3 +41,15 @@ it back to about single-player cost, but the game draws both views, so the viewp
 - Random numbers, AI and traffic must start from the same seed on both machines (the race setup is chosen by the host).
 - To measure it: apply scripted inputs by frame number (not time), run twice, hash the cars' state each frame, and compare. The cars' memory
   addresses move between launches (heap), so the hash needs the cars found by walking the game's own structures, not by a fixed address.
+
+## Phase 2 status
+Built (default off, nothing changes without it): `NFSMW_FIXED_STEPS=<1-4>` gives every game frame exactly that many world steps whatever the
+frame took (`game/frame_time.cpp`: the frame's time is set to n/60 s and the stepper's elapsed time snapped to n); `NFSMW_INPUT_FRAMES` /
+`NFSMW_INPUT_FRAMES2` key scripted inputs to world frames, with a `SHOT` step that captures the presented frame.
+**First experiment (two identical runs, pause and capture at the same frame): invalid.** Both runs ended in menus, not the race: the world
+stepper also runs in the front end, so frame 0 of the scripts was the first frame of the game, and the steer and Start steps landed in the
+menus. Nothing about determinism was learned.
+**What is needed first:** an exact anchor for "the race's first frame". Candidates: a game state global (front end / loading / racing),
+found by diffing the game's globals between a menu and a race and checking it across launches; or the race world's own clock. The renderer's
+draw count is not exact enough: the presented frame lags the game's by a varying one or two frames. With the anchor in place, repeat:
+two runs, same inputs by race frame, pause with START at a set frame, compare the captured pictures (motion blur and the overlay off).
