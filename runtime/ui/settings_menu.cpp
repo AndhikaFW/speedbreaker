@@ -574,6 +574,8 @@ namespace ui
                         ImGui::EndTable();
                     }
                     ImGui::PopStyleVar();
+                    if (category == Category::Online)
+                        DrawOnlinePage();
                     // Which build this is, for bug reports by hand: under
                     // the rows, lined up with their labels.
                     if (category == Category::Advanced)

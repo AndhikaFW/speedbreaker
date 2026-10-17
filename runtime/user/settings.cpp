@@ -270,6 +270,11 @@ namespace settings
               .table = "advanced", .key = "skip_startup_movies", .label = "Skip Startup Movies",
               .description = "Skip the logos and the title-screen movie at launch.",
               .env = "NFSMW_SKIP_STARTUP_MOVIES", .defaultValue = 1 },
+            { .id = Id::OnlinePlay, .category = Category::Online, .type = Type::Bool, .apply = Apply::Restart,
+              .table = "online", .key = "online_play", .label = "Online Play",
+              .description = "Races over the network through a lobby server, in the game's own two-player mode. Every game frame then runs exactly two world steps, so "
+                             "both machines stay in step; the game restarts to change this.",
+              .env = "NFSMW_ONLINE_PLAY", .defaultValue = 0 },
         };
         static_assert(std::size(kOptions) == kCount, "one row per settings::Id");
 
@@ -998,6 +1003,7 @@ namespace settings
         case Category::Graphics: return "Graphics";
         case Category::Audio: return "Audio";
         case Category::Input: return "Input";
+        case Category::Online: return "Online";
         case Category::Advanced: return "Advanced";
         default: return "";
         }

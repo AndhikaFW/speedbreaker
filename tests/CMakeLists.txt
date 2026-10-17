@@ -16,6 +16,8 @@ function(sb_test name)
 endfunction()
 
 sb_test(block_ranges_test)
+# The lobby protocol's JSON reader and writer (net/json_lite.h, header only).
+sb_test(json_lite_test)
 # Where guest memory and the upload ring go (gpu/memory_plan.h, header only).
 sb_test(memory_plan_test)
 sb_test(zpd_report_test)

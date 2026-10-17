@@ -46,6 +46,7 @@
 
 #include <cpu/guest_time.h>
 #include <kernel/function.h>
+#include <user/settings.h>
 #include <video/presenter.h>
 #include <video/vblank_lock.h>
 
@@ -61,23 +62,8 @@ namespace
     std::atomic<uint64_t> s_frames{ 0 }, s_snapped{ 0 }, s_noStep{ 0 }, s_multiStep{ 0 };
     std::atomic<uint64_t> s_worldFrames{ 0 };
     std::atomic<int64_t> s_raceFrame{ -1 };
-    const int s_fixedSteps = [] {
-        const char* v = std::getenv("NFSMW_FIXED_STEPS");
-        int n = v ? std::atoi(v) : 0;
-        n = std::clamp(n, 0, 4);
-        if (n)
-        {
-            // The game's mftb follows the frame too (cpu/guest_time.h), unless NFSMW_REAL_TIMEBASE keeps the host's.
-            if (!std::getenv("NFSMW_REAL_TIMEBASE"))
-            {
-                guesttime::g_detTicksPerFrame.store(uint64_t(guesttime::kTimebaseHz) * uint64_t(n) / 60, std::memory_order_relaxed);
-                guesttime::g_detFrame.store(0, std::memory_order_relaxed);
-            }
-        }
-        if (n)
-            fprintf(stderr, "[game] fixed game time: %d world steps (%.2f ms) a frame, whatever the frame took (NFSMW_FIXED_STEPS)\n", n, n * 1000.0 / 60.0);
-        return n;
-    }();
+    int s_fixedSteps = 0;  // set once by game::InitFixedSteps before the guest runs, then only read
+
     // Game time handed to the frames so far (game::FrameClockMs), ms in 16.16.
     std::atomic<uint64_t> s_clock{ 0 };
     // NFSMW_GAME_TIME_LOG=<file>: one line per frame, written when the next
@@ -111,6 +97,26 @@ namespace
 
 namespace game
 {
+    void InitFixedSteps()
+    {
+        const char* v = std::getenv("NFSMW_FIXED_STEPS");
+        int n = v ? std::atoi(v) : 0;
+        if (!v && settings::GetBool(settings::Id::OnlinePlay))
+            n = 2;
+        n = std::clamp(n, 0, 4);
+        if (!n)
+            return;
+        // The game's mftb follows the frame too (cpu/guest_time.h), unless NFSMW_REAL_TIMEBASE keeps the host's.
+        if (!std::getenv("NFSMW_REAL_TIMEBASE"))
+        {
+            guesttime::g_detTicksPerFrame.store(uint64_t(guesttime::kTimebaseHz) * uint64_t(n) / 60, std::memory_order_relaxed);
+            guesttime::g_detFrame.store(0, std::memory_order_relaxed);
+        }
+        s_fixedSteps = n;
+        fprintf(stderr, "[game] fixed game time: %d world steps (%.2f ms) a frame, whatever the frame took (%s)\n", n, n * 1000.0 / 60.0,
+            v ? "NFSMW_FIXED_STEPS" : "Settings > Online > Online Play");
+    }
+
     FrameTimeStats GetFrameTimeStats()
     {
         return { s_frames.load(std::memory_order_relaxed), s_noStep.load(std::memory_order_relaxed),

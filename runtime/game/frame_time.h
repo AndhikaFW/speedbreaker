@@ -24,6 +24,8 @@ namespace game
 
     // Steps the world runs in every game frame when NFSMW_FIXED_STEPS=<n> is set (0: off, the default): the frame is given exactly n/60 s,
     // whatever it took, so the world's state depends only on the frame count and the inputs, not on timing (lockstep play needs that).
+    // Called once, after the settings are loaded and before the guest runs: NFSMW_FIXED_STEPS=<n>, or 2 with Settings > Online > Online Play.
+    void InitFixedSteps();
     int FixedSteps();
     // The race's own frame count for lockstep play (net/netplay.h): -1 outside a race, else the number of main-loop frames since the world clock (a
     // float in seconds at 0x82A153B8: 0 in the front end, starting to count when a race world is created) first read above 0. The same on two

@@ -17,6 +17,7 @@
 #include "cpu/guest_time.h"
 #include <video/presenter.h>
 #include <gpu/renderer.h>
+#include <game/frame_time.h>
 #include <hid/input.h>
 #include <cpu/guest_thread.h>
 #include <cpu/host_cpu.h>
@@ -389,6 +390,7 @@ int main(int argc, char** argv)
     }
 #endif
     bool settingsLoaded = settings::Load();
+    game::InitFixedSteps();
     // Which version ran last: a line in the log (so a bug report shows when a
     // problem began), the "What's new" note below, and this version recorded
     // as the last (user/version_check.h).

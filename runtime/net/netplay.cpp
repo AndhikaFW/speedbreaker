@@ -81,6 +81,8 @@ namespace
     std::atomic<uint32_t> s_sequence{ 0 };
     int s_socket = -1;
     sockaddr_in s_server{};
+    std::atomic<bool> s_external{ false };  // the socket is the lobby's (Attach), not our own
+    int s_externalSlot = 0;
 
     // Lockstep buffers, indexed by frame modulo kRing: the other player's pad for frame g (valid when its tag is g), and our own samples.
     constexpr int kRing = 512, kRedundancy = 8;
@@ -140,52 +142,7 @@ namespace
             const ssize_t n = recv(s_socket, packet, sizeof(packet), 0);  // 100 ms timeout (SO_RCVTIMEO)
             if (n < 5 || memcmp(packet, kMagic, 4) != 0)
                 continue;
-            if (packet[4] == kWelcome && n >= 6)
-            {
-                const int players = packet[5];
-                if (s_players.exchange(players) != players)
-                    fprintf(stderr, "[netplay] room \"%s\": %d player%s\n", s_config.room.c_str(), players, players == 1 ? "" : "s");
-            }
-            else if (packet[4] == kRelayFrames && n >= 7)
-            {
-                const int count = packet[6];
-                if (size_t(n) < 7 + size_t(count) * (4 + kPadBytes))
-                    continue;
-                std::lock_guard lock(s_mutex);
-                for (int k = 0; k < count; k++)
-                {
-                    const uint8_t* e = packet + 7 + k * (4 + kPadBytes);
-                    uint32_t g;
-                    memcpy(&g, e, 4);
-                    Slot& slot = s_remoteRing[g % kRing];
-                    slot.pad = Get(e + 4);
-                    slot.frame = g;
-                }
-                if (!s_haveRemote)
-                    fprintf(stderr, "[netplay] the other player's controller is arriving\n");
-                s_haveRemote = true;
-                s_received.fetch_add(1, std::memory_order_relaxed);
-            }
-            else if (packet[4] == kRelay && size_t(n) >= 5 + 1 + 4 + kPadBytes)
-            {
-                std::lock_guard lock(s_mutex);
-                const netplay::PadState before = s_remote;
-                s_remote = Get(packet + 5 + 1 + 4);
-                // NFSMW_LOG_NET_PADS=1: every change of the other player's pad as it arrives, with the time, to line up what one player does with
-                // what the other sees.
-                static const bool logPads = std::getenv("NFSMW_LOG_NET_PADS") != nullptr;
-                if (logPads && memcmp(&before, &s_remote, sizeof(netplay::PadState)) != 0)
-                {
-                    const auto t = std::chrono::system_clock::now().time_since_epoch();
-                    const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(t).count();
-                    fprintf(stderr, "[netpad] %lld.%03lld remote: buttons %04X lt %u rt %u lx %d ly %d\n", ms / 1000, ms % 1000, s_remote.buttons,
-                        s_remote.leftTrigger, s_remote.rightTrigger, int(s_remote.lx), int(s_remote.ly));
-                }
-                if (!s_haveRemote)
-                    fprintf(stderr, "[netplay] the other player's controller is arriving\n");
-                s_haveRemote = true;
-                s_received.fetch_add(1, std::memory_order_relaxed);
-            }
+            netplay::HandlePacket(packet, size_t(n));
         }
     }
 
@@ -223,8 +180,87 @@ namespace
 
 namespace netplay
 {
-    bool Enabled() { return s_config.enabled && Running(); }
-    int LocalSlot() { return s_config.slot; }
+    void HandlePacket(const uint8_t* packet, size_t n)
+    {
+        if (n < 5 || memcmp(packet, kMagic, 4) != 0)
+            return;
+        if (packet[4] == kWelcome && n >= 6)
+        {
+            const int players = packet[5];
+            if (s_players.exchange(players) != players)
+                fprintf(stderr, "[netplay] room \"%s\": %d player%s\n", s_config.room.c_str(), players, players == 1 ? "" : "s");
+        }
+        else if (packet[4] == kRelayFrames && n >= 7)
+        {
+            const int count = packet[6];
+            if (n < 7 + size_t(count) * (4 + kPadBytes))
+                return;
+            std::lock_guard lock(s_mutex);
+            for (int k = 0; k < count; k++)
+            {
+                const uint8_t* e = packet + 7 + k * (4 + kPadBytes);
+                uint32_t g;
+                memcpy(&g, e, 4);
+                Slot& slot = s_remoteRing[g % kRing];
+                slot.pad = Get(e + 4);
+                slot.frame = g;
+            }
+            if (!s_haveRemote)
+                fprintf(stderr, "[netplay] the other player's controller is arriving\n");
+            s_haveRemote = true;
+            s_received.fetch_add(1, std::memory_order_relaxed);
+        }
+        else if (packet[4] == kRelay && n >= 5 + 1 + 4 + kPadBytes)
+        {
+            std::lock_guard lock(s_mutex);
+            const netplay::PadState before = s_remote;
+            s_remote = Get(packet + 5 + 1 + 4);
+            // NFSMW_LOG_NET_PADS=1: every change of the other player's pad as it arrives, with the time, to line up what one player does with
+            // what the other sees.
+            static const bool logPads = std::getenv("NFSMW_LOG_NET_PADS") != nullptr;
+            if (logPads && memcmp(&before, &s_remote, sizeof(netplay::PadState)) != 0)
+            {
+                const auto t = std::chrono::system_clock::now().time_since_epoch();
+                const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(t).count();
+                fprintf(stderr, "[netpad] %lld.%03lld remote: buttons %04X lt %u rt %u lx %d ly %d\n", ms / 1000, ms % 1000, s_remote.buttons,
+                    s_remote.leftTrigger, s_remote.rightTrigger, int(s_remote.lx), int(s_remote.ly));
+            }
+            if (!s_haveRemote)
+                fprintf(stderr, "[netplay] the other player's controller is arriving\n");
+            s_haveRemote = true;
+            s_received.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    void Attach(int socketFd, const sockaddr_in& server, int slot)
+    {
+        std::lock_guard lock(s_mutex);
+        s_socket = socketFd;
+        s_server = server;
+        s_externalSlot = slot != 0 ? 1 : 0;
+        s_external = true;
+        s_haveRemote = false;
+        for (Slot& r : s_remoteRing)
+            r.frame = -1;
+        for (Slot& l : s_localRing)
+            l.frame = -1;
+        s_lastPolled = -2;
+        s_remote = PadState{};
+        fprintf(stderr, "[netplay] attached to the lobby's connection: this machine is player %d\n", s_externalSlot + 1);
+    }
+
+    void Detach()
+    {
+        std::lock_guard lock(s_mutex);
+        if (!s_external)
+            return;
+        s_external = false;
+        s_haveRemote = false;
+        fprintf(stderr, "[netplay] detached\n");
+    }
+
+    bool Enabled() { return s_external || (s_config.enabled && Running()); }
+    int LocalSlot() { return s_external ? s_externalSlot : s_config.slot; }
 
     void SendLocal(const PadState& pad)
     {

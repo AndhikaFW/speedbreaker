@@ -76,12 +76,13 @@ namespace settings
         AsyncShaders,
         PerformanceOverlay,
         SkipStartupMovies,  // press A through the logos and the title movie at launch (game/startup_movies.cpp)
+        OnlinePlay,         // lockstep timing for online races (game/frame_time.cpp), and the Online page's lobby (ui/online_menu.cpp); restart
         Count
     };
     constexpr size_t kCount = size_t(Id::Count);
 
     enum class Type : uint8_t { Bool, Int, Float, Enum };
-    enum class Category : uint8_t { Display, Graphics, Audio, Input, Advanced, Count };
+    enum class Category : uint8_t { Display, Graphics, Audio, Input, Online, Advanced, Count };
     enum class Apply : uint8_t { Live, Restart };
 
     // Values of the enum options (GetInt returns them).

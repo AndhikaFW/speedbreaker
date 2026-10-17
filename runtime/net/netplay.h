@@ -2,6 +2,8 @@
 #pragma once
 #include <cstdint>
 
+#include <netinet/in.h>
+
 namespace netplay
 {
     // One controller's state, as the game reads it.
@@ -15,6 +17,12 @@ namespace netplay
     // NFSMW_NETPLAY=<host>:<port>/<room>[/<slot>] turns online play on: this machine joins <room> on the relay server and the other player's controller
     // arrives as the game's second controller. <slot> (0 or 1, default 0) says which controller the local pad is: 0 = player 1, 1 = player 2, so
     // the two machines agree who is on which side of the game's own two-player race.
+    // The lobby (net/lobby.h) owns the UDP socket the server knows this player by; once a race is agreed it hands it over, with the slot the server gave
+    // (0 host, 1 guest), and the game traffic goes through it. Detach at the end. The lobby's receive loop passes every game packet to HandlePacket.
+    void Attach(int socketFd, const sockaddr_in& server, int slot);
+    void Detach();
+    void HandlePacket(const uint8_t* packet, size_t size);
+
     bool Enabled();
     // Local slot (0 or 1).
     int LocalSlot();

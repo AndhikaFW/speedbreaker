@@ -129,6 +129,8 @@ namespace ui
 
     // Screens (settings_menu.cpp, perf_overlay.cpp, installer_screen.cpp).
     void DrawSettings();
+    // The lobby, in the Online page of the settings menu (online_menu.cpp), under the page's option rows.
+    void DrawOnlinePage();
     void ResetSettingsMenu();  // on opening: focus the first row, no dialog left open
     void DrawPerfOverlay();
 

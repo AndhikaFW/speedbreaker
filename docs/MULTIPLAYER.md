@@ -212,3 +212,20 @@ protocol in its header):
    end's own function for "start this race" (the Split Screen flow ends in one), found and called, instead of key presses; and the pad link made automatic at the
    moment it asks for player 2. Not found yet.
 3. Rematch and returning to the lobby after the race; a player dropping mid-race; the lockstep test on two machines.
+
+## The lobby in the game (2026-10-17): Settings > Online
+Built: a lobby client (`runtime/net/lobby.cpp`, with `net/json_lite.h`, tested in `tests/json_lite_test.cpp` under AddressSanitizer) and an **Online** page in
+the settings menu (`ui/online_menu.cpp`).
+- **Online Play** (Settings > Online, restart): every game frame runs exactly two world steps and the game's timer follows the frame (what lockstep needs): no
+  environment variable any more (`NFSMW_ONLINE_PLAY=1` and `NFSMW_FIXED_STEPS=n` still work for tests). With it on, the page shows the lobby: server address and
+  name (saved in `online.txt` in the user folder), Connect; the room list (name, players, password lock, race), Join (password if locked), Refresh; New room
+  (name, optional password; the creator is the host); in a room, who is in it and who is ready; the host chooses the race (mode, track, laps, traffic) and
+  starts it, the guest says Ready, either can Leave.
+- **The start event** gives each player their slot and one shared seed and hands the lobby's connection to the game's input relay
+  (`netplay::Attach`: the same socket, so the server knows the sender).
+**Checked through the real game (keys scripted, a scripted host as the other member):** connect, the list showing "bot1 (1/2) Circuit, track 3, 2 laps, traffic Minimum",
+create a room (the room appeared with the player as host), join the scripted host's room, Ready (the host saw it), the host's start (the game attached as player 2
+with the seed and showed the match screen). **Not done:** the guest and the host both starting the game's own race automatically (below), the pad link without F8,
+what the game does when a player quits mid-race, a password room tried in the UI, text fields on a controller (they need a keyboard).
+**Still open (step 3):** on the start event, the game's own front end has to be driven to the agreed race instead of asking the players to click through
+Quick Race > Split Screen by hand and press F8 at "Select player 2".
