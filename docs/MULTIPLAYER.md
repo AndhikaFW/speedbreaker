@@ -195,3 +195,20 @@ inputs on the same race frames, so a collision comes out the same on both, becau
 the bot's throttle arrived on controller 1 and moved the second car; the race clock advanced normally. **Not checked:** two machines in lockstep, drift over a
 long race and a collision (the point of the change), how much the 3-frame delay and a 42 ms link hurt the feel, and what happens when a machine's frame rate
 differs (the faster waits for the slower). Both machines must be restarted onto the new build and use `NFSMW_FIXED_STEPS=2`.
+
+## Lobby server (2026-10-17): the server learns about matches
+Decision: the F8 link and the menu-by-hand steps exist only because the server knows nothing of a match. So the server grows into a lobby (scripts/netplay/server.py,
+protocol in its header):
+- **Rooms:** named, optional password, host (slot 0) and one guest (slot 1); `list`, `create`, `join`, `leave`, `ready`, `setup` (host only: mode, track, laps,
+  traffic, whatever the client puts in the setup object), `start` (host only, when the guest is ready), `status`. Changing the setup clears the ready flags.
+- **Events pushed to members:** `room` on every change, `start` (each player's slot, the setup, one shared random seed), `closed` (the host left).
+- **Reliability over UDP:** each request carries an id; the client re-sends until it gets the reply; a repeated id is answered again, not run twice.
+- **Game traffic unchanged:** `HELLO` by room name, `INPUT`/`FRAMES` relayed to the other member only. A player silent for 15 s leaves; the host leaving closes the room.
+- `scripts/netplay/test_lobby.py` runs the server on a spare port and drives it with scripted clients: 29 checks (create, duplicate name, password, full room,
+  ready, host-only setup and start, the idempotent request, start event, relay to the other member only, host leaving, the old HELLO way in), all passing.
+**Not built yet (the client and game side):**
+1. A lobby screen in the runtime's own UI (it already has an ImGui settings menu): server address, room list, create (name, password, the race setup), join, ready, start.
+2. Starting the race without the manual menus and the F8 link: on the `start` event, drive the game's own front end with the agreed setup. That needs the front
+   end's own function for "start this race" (the Split Screen flow ends in one), found and called, instead of key presses; and the pad link made automatic at the
+   moment it asks for player 2. Not found yet.
+3. Rematch and returning to the lobby after the race; a player dropping mid-race; the lockstep test on two machines.
