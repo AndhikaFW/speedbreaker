@@ -147,3 +147,19 @@ only after an explicit link (F8 on both machines at "Select player 2"); before i
 command-file line that made no tap (the link toggle) was never cleared and toggled every frame; fixed.
 Checked locally with the bot: unlinked, the bot's START is ignored at the title screen and at "Select player 2"; after the link it reaches player 2.
 **Still not measured:** whether the two simulations stay together in a race (no race ran on both machines yet).
+
+## Second two-machine test (2026-10-17, same link, pads linked by hand at "Select player 2")
+**Worked:** with each machine on its own menus and the pads linked (F8) at "Select player 2", the other machine's START went through, player 2 chose a car and a
+transmission on that machine, and both games entered the same race (same Ironwood Estates circuit, 2 laps, minimum traffic) and showed **the same race clock**
+(reported by the other player). I held player 1's throttle for 25 s on my side (car reached 84 mph, scraping a barrier at race time 1:12). About 4 minutes
+later (clock 4:58 on mine) the other player reported the **same scene** as mine on their screen (a car stopped on grass beside a wooden fence and a tree),
+with both cars stationary, after car movements that came from both machines.
+**What this does and does not show:** both simulations were still showing the same stationary scene four minutes in. It is one observation, reported from
+the other screen in words, with no screenshot or number from it. It does not show that the cars follow the same path during the movement, or after a
+long race, a collision or a wrecked car; it is encouraging, not a measurement.
+**Unexplained:** while the other player held their throttle (for an unknown time), the car that accelerated on my screen (27, 56, 61, 85 mph) was in the **top**
+view (player 1), where I expected the bottom one (player 2). Possible causes: which viewport is which depends on the cars' relative positions, or the other
+machine's input arrives as player 1's. Not tested. To settle it, log the remote pad's state changes on arrival (not built), and have the other machine press
+throttle at a stated moment.
+**Next:** log the remote pad on my side; hold throttle on the second machine at a stated moment and see which car moves; then compare the two screens during a
+long race and after a crash; then the resync design if they drift.
