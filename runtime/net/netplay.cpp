@@ -138,7 +138,18 @@ namespace
             else if (packet[4] == kRelay && size_t(n) >= 5 + 1 + 4 + kPadBytes)
             {
                 std::lock_guard lock(s_mutex);
+                const netplay::PadState before = s_remote;
                 s_remote = Get(packet + 5 + 1 + 4);
+                // NFSMW_LOG_NET_PADS=1: every change of the other player's pad as it arrives, with the time, to line up what one player does with
+                // what the other sees.
+                static const bool logPads = std::getenv("NFSMW_LOG_NET_PADS") != nullptr;
+                if (logPads && memcmp(&before, &s_remote, sizeof(netplay::PadState)) != 0)
+                {
+                    const auto t = std::chrono::system_clock::now().time_since_epoch();
+                    const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(t).count();
+                    fprintf(stderr, "[netpad] %lld.%03lld remote: buttons %04X lt %u rt %u lx %d ly %d\n", ms / 1000, ms % 1000, s_remote.buttons,
+                        s_remote.leftTrigger, s_remote.rightTrigger, int(s_remote.lx), int(s_remote.ly));
+                }
                 if (!s_haveRemote)
                     fprintf(stderr, "[netplay] the other player's controller is arriving\n");
                 s_haveRemote = true;

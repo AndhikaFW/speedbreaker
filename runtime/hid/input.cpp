@@ -868,6 +868,21 @@ namespace hid
             }
             netplay::Tick();
         }
+        // NFSMW_LOG_NET_PADS=1: what the game is given for each controller once the pads are linked, on change.
+        if (netplay::Enabled() && s_netLinked.load())
+        {
+            static const bool logPads = std::getenv("NFSMW_LOG_NET_PADS") != nullptr;
+            static Pad last0, last1;
+            if (logPads && (memcmp(&p, &last0, sizeof(Pad)) != 0 || memcmp(&p2, &last1, sizeof(Pad)) != 0))
+            {
+                const auto t = std::chrono::system_clock::now().time_since_epoch();
+                const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(t).count();
+                fprintf(stderr, "[netpad] %lld.%03lld game gets: pad0 buttons %04X rt %u | pad1 buttons %04X rt %u\n", ms / 1000, ms % 1000, p.buttons,
+                    p.rightTrigger, p2.buttons, p2.rightTrigger);
+                last0 = p;
+                last1 = p2;
+            }
+        }
         uint16_t low, high, low2, high2;
         bool rumble, rumble2;
         {
