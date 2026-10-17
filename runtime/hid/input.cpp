@@ -39,6 +39,7 @@ namespace
     // games can't fall out of step at screens they reach at different moments. Linked, the other machine's pad is the game's other controller
     // (net/netplay.h). Both players link when both are at "Select player 2", and unlink for the menus after the race.
     std::atomic<bool> s_netLinked{ false };
+    netplay::PadState s_localNow;  // under s_mutex: this machine's pad as sampled, before it is mapped to a game controller
     void ToggleNetLink()
     {
         if (!netplay::Enabled())
@@ -854,6 +855,10 @@ namespace hid
         if (netplay::Enabled() && s_netLinked.load())
         {
             auto toNet = [](const Pad& q) { return netplay::PadState{ q.buttons, q.leftTrigger, q.rightTrigger, q.lx, q.ly, q.rx, q.ry }; };
+            {
+                std::lock_guard lock(s_mutex);
+                s_localNow = toNet(p);  // the local pad, for the lockstep poll (XamInputGetState)
+            }
             netplay::SendLocal(toNet(p));
             netplay::PadState remote;
             Pad other;
@@ -1084,8 +1089,47 @@ namespace hid
     uint8_t GameLeftTrigger() { return s_gameLeftTrigger.load(std::memory_order_relaxed); }
 }
 
+// Lockstep (net/netplay.h): in a race, with the pads linked and NFSMW_FIXED_STEPS on, the game's controllers 0 and 1 are the local pad as it was a few
+// frames ago and the other player's pad for this frame, the same on both machines. Returns false when that does not apply (menus, unlinked).
+static bool LockstepPads(uint32_t userIndex, XAMINPUT_STATE* state)
+{
+    if (!netplay::Enabled() || !s_netLinked.load() || game::FixedSteps() == 0 || userIndex > 1)
+        return false;
+    const int64_t frame = game::RaceFrame();
+    if (frame < 0)
+        return false;
+    netplay::PadState nowLocal;
+    {
+        std::lock_guard lock(s_mutex);
+        nowLocal = s_localNow;
+    }
+    netplay::PadState local, remote;
+    netplay::LockstepPoll(frame, nowLocal, local, remote);
+    const netplay::PadState& mine = netplay::LocalSlot() == 0 ? local : remote;   // controller 0
+    const netplay::PadState& other = netplay::LocalSlot() == 0 ? remote : local;  // controller 1
+    const netplay::PadState& use = userIndex == 0 ? mine : other;
+    static uint32_t packets[2] = {};
+    static netplay::PadState last[2];
+    if (memcmp(&last[userIndex], &use, sizeof(use)) != 0)
+    {
+        packets[userIndex]++;
+        last[userIndex] = use;
+    }
+    state->dwPacketNumber = ByteSwap(packets[userIndex]);
+    state->Gamepad.wButtons = ByteSwap(use.buttons);
+    state->Gamepad.bLeftTrigger = use.leftTrigger;
+    state->Gamepad.bRightTrigger = use.rightTrigger;
+    state->Gamepad.sThumbLX = ByteSwap(use.lx);
+    state->Gamepad.sThumbLY = ByteSwap(use.ly);
+    state->Gamepad.sThumbRX = ByteSwap(use.rx);
+    state->Gamepad.sThumbRY = ByteSwap(use.ry);
+    return true;
+}
+
 uint32_t XamInputGetState(uint32_t userIndex, uint32_t flags, XAMINPUT_STATE* state)
 {
+    if (LockstepPads(userIndex, state))
+        return ERROR_SUCCESS;
     // NFSMW_LOG_POLLS=1: how often the game polls each controller (0-3, other) a second, to see which screens look at which.
     {
         static const bool log = std::getenv("NFSMW_LOG_POLLS") != nullptr;

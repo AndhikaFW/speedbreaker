@@ -12,6 +12,8 @@
 //   type 2 INPUT   u32 sequence, pad state (12 bytes)          (client -> server, every frame)
 //   type 3 WELCOME u8 players in the room                      (server -> client, answers each HELLO)
 //   type 4 RELAY   u8 sender slot, u32 sequence, pad state     (server -> client: the other player's INPUT)
+//   type 5 FRAMES  u8 count, count x (u32 apply frame, pad state)   (client -> server: lockstep inputs, the last few frames each time)
+//   type 6 RELAYF  u8 sender slot, then the FRAMES payload      (server -> client)
 // The server tells the two machines apart by address. Which game controller a machine's pad is (player 1 or 2) is set on each machine by the third
 // part of NFSMW_NETPLAY (the sender slot in RELAY is the order of arrival, for information only).
 #include <stdafx.h>
@@ -32,7 +34,7 @@
 namespace
 {
     constexpr uint8_t kMagic[4] = { 'N', 'F', 'S', '1' };
-    enum : uint8_t { kHello = 1, kInput = 2, kWelcome = 3, kRelay = 4 };
+    enum : uint8_t { kHello = 1, kInput = 2, kWelcome = 3, kRelay = 4, kFrames = 5, kRelayFrames = 6 };
     constexpr size_t kPadBytes = 12;
 
     struct Config
@@ -79,6 +81,15 @@ namespace
     std::atomic<uint32_t> s_sequence{ 0 };
     int s_socket = -1;
     sockaddr_in s_server{};
+
+    // Lockstep buffers, indexed by frame modulo kRing: the other player's pad for frame g (valid when its tag is g), and our own samples.
+    constexpr int kRing = 512, kRedundancy = 8;
+    struct Slot { int64_t frame = -1; netplay::PadState pad; };
+    Slot s_remoteRing[kRing];   // under s_mutex
+    Slot s_localRing[kRing];    // main game thread only
+    int64_t s_lastPolled = -2;
+    netplay::PadState s_appliedLocal, s_appliedRemote;
+    std::atomic<uint64_t> s_lockLate{ 0 }, s_lockFrames{ 0 };
 
     void Put(uint8_t* out, const netplay::PadState& p)
     {
@@ -134,6 +145,26 @@ namespace
                 const int players = packet[5];
                 if (s_players.exchange(players) != players)
                     fprintf(stderr, "[netplay] room \"%s\": %d player%s\n", s_config.room.c_str(), players, players == 1 ? "" : "s");
+            }
+            else if (packet[4] == kRelayFrames && n >= 7)
+            {
+                const int count = packet[6];
+                if (size_t(n) < 7 + size_t(count) * (4 + kPadBytes))
+                    continue;
+                std::lock_guard lock(s_mutex);
+                for (int k = 0; k < count; k++)
+                {
+                    const uint8_t* e = packet + 7 + k * (4 + kPadBytes);
+                    uint32_t g;
+                    memcpy(&g, e, 4);
+                    Slot& slot = s_remoteRing[g % kRing];
+                    slot.pad = Get(e + 4);
+                    slot.frame = g;
+                }
+                if (!s_haveRemote)
+                    fprintf(stderr, "[netplay] the other player's controller is arriving\n");
+                s_haveRemote = true;
+                s_received.fetch_add(1, std::memory_order_relaxed);
             }
             else if (packet[4] == kRelay && size_t(n) >= 5 + 1 + 4 + kPadBytes)
             {
@@ -226,6 +257,96 @@ namespace netplay
         std::lock_guard lock(s_mutex);
         out = s_remote;
         return s_haveRemote;
+    }
+
+    void LockstepPoll(int64_t frame, const PadState& nowLocal, PadState& local, PadState& remote)
+    {
+        if (!Enabled())
+            return;
+        if (frame == s_lastPolled)  // the same frame: the same answer
+        {
+            local = s_appliedLocal;
+            remote = s_appliedRemote;
+            return;
+        }
+        if (frame < s_lastPolled || frame <= 0)  // a new race: nothing from the old one counts
+        {
+            for (Slot& slot : s_localRing)
+                slot.frame = -1;
+            std::lock_guard lock(s_mutex);
+            for (Slot& slot : s_remoteRing)
+                slot.frame = -1;
+        }
+        s_lastPolled = frame;
+        s_lockFrames.fetch_add(1, std::memory_order_relaxed);
+        Slot& mine = s_localRing[frame % kRing];
+        mine.frame = frame;
+        mine.pad = nowLocal;
+        // What this machine's pad does at frame g is what it sampled at frame g - kInputDelay. Send the last kRedundancy frames' worth, from frame
+        // + kInputDelay down, so one packet carries what the last few lost ones did.
+        uint8_t packet[7 + kRedundancy * (4 + kPadBytes)];
+        memcpy(packet, kMagic, 4);
+        packet[4] = kFrames;
+        int count = 0;
+        packet[5] = 0;
+        uint8_t* out = packet + 7;
+        for (int64_t g = frame + kInputDelay; g > frame + kInputDelay - kRedundancy && g >= kInputDelay; g--)
+        {
+            const Slot& sample = s_localRing[(g - kInputDelay) % kRing];
+            if (sample.frame != g - kInputDelay)
+                continue;
+            const uint32_t g32 = uint32_t(g);
+            memcpy(out, &g32, 4);
+            Put(out + 4, sample.pad);
+            out += 4 + kPadBytes;
+            count++;
+        }
+        packet[6] = uint8_t(count);
+        sendto(s_socket, packet, size_t(out - packet), 0, reinterpret_cast<const sockaddr*>(&s_server), sizeof(s_server));
+        s_sent.fetch_add(1, std::memory_order_relaxed);
+        // What the game gets this frame.
+        local = PadState{};
+        if (frame >= kInputDelay)
+        {
+            const Slot& old = s_localRing[(frame - kInputDelay) % kRing];
+            if (old.frame == frame - kInputDelay)
+                local = old.pad;
+        }
+        remote = PadState{};
+        if (frame >= kInputDelay)
+        {
+            // Wait for the other machine's input for this frame (it sends it kInputDelay frames earlier, so normally it is here).
+            const auto start = std::chrono::steady_clock::now();
+            bool have = false;
+            while (true)
+            {
+                {
+                    std::lock_guard lock(s_mutex);
+                    const Slot& slot = s_remoteRing[frame % kRing];
+                    if (slot.frame == frame)
+                    {
+                        remote = slot.pad;
+                        have = true;
+                    }
+                }
+                if (have)
+                    break;
+                if (std::chrono::steady_clock::now() - start > std::chrono::seconds(2))
+                    break;
+                std::this_thread::sleep_for(std::chrono::microseconds(500));
+            }
+            if (!have)
+            {
+                s_lockLate.fetch_add(1, std::memory_order_relaxed);
+                fprintf(stderr, "[netplay] race frame %lld: the other player's input did not arrive in 2 s: playing on without it (the two games are no longer in step)\n",
+                    (long long)frame);
+            }
+            else if (std::chrono::steady_clock::now() - start > std::chrono::milliseconds(60))
+                fprintf(stderr, "[netplay] race frame %lld: waited %lld ms for the other player's input\n", (long long)frame,
+                    (long long)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count());
+        }
+        s_appliedLocal = local;
+        s_appliedRemote = remote;
     }
 
     void Tick()

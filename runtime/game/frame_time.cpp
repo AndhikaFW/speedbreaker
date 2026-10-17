@@ -60,6 +60,7 @@ namespace
     }();
     std::atomic<uint64_t> s_frames{ 0 }, s_snapped{ 0 }, s_noStep{ 0 }, s_multiStep{ 0 };
     std::atomic<uint64_t> s_worldFrames{ 0 };
+    std::atomic<int64_t> s_raceFrame{ -1 };
     const int s_fixedSteps = [] {
         const char* v = std::getenv("NFSMW_FIXED_STEPS");
         int n = v ? std::atoi(v) : 0;
@@ -118,6 +119,7 @@ namespace game
 
     int FixedSteps() { return s_fixedSteps; }
     uint64_t WorldFrameIndex() { return s_worldFrames.load(std::memory_order_relaxed); }
+    int64_t RaceFrame() { return s_raceFrame.load(std::memory_order_relaxed); }
 
     double FrameClockMs()
     {
@@ -139,6 +141,30 @@ void GameFrameTime(PPCRegister& r3)
     uint64_t now = video::GuestVblanks(), vblanks = now - last;
     last = now;
     s_frames.fetch_add(1, std::memory_order_relaxed);
+    // The race frame (game::RaceFrame): from the world clock, read as the game left it after the last frame.
+    {
+        static float prevClock = 0.0f;
+        static uint64_t epoch = 0;
+        static bool inRace = false;
+        const uint32_t bits = __builtin_bswap32(*reinterpret_cast<const uint32_t*>(g_memory.base + 0x82A153B8));
+        float clock;
+        memcpy(&clock, &bits, 4);
+        if (clock > 0.0f && std::isfinite(clock))
+        {
+            if (!inRace || clock < prevClock)  // a new race world: its clock started again
+            {
+                inRace = true;
+                epoch = s_frames.load(std::memory_order_relaxed);
+            }
+            s_raceFrame.store(int64_t(s_frames.load(std::memory_order_relaxed) - epoch), std::memory_order_relaxed);
+        }
+        else
+        {
+            inRace = false;
+            s_raceFrame.store(-1, std::memory_order_relaxed);
+        }
+        prevClock = clock;
+    }
     if (guesttime::g_detFrame.load(std::memory_order_relaxed) != guesttime::kDetOff)
         guesttime::g_detFrame.fetch_add(1, std::memory_order_relaxed);
     double measuredMs = double(int32_t(r3.u32)) / 65536.0;
@@ -200,6 +226,18 @@ void WorldStepTime(PPCRegister& f10)
 void WorldSteps(PPCRegister& r30)
 {
     s_worldFrames.fetch_add(1, std::memory_order_relaxed);
+    // NFSMW_LOG_WORLD_CLOCK=1: the game's world clock (a float in seconds at 0x82A153B8, found by watching it advance in real time and matching the
+    // HUD's race clock, which is this minus a constant 9.95 s) with each world step run, to see whether it advances by a fixed amount per frame.
+    {
+        static const bool log = std::getenv("NFSMW_LOG_WORLD_CLOCK") != nullptr;
+        if (log)
+        {
+            const uint32_t bits = __builtin_bswap32(*reinterpret_cast<const uint32_t*>(g_memory.base + 0x82A153B8));
+            float clock;
+            memcpy(&clock, &bits, 4);
+            fprintf(stderr, "[wclock] frame %llu steps %u clock %.5f\n", (unsigned long long)s_worldFrames.load(), unsigned(r30.u32), double(clock));
+        }
+    }
     s_line.steps = int(r30.u32);
     if (r30.u32 == 0)
         s_noStep.fetch_add(1, std::memory_order_relaxed);

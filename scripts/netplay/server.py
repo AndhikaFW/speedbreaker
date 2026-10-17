@@ -9,7 +9,7 @@ packets; HELLO is answered with the number of players. Nothing is stored; a play
 import argparse, socket, struct, time
 
 MAGIC = b'NFS1'
-HELLO, INPUT, WELCOME, RELAY = 1, 2, 3, 4
+HELLO, INPUT, WELCOME, RELAY, FRAMES, RELAYF = 1, 2, 3, 4, 5, 6
 PAD = 12
 
 
@@ -51,6 +51,13 @@ def main():
             members[addr] = now
             where[addr] = room
             sock.sendto(MAGIC + bytes([WELCOME, len(members)]), addr)
+        elif kind == FRAMES and len(data) >= 7 and addr in where:
+            room = where[addr]
+            rooms[room][addr] = now
+            relay = MAGIC + bytes([RELAYF, slots.get(addr, 0)]) + data[6:]
+            for other in rooms[room]:
+                if other != addr:
+                    sock.sendto(relay, other)
         elif kind == INPUT and len(data) >= 5 + 4 + PAD and addr in where:
             room = where[addr]
             rooms[room][addr] = now

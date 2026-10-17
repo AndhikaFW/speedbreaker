@@ -22,6 +22,13 @@ namespace netplay
     void SendLocal(const PadState& pad);
     // The latest state of the other player's pad; false until the other player has joined and sent one.
     bool Remote(PadState& out);
+    // Lockstep, for a race (game::RaceFrame() >= 0): called when the game polls the controllers in race frame `frame`, with the local pad as it is
+    // now. The first call for a frame records it, sends it to the other machine tagged to apply `kInputDelay` frames later (with the last few
+    // frames' inputs again, so a lost packet costs nothing), and waits (up to 2 s) for the other machine's input for this frame. Later calls for the
+    // same frame return the same answer. `local` and `remote` are what the game gets for this frame: the local pad as it was kInputDelay frames
+    // ago, and the other player's pad as they sent it for this frame; both neutral for the first kInputDelay frames of a race.
+    constexpr int kInputDelay = 3;
+    void LockstepPoll(int64_t frame, const PadState& nowLocal, PadState& local, PadState& remote);
     // A line for the log once in a while (rates, who is connected); main thread, once a frame.
     void Tick();
 }

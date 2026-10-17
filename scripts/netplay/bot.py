@@ -10,7 +10,7 @@ log: the other player's buttons and triggers whenever they change.
 import argparse, os, socket, struct, time
 
 MAGIC = b'NFS1'
-HELLO, INPUT, WELCOME, RELAY = 1, 2, 3, 4
+HELLO, INPUT, WELCOME, RELAY, FRAMES, RELAYF = 1, 2, 3, 4, 5, 6
 BUTTONS = {'UP': 1, 'DOWN': 2, 'LEFT': 4, 'RIGHT': 8, 'START': 0x10, 'BACK': 0x20, 'LS': 0x40, 'RS': 0x80,
            'LB': 0x100, 'RB': 0x200, 'A': 0x1000, 'B': 0x2000, 'X': 0x4000, 'Y': 0x8000}
 
@@ -68,6 +68,21 @@ def main():
         except socket.timeout:
             continue
         if data[:4] != MAGIC:
+            continue
+        if data[4] == RELAYF and len(data) >= 7:
+            # Lockstep: the game sent inputs for apply frames up to G; answer with ours for the frames up to G, so the game finds them when it gets there.
+            count = data[6]
+            frames = [struct.unpack_from('<I', data, 7 + k * 16)[0] for k in range(count)]
+            if frames:
+                top = max(frames)
+                entries = b''
+                n = 0
+                for g in range(top, max(top - 8, -1), -1):
+                    entries += struct.pack('<IHBBhhhh', g, b, lt, rt, lx, ly, 0, 0)
+                    n += 1
+                sock.sendto(MAGIC + bytes([FRAMES, 0, n]) + entries, server)
+                if top % 150 == 0:
+                    log.write('%.2f lockstep: game at frame %d\n' % (now, top - 3))
             continue
         if data[4] == WELCOME:
             log.write('%.2f welcome: %d player(s)\n' % (now, data[5]))
