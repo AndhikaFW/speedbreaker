@@ -176,3 +176,22 @@ usable measurement. The 7 s may just be each machine's own loading time before i
 position), and the logs are compared afterwards. That needs the address of such a value in the game's memory (found by walking objects, as done earlier,
 the heap moves between launches) or a value the game exposes through a function. Alternatively each machine could send the other a small state digest
 over the relay and log both, so one log holds the comparison.
+
+## Lockstep netplay (built 2026-10-17, after the two-machine tests showed the cars staying together)
+The other player reported that, with the pads linked, a car moved on one machine moved the same way on the other and at the same coordinates, until
+it hit the first player's car. That is consistent with a deterministic game, and the clean way to use it is lockstep: both machines apply the same
+inputs on the same race frames, so a collision comes out the same on both, because each machine has the other player's input for that frame.
+- **Race frame:** `game::RaceFrame()` (game/frame_time.cpp): the number of game frames since the world clock first read above 0. The world clock is a float
+  in seconds at guest address 0x82A153B8 (found by watching floats that advance one second per second in two snapshots; it equals the HUD race clock plus
+  a constant 9.95 s; 0 in the front end; with `NFSMW_FIXED_STEPS=2` it advances 0.03333 s per world-step call). It makes both machines agree on the frame
+  number whatever their loading times (race frames were not comparable before: loading takes a different number of frames).
+- **Protocol** (net/netplay.cpp, scripts/netplay/server.py): FRAMES packets carry the local pad for the last 8 frames, each tagged with the frame it applies on
+  (current frame + 3: an input delay of 3 frames, 100 ms at the game's 30 fps), so a lost packet costs nothing; the server forwards them.
+- **Lockstep poll** (hid/input.cpp, `LockstepPads`): in a race, linked, with fixed steps, the game's controller reads for frame g return the local pad of frame
+  g-3 and the other player's pad for frame g, waiting up to 2 s for it; the same answer for every read in a frame. Mapped to controller 0/1 by slot, so both
+  machines give the game the same two pads in the same order. If the other input never comes (2 s), a message says the games are no longer in step.
+- **Needs** `NFSMW_FIXED_STEPS=2` on both machines (fixed 2 world steps a frame: the same simulation steps on both), and the same game build on both.
+**Checked here (one machine, the bot as the other player):** lockstep ran through a race (the bot saw the game's frame number advance; the game logged no late input);
+the bot's throttle arrived on controller 1 and moved the second car; the race clock advanced normally. **Not checked:** two machines in lockstep, drift over a
+long race and a collision (the point of the change), how much the 3-frame delay and a 42 ms link hurt the feel, and what happens when a machine's frame rate
+differs (the faster waits for the slower). Both machines must be restarted onto the new build and use `NFSMW_FIXED_STEPS=2`.
