@@ -35,6 +35,19 @@ namespace
     // Player 2 (XInput controller 1: the game's split-screen mode): a second SDL gamepad, or NFSMW_INPUT_SCRIPT2 for tests
     // without one. No keyboard, no Back/Start chord: only the pad, through the same deadzones.
     Pad s_pad2;
+    // Online play is linked only on request (F8, or the command file's NET): until then each machine's menus run on its own pad, so the two
+    // games can't fall out of step at screens they reach at different moments. Linked, the other machine's pad is the game's other controller
+    // (net/netplay.h). Both players link when both are at "Select player 2", and unlink for the menus after the race.
+    std::atomic<bool> s_netLinked{ false };
+    void ToggleNetLink()
+    {
+        if (!netplay::Enabled())
+            return;
+        const bool on = !s_netLinked.load();
+        s_netLinked.store(on);
+        fprintf(stderr, "[netplay] pads %s\n", on ? "LINKED: the other player's controller is the game's other controller" : "unlinked: each machine uses its own pad");
+        ui::Toast(on ? "Online: linked" : "Online: unlinked (menus on this machine's pad)", 2.0);
+    }
     SDL_Gamepad* s_gamepad2 = nullptr;
     uint16_t s_rumbleLow2 = 0, s_rumbleHigh2 = 0;
     bool s_rumbleDirty2 = false;
@@ -256,6 +269,7 @@ namespace
             return;
         char line[128];
         std::vector<std::pair<int, ScriptTap>> taps;
+        bool consumed = false;  // any command read (a NET toggle makes no tap, but must still empty the file)
         while (fgets(line, sizeof(line), f))
         {
             char name[32] = {};
@@ -263,6 +277,12 @@ namespace
             double seconds = 0.15;
             if (sscanf(line, "%d %31s %lf", &player, name, &seconds) < 2)
                 continue;
+            consumed = true;
+            if (std::string(name) == "NET")
+            {
+                ToggleNetLink();
+                continue;
+            }
             ScriptTap tap{ SecondsSinceLaunch(), ButtonByName(name), 0, 0, seconds };
             const std::string n = name;
             if (n == "RT") tap.rt = 255;
@@ -275,7 +295,7 @@ namespace
                 continue;
             taps.emplace_back(player, tap);
         }
-        if (!taps.empty())
+        if (!taps.empty() || consumed)
         {
             if (ftruncate(fileno(f), 0) != 0)
                 perror("ftruncate");
@@ -729,6 +749,13 @@ namespace hid
 
         // Keyboard (digital; overrides the analog values it touches).
         const bool* k = SDL_GetKeyboardState(nullptr);
+        {
+            static bool f8Was = false;
+            const bool f8 = k && k[SDL_SCANCODE_F8];
+            if (f8 && !f8Was)
+                ToggleNetLink();
+            f8Was = f8;
+        }
         if (k)
         {
             static const std::pair<SDL_Scancode, uint16_t> keys[] = {
@@ -824,7 +851,7 @@ namespace hid
         }
         // Online play (net/netplay.h): the local pad goes to the other machine, and the other player's pad arrives as the game's other controller.
         // Which of the game's two controllers is the local one is this machine's slot, so that both machines have the same player 1 and 2.
-        if (netplay::Enabled())
+        if (netplay::Enabled() && s_netLinked.load())
         {
             auto toNet = [](const Pad& q) { return netplay::PadState{ q.buttons, q.leftTrigger, q.rightTrigger, q.lx, q.ly, q.rx, q.ry }; };
             netplay::SendLocal(toNet(p));
@@ -903,7 +930,7 @@ namespace
     // Player 2 (controller 1): present with a second pad or a script. Caller holds s_mutex.
     bool Player2PresentLocked()
     {
-        return s_gamepad2 != nullptr || !s_script2.empty() || netplay::Enabled();
+        return s_gamepad2 != nullptr || !s_script2.empty() || (netplay::Enabled() && s_netLinked.load());
     }
 
     Pad Player2PadLocked()
@@ -1044,6 +1071,23 @@ namespace hid
 
 uint32_t XamInputGetState(uint32_t userIndex, uint32_t flags, XAMINPUT_STATE* state)
 {
+    // NFSMW_LOG_POLLS=1: how often the game polls each controller (0-3, other) a second, to see which screens look at which.
+    {
+        static const bool log = std::getenv("NFSMW_LOG_POLLS") != nullptr;
+        if (log)
+        {
+            static std::atomic<uint32_t> counts[5];
+            static std::atomic<int64_t> last{ 0 };
+            counts[userIndex < 4 ? userIndex : 4].fetch_add(1, std::memory_order_relaxed);
+            const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            int64_t was = last.load();
+            if (was == 0)
+                last.store(now);
+            else if (now - was >= 1000 && last.compare_exchange_strong(was, now))
+                fprintf(stderr, "[polls] %lld ms: pad0 %u pad1 %u pad2 %u pad3 %u other %u\n", (long long)(now - was), counts[0].exchange(0),
+                    counts[1].exchange(0), counts[2].exchange(0), counts[3].exchange(0), counts[4].exchange(0));
+        }
+    }
     if (userIndex == 1)
     {
         Pad p2;

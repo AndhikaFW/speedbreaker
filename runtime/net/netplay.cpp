@@ -188,6 +188,16 @@ namespace netplay
     {
         if (!Enabled())
             return;
+        // At most 60 a second (the game polls once a frame, and a machine with no frame limit would send hundreds), and at once when the
+        // pad changes, so no press is held back.
+        static PadState lastSent;
+        static std::chrono::steady_clock::time_point lastTime;
+        const auto now = std::chrono::steady_clock::now();
+        const bool changed = memcmp(&lastSent, &pad, sizeof(PadState)) != 0;
+        if (!changed && now - lastTime < std::chrono::milliseconds(16))
+            return;
+        lastSent = pad;
+        lastTime = now;
         uint8_t packet[5 + 4 + kPadBytes];
         memcpy(packet, kMagic, 4);
         packet[4] = kInput;

@@ -137,3 +137,13 @@ the local throttle moved the top car; about 290 inputs arrived in each 10-second
 **Not done:** the two machines' simulations will drift (determinism was not shown); input delay and a periodic resync through the game's own reset
 routine; hiding the other viewport; a second real machine and the internet (the server must be reachable: a public host or a port-forward);
 authentication and cheating (inputs are trusted); more than two players (the game's own mode has two).
+
+## First test between two real machines (2026-10-17, over a ZeroTier link, 42 ms)
+Both machines joined the relay (which ran on the x86 machine) and each saw "2 players"; inputs arrived at about 520 a second from the x86 machine (its client
+sent every loop iteration: now limited to 60 a second, and at once on a change). The x86 machine's START reached "Player 2 press START" here and the game
+went on to player 2's car select. Then my game entered the race while the other machine's game sat on its main menu: the menus had diverged, because button
+state shared during menus is lost or counted differently when the two games are at different points (loading, a transition). So the pads are now shared
+only after an explicit link (F8 on both machines at "Select player 2"); before it each machine's menus run on its own pad. A bug found on the way: a
+command-file line that made no tap (the link toggle) was never cleared and toggled every frame; fixed.
+Checked locally with the bot: unlinked, the bot's START is ignored at the title screen and at "Select player 2"; after the link it reaches player 2.
+**Still not measured:** whether the two simulations stay together in a race (no race ran on both machines yet).

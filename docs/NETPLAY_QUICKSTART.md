@@ -41,14 +41,23 @@ forward UDP 7777 to the host). On the LAN, the server machine's address is shown
 Each log (the session log, or the terminal) should show `[netplay] room "room1": 2 players` and `the other player's controller is arriving`.
 Settings that help on the slower machine: Internal Resolution 1x, Shadow Resolution 800.
 
-## 4. Start a race
-On A: Quick Race, then Split Screen, then a mode, track, options, and player 1's car and transmission, as in single player. Both machines show the same menus
-(A's pad is player 1 on both). At "Select player 2: Player 2 press START", **machine B presses START** on its own keyboard or pad, then picks a car and a
-transmission. B's keyboard and pad are player 2 on both machines. Each machine draws both viewports (the top is player 1, the bottom is player 2).
+## 4. Start a race (each machine navigates its own menus; link the pads at "Select player 2")
+Sharing button presses through the menus does not work: the two games reach screens at different moments and one machine misses presses the other counted
+(a first two-machine test ended with one game in the race and the other on the main menu). So until you link, **each machine runs its menus on its own pad
+or keyboard, and the other machine's input is ignored.**
+1. On both machines, go through the same steps by hand: Quick Race, Split Screen, the same mode, track and options, player 1's car and transmission
+   (the same choices on both: the track and mode must match, the cars may differ). Stop at the screen **"Select player 2: Player 2 press START"**.
+2. When both machines are on that screen, press **F8** on both. A toast says "Online: linked". The other machine's pad is now the game's other controller
+   (on the machine started with slot 0, the other player is player 2; with slot 1, you are player 2).
+3. **The player on the slot 1 machine presses START** (on its own pad or keyboard): both games take it as player 2's START. Player 2 picks a car and a
+   transmission on that machine; player 1 waits (the same screens appear on both machines).
+4. Drive. Each machine shows both viewports (top: player 1, bottom: player 2).
+5. After the race, press **F8** again on both ("unlinked"), and go back through the menus on your own pads.
+(`1 NET` in the command file of `NFSMW_INPUT_CMD` does the same as F8, for scripted tests.)
 
 ## What to look for, and report
 - Do both machines get to the race, and do the cars on the two screens stay together? The game runs the whole race on each machine from the two
   players' inputs, with nothing keeping the two simulations in step: expect them to drift apart over time (not shown deterministic). A screenshot of both
   screens at the same moment, 30 and 60 seconds into a race, tells us how fast.
-- The `[netplay] last 10 s: sent ..., received ...` lines: about 300 each way per 10 s (30 a second) means the link is healthy.
+- The `[netplay] last 10 s: sent ..., received ...` lines: about 600 each way per 10 s (60 a second) means the link is healthy.
 - Anything in the log starting with `[crash]` or `[netplay]`.
