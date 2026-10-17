@@ -163,3 +163,16 @@ machine's input arrives as player 1's. Not tested. To settle it, log the remote 
 throttle at a stated moment.
 **Next:** log the remote pad on my side; hold throttle on the second machine at a stated moment and see which car moves; then compare the two screens during a
 long race and after a crash; then the resync design if they drift.
+
+## Third two-machine test (2026-10-17): logging confirms the routing; clocks not comparable by eye
+With `NFSMW_LOG_NET_PADS=1` the log shows each remote change and what the game is given, to the millisecond: the other machine's START (buttons 0010) arrived
+and the game had it on **pad1** (player 2) 2 ms later; its A presses (car and transmission) likewise; pad0 stayed 0. So the other machine's controller is
+player 2 on mine, as designed. The earlier surprise (the top car moving) is therefore not explained by routing: the other player's throttle was not
+timestamped, so that run cannot be matched to the log.
+Race clocks: mine read 49.99 at 16:06:22 and 1:41.77 at 16:07:14 (51.78 game seconds in 51.8 wall seconds: the game runs at real time here). The other player read
+about 57 at the first moment (offset about 7 s, partly reading delay) and could not give the second reading. Reading a running clock by eye is not a
+usable measurement. The 7 s may just be each machine's own loading time before its race clock starts.
+**Needed:** a self-measuring test: each machine logs, with a shared time base, a number that depends on the race state (the race clock or a car's
+position), and the logs are compared afterwards. That needs the address of such a value in the game's memory (found by walking objects, as done earlier,
+the heap moves between launches) or a value the game exposes through a function. Alternatively each machine could send the other a small state digest
+over the relay and log both, so one log holds the comparison.
