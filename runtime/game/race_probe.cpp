@@ -16,12 +16,19 @@ extern "C" PPC_FUNC(__imp__sub_8233DC58);
 extern "C" PPC_FUNC(__imp__sub_8232D7D8);
 extern "C" PPC_FUNC(__imp__sub_8235DA08);
 extern "C" PPC_FUNC(__imp__sub_823993C0);
+extern "C" PPC_FUNC(__imp__sub_8253A3C0);
+extern "C" PPC_FUNC(__imp__sub_8253B5C8);
+extern "C" PPC_FUNC(__imp__sub_82539830);
+extern "C" PPC_FUNC(__imp__sub_82819520);
+extern "C" PPC_FUNC(__imp__sub_82825888);
+extern "C" PPC_FUNC(__imp__sub_828198C0);
+extern "C" PPC_FUNC(__imp__sub_82549558);
 
 namespace
 {
     bool Enabled()
     {
-        static const bool on = std::getenv("NFSMW_PROBE_RACE") != nullptr;
+        static const bool on = [] { const char* v = std::getenv("NFSMW_PROBE_RACE"); return v && v[0] != '2'; }();
         return on;
     }
 
@@ -74,6 +81,54 @@ PROBE(8233DC58)
 PROBE(8232D7D8)
 PROBE(8235DA08)
 PROBE(823993C0)
+
+// Counted, not logged per call: how often each of these runs, printed once a second while NFSMW_PROBE_RACE=2 (the lobby thread's tick and the network module's).
+#include <atomic>
+#include <chrono>
+namespace
+{
+    std::atomic<uint32_t> g_counts[8];
+    void Count(int i, uint32_t address)
+    {
+        static const bool on = [] { const char* v = std::getenv("NFSMW_PROBE_RACE"); return v && v[0] == '2'; }();
+        if (!on)
+            return;
+        g_counts[i].fetch_add(1, std::memory_order_relaxed);
+        static std::atomic<int64_t> last{ 0 };
+        const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        int64_t was = last.load();
+        if (now - was >= 1000 && last.compare_exchange_strong(was, now))
+            fprintf(stderr, "[count] 8253A3C0 %u | 8253B5C8 %u | 82539830 %u | 82819520 %u | 82825888 %u | 82546F80 %u | 825471D8 %u | 828198C0 %u\n",
+                g_counts[0].load(), g_counts[1].load(), g_counts[2].load(), g_counts[3].load(), g_counts[4].load(), g_counts[5].load(), g_counts[6].load(), g_counts[7].load());
+        (void)address;
+    }
+}
+#define COUNTED(addr, index)                         \
+    PPC_FUNC(sub_##addr)                             \
+    {                                                \
+        Count(index, 0x##addr);                      \
+        __imp__sub_##addr(ctx, base);                \
+    }
+COUNTED(8253A3C0, 0)
+COUNTED(8253B5C8, 1)
+PPC_FUNC(sub_82539830)
+{
+    Count(2, 0x82539830);
+    __imp__sub_82539830(ctx, base);
+    static std::atomic<uint32_t> n{ 0 };
+    if (std::getenv("NFSMW_PROBE_RACE") && n.fetch_add(1) % 4000 == 0)
+        fprintf(stderr, "[count] sub_82539830 (net module is up?) returned %u\n", ctx.r3.u32);
+}
+COUNTED(82819520, 3)
+COUNTED(82825888, 4)
+COUNTED(828198C0, 7)
+PPC_FUNC(sub_82549558)
+{
+    static std::atomic<uint32_t> n{ 0 };
+    if (std::getenv("NFSMW_PROBE_RACE") && n.fetch_add(1) % 4000 == 0)
+        fprintf(stderr, "[count] sub_82549558 (session tick) call %u, r3=%08X\n", n.load(), ctx.r3.u32);
+    __imp__sub_82549558(ctx, base);
+}
 
 PPC_FUNC(sub_82365788)
 {

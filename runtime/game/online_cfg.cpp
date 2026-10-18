@@ -29,5 +29,47 @@ PPC_FUNC(sub_823AF408)
         ctx.lr = 0x823B002C;
         __imp__sub_82538950(ctx, base);
         ctx = saved;
+        // EXPERIMENT (NFSMW_ONLINE_LOCALIP=<a.b.c.d>): the race setup (sub_822BE418) waits for the 32-bit word at 0x82A2D7C8, the machine's own address, which nothing in
+        // this mode writes; set it here to see what the setup does next.
+        if (const char* ip = std::getenv("NFSMW_ONLINE_LOCALIP"))
+        {
+            unsigned a, b, c, d;
+            if (sscanf(ip, "%u.%u.%u.%u", &a, &b, &c, &d) == 4)
+            {
+                PPC_STORE_U32(0x82A2D7C8, (a << 24) | (b << 16) | (c << 8) | d);
+                fprintf(stderr, "[online.cfg] local address word set to %s (experiment)\n", ip);
+            }
+        }
     }
+}
+
+// Dev start (SKIPFE) without the platform: sub_822BE418 ends by starting the game's network server, sub_82546F80, which needs a connection
+// object that Xbox Live's sign-in would have filled in (see docs/MULTIPLAYER.md). Our own multiplayer layer (net/mp_*) does not use that stack,
+// so with NFSMW_ONLINE_LOCALIP set the race is started without it.
+extern "C" PPC_FUNC(__imp__sub_82546F80);   // start as server
+extern "C" PPC_FUNC(__imp__sub_825471D8);   // start as client
+// The start routines leave the session manager's (0x82C5EBF0) counter at +12 at the level sub_822BE418 waits for afterwards; with them skipped, do that.
+static void SkippedStart(uint8_t* base)
+{
+    PPC_STORE_U32(0x82C5EBFC, PPC_LOAD_U32(0x828F84F4));
+}
+PPC_FUNC(sub_82546F80)
+{
+    static const bool skip = std::getenv("NFSMW_ONLINE_LOCALIP") != nullptr;
+    if (skip)
+    {
+        SkippedStart(base);
+        return;
+    }
+    __imp__sub_82546F80(ctx, base);
+}
+PPC_FUNC(sub_825471D8)
+{
+    static const bool skip = std::getenv("NFSMW_ONLINE_LOCALIP") != nullptr;
+    if (skip)
+    {
+        SkippedStart(base);
+        return;
+    }
+    __imp__sub_825471D8(ctx, base);
 }
