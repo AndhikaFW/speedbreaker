@@ -244,3 +244,26 @@ Goal: on the lobby's start event, start the agreed race through the game's own c
   Split Screen by hand and link the pads (F8) at "Select player 2".
 - Tools kept in `~/.cache/NFS-MostWanted/tools` (not in the repo): `launch_sp.sh` (game on a throw-away data copy, windowed), `view.sh`, `label.sh` (small captures
   of the window, to spare image quota).
+
+## Step 3 findings (2026-10-18): how a race starts, and that the game has its own online race protocol
+`NFSMW_PROBE_RACE=1` (game/race_probe.cpp, off by default) logs calls of chosen guest functions with registers and the guest call chain read from the stack.
+- **Starting a race:** the handler bound to the script name "StartRace" is `sub_82365788` (it prints "Game_StartRace: %s"). It is called from the game's **script VM**
+  (`sub_82371D18`: a bytecode interpreter; native calls go through `sub_8236BDE8` -> `sub_8237D3E8`), which runs inside the world step (`sub_823A2348` ->
+  `sub_823A20C0` -> `sub_8239F140` -> `sub_823844B0` -> `sub_823C7D50` -> `sub_823C7950` -> `sub_823993C0`, an event dispatcher: its r5 is an event id, 0x319915CD for the
+  one that led to StartRace in a split-screen race). So starting a race is posting that event with the race parameters already in the game's state; the front end
+  prepares them as the player goes through its screens. A direct call of `sub_82365788` would skip that preparation. The producer that posts the event, and what
+  state the screens leave behind, are not identified.
+- **The game has its own online race code** (strings and code found in `sub_82554500..`): a server state machine `SERVERSTATE_INITIAL, WELCOME, WAITJOINS, LOADING, NIS,
+  WAITLOADS, READY, RACING`, and messages `MSG_R_SC_WELCOME, MSG_R_BI_CARDESCRIPTION, MSG_U_BI_CARSPAM` (the cars' state, sent unreliably), `MSG_U_CS_CLOCKSYNC`,
+  `MSG_U_SC_CARSPAMCLOCKSYNC`, `MSG_U_BI_SCORE`, `MSG_U_SC_SYNCANIMATION`, `MSG_R_BI_DRIVERFINISH`, `MSG_R_CS_CLIENTQUIT`, `MSG_R_SC_SERVERQUIT/CLIENTLEFT`,
+  `MSG_R_*_STATECHANGE`, `MSG_R_BI_DATACRC`, `MSG_R_SC_RESTARTLOAD`, `MSG_U_BI_STARTRACESYNC` (R reliable, U unreliable; CS client to server, SC server to client, BI both),
+  plus `OLMGR: StartRace called at WorldTime` and a lobby (`UIOLGameRoom::StartGame`, `LobbyGames::StartGame`, `OL_Quickrace_Main.fng`, `MMOnlineQuickRace`). This is the
+  console game's native Xbox Live race: a server and clients exchanging car state, clock sync and state changes over the XNet/Winsock functions this runtime stubs
+  (89 `NetDll_*`; the bring-up probe above reached `XNetStartup`/`WSAStartup` and stopped at `XamAlloc`).
+- **Two ways to get native multiplayer, and the trade:**
+  A. (built, partly tested) the lockstep over the game's two-player split-screen mode: the game itself needs no change, but both machines must simulate identically and
+     each draws two views; the race start needs the front end driven.
+  B. Supply what the game's own online stack asks of its platform (sockets, XNet addresses, the session and lobby services EA ran) and let it race itself: remote cars
+     arrive as real game objects through its own car-state messages, one view per machine, no determinism needed, and the race starts through its own lobby path. It
+     needs: the Winsock and XNet calls on host UDP, `XamAlloc`/the other bring-up calls, a replacement for EA's matchmaking (our lobby server telling both machines
+     the peer's address), and then whatever the lobby and session code asks of the (dead) web services. Unknown size; the code is large and not written to be reused.
