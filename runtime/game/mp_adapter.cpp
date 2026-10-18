@@ -24,6 +24,7 @@
 #include <vector>
 
 extern "C" PPC_FUNC(__imp__sub_82528448);
+extern "C" PPC_FUNC(__imp__sub_82420FC0);
 
 namespace
 {
@@ -150,19 +151,10 @@ namespace
         std::unique_ptr<mp::Client> net;
         std::string server, name = "player";
         double lastSend = 0, lastTry = 0;
-        std::map<uint8_t, std::array<float, 3>> dbgShift;       // per remote: distance driven since first seen, shift in metres, join-order step (for the log)
-        // Per remote car, the life of the grid shift: 0 = rolling into the grid (full shift), 1 = stationary on the grid, fading with the distance driven from
-        // there, 2 = faded for good (also for a car first seen already racing).
-        struct Grid
-        {
-            int phase = 0;
-            std::array<float, 3> last{}, rest{};
-            double stableSince = 0, firstSeen = 0;
-        };
-        std::map<uint8_t, Grid> grids;
         // Start barrier (NFSMW_MP_PLAYERS=n, n > 1): the race is held, world frozen, from the moment it appears until n-1 other players are there and ready too.
         int expected = 0;
         bool barrier = false;
+        bool gridLogged = false;
         double barrierSince = 0;
         double localSince = 0, connectedAt = 0, lastTable = -1;
         std::map<uint8_t, uint32_t> standIns;   // remote player id -> body object
@@ -241,60 +233,6 @@ namespace
             Phys out;
             for (int i = 0; i < 4; ++i) out.q[i] = c.rot[i];
             for (int i = 0; i < 3; ++i) { out.pos[i] = c.pos[i]; out.vel[i] = c.vel[i]; out.ang[i] = c.angVel[i]; }
-            // Every game puts its own player in grid slot 0, so on the grid all cars would stand in one place. Show each remote car beside ours instead, 3.5 m
-            // per step of join order along the car's side axis, and let the shift fade out over the first 20 m that car drives, after which it is where its player is.
-            const double now = a.Now();
-            float fade = 1.f, travelled = 0.f;
-            {
-                Adapter::Grid& g = a.grids[id];
-                if (g.firstSeen == 0)
-                {
-                    g.firstSeen = now;
-                    g.stableSince = now;
-                    g.last = { out.pos[0], out.pos[1], out.pos[2] };
-                }
-                const float speed = std::sqrt(out.vel[0] * out.vel[0] + out.vel[1] * out.vel[1] + out.vel[2] * out.vel[2]);
-                if (g.phase == 0)
-                {
-                    if (Dist(out.pos, g.last.data()) > 0.05f)
-                    {
-                        g.last = { out.pos[0], out.pos[1], out.pos[2] };
-                        g.stableSince = now;
-                    }
-                    if (now - g.stableSince > 2.0 && now - g.firstSeen > 3.0)
-                    {
-                        g.phase = 1;
-                        g.rest = g.last;
-                    }
-                    else if ((a.expected <= 1 && speed > 8.f) || now - g.firstSeen > 90.0)
-                        g.phase = 2;   // already racing when first seen (without a start barrier a late joiner can be)
-                }
-                if (g.phase == 1)
-                {
-                    travelled = Dist(out.pos, g.rest.data());
-                    if (travelled >= 20.f)
-                        g.phase = 2;
-                    else
-                        fade = 1.f - travelled / 20.f;
-                }
-                if (g.phase == 2)
-                    fade = 0.f;
-            }
-            {
-                int d = 0;   // join-order rank of that player minus ours
-                for (const auto& [rid, r] : a.net->Remotes())
-                {
-                    if (rid < id) ++d;
-                    if (rid < a.net->MyId()) --d;
-                }
-                if (id > a.net->MyId()) ++d;   // the local player is before them
-                float m[3][3];
-                mp::QuatToMat(out.q, m);
-                const float shift = 3.5f * float(d) * fade;
-                a.dbgShift[id] = { travelled, shift, float(d) };
-                for (int i = 0; i < 3; ++i)
-                    out.pos[i] += m[0][i] * shift;   // row 0 of the body's matrix is its side axis
-            }
             WritePhys(base, pb, out);
             return;
         }
@@ -330,7 +268,6 @@ PPC_FUNC(sub_82528448)
             a.standIns.clear();
             a.standInObj = 0;
             a.history.clear();
-            a.grids.clear();
             if (a.expected > 1 && !a.server.empty())
             {
                 a.barrier = true;
@@ -406,8 +343,6 @@ PPC_FUNC(sub_82528448)
                 uint32_t bs = PPC_LOAD_U32(bodies[i] + 28);
                 fprintf(stderr, " #%zu %08X(%.0f,%.0f)", i, bodies[i], bs ? LoadF(base, bs + 48) : 0.f, bs ? LoadF(base, bs + 52) : 0.f);
             }
-            for (const auto& [id, v] : a.dbgShift)
-                fprintf(stderr, " | remote %u: driven %.0f m since first seen, grid shift %.2f m (step %.0f)", id, v[0], v[1], v[2]);
             if (a.net)
                 fprintf(stderr, " | net %s, %zu remote, rtt %u ms", a.net->Connected() ? "up" : a.net->Failed() ? "FAILED" : "connecting", a.net->Remotes().size(), a.net->RttMs());
             fprintf(stderr, "\n");
@@ -534,4 +469,61 @@ namespace game
             fprintf(stderr, "[mp] start barrier released after %.1f s (%s)\n", now - a.barrierSince, all ? "everyone is ready" : "timeout");
         }
     }
+}
+
+// sub_82420FC0(vehicle, dt, pose, flag): sets a vehicle's pose from a 4x4 matrix (rows, translation row at +48; the body's own axes) and is what the game's grid
+// animation uses: every frame before the countdown it is called once per racing vehicle, in the order of the vehicle table (player first), with the pose that
+// vehicle's animation has reached (the cars roll from where they appear to their starting slots). Every game puts its own player in slot 0; with a start barrier
+// the local player is given the slot of its join order instead: its call gets the pose that slot's vehicle was just given, so the car really starts there, and
+// the other players' cars (written into the opponents' bodies) are where their games put them. NFSMW_MP_TRACE_POSE=1 logs the calls.
+PPC_FUNC(sub_82420FC0)
+{
+    static const bool trace = std::getenv("NFSMW_MP_TRACE_POSE") != nullptr;
+    static std::vector<uint32_t> vehicles;                   // vehicle objects in order of first call: the table order
+    static std::vector<std::array<uint32_t, 16>> given;      // the last pose each was given by the animation (raw guest words), before any change
+    const uint32_t v = ctx.r3.u32, m = ctx.r4.u32;
+    size_t idx = 0;
+    while (idx < vehicles.size() && vehicles[idx] != v)
+        ++idx;
+    if (idx == vehicles.size() && idx < 16)
+    {
+        vehicles.push_back(v);
+        given.emplace_back();
+    }
+    if (idx < vehicles.size() && m)
+    {
+        for (int i = 0; i < 16; ++i)
+            given[idx][i] = *(const volatile uint32_t*)(base + m + 4 * i);   // raw, still big-endian
+        Adapter& a = A();
+        if (idx == 0 && a.expected > 1 && a.net && a.net->Connected())
+        {
+            size_t rank = 0;
+            for (const auto& [id, r] : a.net->Remotes())
+                if (id < a.net->MyId())
+                    ++rank;
+            if (rank > 0 && rank < vehicles.size())
+            {
+                bool valid = false;
+                for (uint32_t w : given[rank]) valid |= w != 0;
+                if (valid)
+                {
+                    for (int i = 0; i < 16; ++i)
+                        *(volatile uint32_t*)(base + m + 4 * i) = given[rank][i];
+                    if (trace || !a.gridLogged)
+                    {
+                        a.gridLogged = true;
+                        fprintf(stderr, "[mp] local car follows the grid animation of slot %zu (join order)\n", rank);
+                    }
+                }
+            }
+        }
+    }
+    if (trace)
+    {
+        static int n = 0;
+        if (n < 40 || n % 120 == 0)
+            fprintf(stderr, "[pose] #%d vehicle %08X (#%zu) pos (%.2f %.2f %.2f)\n", n, v, idx, LoadF(base, m + 48), LoadF(base, m + 52), LoadF(base, m + 56));
+        ++n;
+    }
+    __imp__sub_82420FC0(ctx, base);
 }
