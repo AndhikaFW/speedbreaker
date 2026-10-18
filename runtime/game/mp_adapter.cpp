@@ -261,13 +261,13 @@ namespace
                         g.last = { out.pos[0], out.pos[1], out.pos[2] };
                         g.stableSince = now;
                     }
-                    if (now - g.stableSince > 1.0)
+                    if (now - g.stableSince > 2.0 && now - g.firstSeen > 3.0)
                     {
                         g.phase = 1;
                         g.rest = g.last;
                     }
-                    else if (speed > 8.f || now - g.firstSeen > 90.0)
-                        g.phase = 2;   // already racing when first seen
+                    else if ((a.expected <= 1 && speed > 8.f) || now - g.firstSeen > 90.0)
+                        g.phase = 2;   // already racing when first seen (without a start barrier a late joiner can be)
                 }
                 if (g.phase == 1)
                 {
