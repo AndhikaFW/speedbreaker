@@ -160,3 +160,7 @@ target_include_directories(write_watch_test PRIVATE ${RT}/kernel ${RT}/thirdpart
 # The guest vblank lock's closed-loop simulation (a tool more than a test).
 add_executable(vblank_lock_sim ${CMAKE_CURRENT_SOURCE_DIR}/vblank_lock_sim.cpp ${RT}/video/refresh_fit.cpp ${RT}/video/vblank_lock.cpp)
 target_include_directories(vblank_lock_sim PRIVATE ${RT})
+
+# The multiplayer transport (vendored ENet): two peers on loopback, reliable and unreliable channels.
+sb_test(enet_loopback_test)
+target_link_libraries(enet_loopback_test PRIVATE enet)

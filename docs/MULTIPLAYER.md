@@ -310,3 +310,25 @@ No EA server is needed for the game's own network race: the executable contains 
   `fstr.py` (strings used by a code range), `live_probe.sh`, `launch_sp.sh`, `view.sh`, `label.sh`. The in-repo ones: `NFSMW_PROBE_RACE`, `NFSMW_NET_LOG`, `NFSMW_BT_OPEN`.
 - **Next:** read `sub_828198C0` (the `NetConn` start-up and its parameter string) and the state machine's exits so the network module reaches its connected state with sockets
   of its own (no EA server involved), then the race setup above. Then the race itself runs on the game's own protocol (SERVERSTATE, CARSPAM), one view per machine.
+
+### Experiment: forcing the local-address word (NFSMW_ONLINE_LOCALIP)
+
+Setting the word at 0x82A2D7C8 (what sub_822BE418 waits for) after the online.cfg load lets the setup continue into sub_82546F80
+(server start), which then crashes at +0x4e4: it calls sub_82542C98 (a connection/player-object constructor, `this`=0x82C652D0), and its
+field +372 stays -1, so the code takes `r29 = 0` and reads [0+12]. So the word alone is not the missing piece: the object that
+sub_82542C98 should have filled in (its +372 handle, normally set by the platform session/matchmaking layer) is also missing in this
+mode. Disassemble any guest range with `tools/dis.sh <addr> [bytes]`.
+
+## Direction (v2): a multiplayer layer of our own, not the game's EA stack
+
+The game's EA online stack (lobby protocol, DirtySock NetConn, online.cfg direct connect) is abandoned: it needs a platform session
+layer that does not exist here. Career mode is not ported. The new layer is:
+
+- **Transport: ENet** (vendored, `runtime/thirdparty/enet`, MIT, plain C, no dependencies). Chosen over Valve's GameNetworkingSockets
+  because GNS needs protobuf and OpenSSL/libsodium, which are system packages on Linux and a heavy port on iOS and Android, while
+  SpeedBreaker ships on Linux, SteamOS, macOS, iOS and Windows. ENet builds from its own sources everywhere. The transport sits behind a
+  small interface so a GNS backend can be added on desktop later. With a dedicated server, NAT traversal is not needed; encryption and
+  authentication (session tokens, libsodium or a vendored primitive) are to be added in the protocol.
+- **Model:** each client runs the game's physics for its own car and sends its state about 30 times a second; other players' cars are the
+  game's own opponent vehicles driven by interpolated state; the server settles collisions; one client is the traffic and police authority.
+- Test: `tests/enet_loopback_test.cpp` (`-DSB_TESTS=ON`).
