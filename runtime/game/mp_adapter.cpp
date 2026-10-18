@@ -98,6 +98,9 @@ namespace
         std::unique_ptr<mp::Client> net;
         std::string server, name = "player";
         double lastSend = 0, lastTry = 0;
+        bool gridDone = false;                  // this race: the local car has been put in its own grid slot (or the race had already started)
+        std::vector<Pose> slots;                // the poses of the game's vehicles when the race appeared, player first: the grid
+        double localSince = 0, connectedAt = 0;
         std::map<uint8_t, uint32_t> standIns;   // remote player id -> body object
         double lastLog = -10;
         std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
@@ -189,6 +192,14 @@ PPC_FUNC(sub_82528448)
             a.standIns.clear();
             a.standInObj = 0;
             a.history.clear();
+            a.gridDone = false;
+            a.localSince = now;
+            a.slots.clear();
+            for (uint32_t b : VehicleBodies(base))
+            {
+                const uint32_t bs = b ? PPC_LOAD_U32(b + 28) : 0;
+                a.slots.push_back(bs ? ReadPose(base, bs) : Pose{});
+            }
         }
         const Pose pose = ReadPose(base, s);
         if (a.ghost)
@@ -212,6 +223,26 @@ PPC_FUNC(sub_82528448)
                     fprintf(stderr, "[mp] connecting to %s:%u as %s\n", host.c_str(), port, a.name.c_str());
             }
             a.net->Service();
+            // Every player starts in the player slot of their own game, so on the grid the cars would overlap: player n (in join order) takes the n-th grid
+            // slot (where that machine's n-th opponent stands), before the race starts.
+            if (a.net->Connected() && a.connectedAt == 0)
+                a.connectedAt = now;
+            if (!a.net->Connected())
+                a.connectedAt = 0;
+            if (!a.gridDone && a.net->Connected() && now - a.connectedAt > 0.5)   // by then the list of players already there has arrived
+            {
+                a.gridDone = true;
+                size_t rank = 0;
+                for (const auto& [id, r] : a.net->Remotes())
+                    if (id < a.net->MyId())
+                        ++rank;
+                const float speed = std::sqrt(pose.vel[0] * pose.vel[0] + pose.vel[1] * pose.vel[1] + pose.vel[2] * pose.vel[2]);
+                if (rank > 0 && rank < a.slots.size() && speed < 0.5f && now - a.localSince < 20.0)
+                {
+                    WritePose(base, s, a.slots[rank]);
+                    fprintf(stderr, "[mp] player %zu in join order: moved to grid slot %zu\n", rank, rank);
+                }
+            }
             if (a.net->Failed() && now - a.lastTry > 5.0)
             {
                 // The server went away or refused us: try again every few seconds (the stand-ins are looked up again once it is back).
