@@ -2,6 +2,7 @@
 // speed, and the other must see them join, move smoothly (interpolation), and leave; a wrong protocol version is refused.
 // Built by tests/CMakeLists.txt (links mp_net); no game files.
 #include "mp_client.h"
+#include "mp_math.h"
 #include "mp_server.h"
 #include <cassert>
 #include <chrono>
@@ -78,6 +79,24 @@ int main()
         auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(2300);
         while (std::chrono::steady_clock::now() < until) { server.Service(1); a.Service(); b.Service(); }
         assert(!b.RemoteCar(a.MyId(), b.NowMs(), seen));
+    }
+
+    // Orientation: a matrix goes to a quaternion and back unchanged, for rotations about every axis and mixes of them.
+    for (int k = 0; k < 500; ++k)
+    {
+        const float yaw = 0.0137f * float(k) * 6.f, pitch = 0.9f * std::sin(float(k)), roll = 0.7f * std::cos(float(k) * 1.3f);
+        const float cy = std::cos(yaw), sy = std::sin(yaw), cp = std::cos(pitch), sp = std::sin(pitch), cr = std::cos(roll), sr = std::sin(roll);
+        // rows are the body's axes: R = Rz(yaw) * Rx(pitch) * Ry(roll) applied as rows
+        float rz[3][3] = {{cy, sy, 0}, {-sy, cy, 0}, {0, 0, 1}};
+        float rx[3][3] = {{1, 0, 0}, {0, cp, sp}, {0, -sp, cp}};
+        float ry[3][3] = {{cr, 0, -sr}, {0, 1, 0}, {sr, 0, cr}};
+        float t[3][3], m[3][3];
+        for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) { t[i][j] = 0; for (int l = 0; l < 3; ++l) t[i][j] += rz[i][l] * rx[l][j]; }
+        for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) { m[i][j] = 0; for (int l = 0; l < 3; ++l) m[i][j] += t[i][l] * ry[l][j]; }
+        float q[4], back[3][3];
+        mp::MatToQuat(m, q);
+        mp::QuatToMat(q, back);
+        for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) assert(std::fabs(back[i][j] - m[i][j]) < 1e-4f);
     }
 
     b.Disconnect();

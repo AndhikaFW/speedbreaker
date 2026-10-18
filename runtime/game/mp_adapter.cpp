@@ -13,6 +13,7 @@
 
 #include <kernel/function.h>
 #include <net/mp_client.h>
+#include <net/mp_math.h>
 #include <chrono>
 #include <cmath>
 #include <deque>
@@ -79,39 +80,6 @@ namespace
         }
     }
 
-    // Matrix (rows as the game stores them) <-> quaternion (x y z w). Both directions use the same convention, so a round trip is the identity.
-    void ToQuat(const float m[3][3], float q[4])
-    {
-        const float t = m[0][0] + m[1][1] + m[2][2];
-        if (t > 0)
-        {
-            const float r = std::sqrt(1.f + t) * 2;
-            q[3] = 0.25f * r; q[0] = (m[2][1] - m[1][2]) / r; q[1] = (m[0][2] - m[2][0]) / r; q[2] = (m[1][0] - m[0][1]) / r;
-        }
-        else if (m[0][0] > m[1][1] && m[0][0] > m[2][2])
-        {
-            const float r = std::sqrt(1.f + m[0][0] - m[1][1] - m[2][2]) * 2;
-            q[3] = (m[2][1] - m[1][2]) / r; q[0] = 0.25f * r; q[1] = (m[0][1] + m[1][0]) / r; q[2] = (m[0][2] + m[2][0]) / r;
-        }
-        else if (m[1][1] > m[2][2])
-        {
-            const float r = std::sqrt(1.f + m[1][1] - m[0][0] - m[2][2]) * 2;
-            q[3] = (m[0][2] - m[2][0]) / r; q[0] = (m[0][1] + m[1][0]) / r; q[1] = 0.25f * r; q[2] = (m[1][2] + m[2][1]) / r;
-        }
-        else
-        {
-            const float r = std::sqrt(1.f + m[2][2] - m[0][0] - m[1][1]) * 2;
-            q[3] = (m[1][0] - m[0][1]) / r; q[0] = (m[0][2] + m[2][0]) / r; q[1] = (m[1][2] + m[2][1]) / r; q[2] = 0.25f * r;
-        }
-    }
-    void FromQuat(const float q[4], float m[3][3])
-    {
-        const float x = q[0], y = q[1], z = q[2], w = q[3];
-        m[0][0] = 1 - 2 * (y * y + z * z); m[0][1] = 2 * (x * y + z * w);     m[0][2] = 2 * (x * z - y * w);
-        m[1][0] = 2 * (x * y - z * w);     m[1][1] = 1 - 2 * (x * x + z * z); m[1][2] = 2 * (y * z + x * w);
-        m[2][0] = 2 * (x * z + y * w);     m[2][1] = 2 * (y * z - x * w);     m[2][2] = 1 - 2 * (x * x + y * y);
-    }
-
     float Dist(const float* a, const float* b)
     {
         return std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
@@ -129,7 +97,7 @@ namespace
         // Network (NFSMW_MP_SERVER=host[:port], NFSMW_MP_NAME): the local car goes out at 30 Hz, each remote player drives one stand-in body.
         std::unique_ptr<mp::Client> net;
         std::string server, name = "player";
-        double lastSend = 0;
+        double lastSend = 0, lastTry = 0;
         std::map<uint8_t, uint32_t> standIns;   // remote player id -> body object
         double lastLog = -10;
         std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
@@ -244,12 +212,25 @@ PPC_FUNC(sub_82528448)
                     fprintf(stderr, "[mp] connecting to %s:%u as %s\n", host.c_str(), port, a.name.c_str());
             }
             a.net->Service();
+            if (a.net->Failed() && now - a.lastTry > 5.0)
+            {
+                // The server went away or refused us: try again every few seconds (the stand-ins are looked up again once it is back).
+                a.lastTry = now;
+                a.standIns.clear();
+                std::string host = a.server;
+                uint16_t port = mp::kDefaultPort;
+                const size_t colon = host.rfind(':');
+                if (colon != std::string::npos) { port = uint16_t(atoi(host.c_str() + colon + 1)); host.resize(colon); }
+                a.net->Disconnect();
+                a.net->Connect(host, port, a.name);
+                fprintf(stderr, "[mp] connection lost, reconnecting to %s\n", a.server.c_str());
+            }
             if (a.net->Connected() && now - a.lastSend >= 1.0 / 30.0)
             {
                 a.lastSend = now;
                 mp::CarState c;
                 for (int i = 0; i < 3; ++i) { c.pos[i] = pose.pos[i]; c.vel[i] = pose.vel[i]; c.angVel[i] = pose.ang[i]; }
-                ToQuat(pose.m, c.rot);
+                mp::MatToQuat(pose.m, c.rot);
                 a.net->SendCar(c);
             }
         }
@@ -338,7 +319,7 @@ PPC_FUNC(sub_82528448)
             if (!a.net->RemoteCar(id, a.net->NowMs(), c))
                 break;
             Pose out;
-            FromQuat(c.rot, out.m);
+            mp::QuatToMat(c.rot, out.m);
             for (int i = 0; i < 3; ++i) { out.pos[i] = c.pos[i]; out.vel[i] = c.vel[i]; out.ang[i] = c.angVel[i]; }
             WritePose(base, s, out);
             break;
