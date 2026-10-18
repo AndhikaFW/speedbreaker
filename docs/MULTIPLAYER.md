@@ -267,3 +267,22 @@ Goal: on the lobby's start event, start the agreed race through the game's own c
      arrive as real game objects through its own car-state messages, one view per machine, no determinism needed, and the race starts through its own lobby path. It
      needs: the Winsock and XNet calls on host UDP, `XamAlloc`/the other bring-up calls, a replacement for EA's matchmaking (our lobby server telling both machines
      the peer's address), and then whatever the lobby and session code asks of the (dead) web services. Unknown size; the code is large and not written to be reused.
+
+## Option B, first stage (2026-10-18): the game's network stack on host sockets; its lobby is EA's FESL-style protocol
+Built: `kernel/imports_net.cpp` implements 64 of the stubbed network imports on host sockets: `XamAlloc`/`XamFree`, xnet (startup, `XNetGetTitleXnAddr` with this
+machine's address (`NFSMW_NET_ADDR`), keys, address conversion where the secure address is the real address, DNS (`XNetDnsLookup`: every name resolves to
+`NFSMW_NET_HOST`, default 127.0.0.1; XNDNS.iStatus is 0 for success), QoS refused), winsock (sockets, bind/connect/listen/accept, send/recv/sendto/recvfrom,
+select, ioctl, options, `WSAEventSelect` through a poller thread, event objects, `WSAWaitForMultipleEvents`); `NFSMW_NET_LOG=1` logs the calls. Argument lists were
+checked against the game's own calls (the event calls and `WSAGetLastError` take no caller argument; the others do). `scripts/gen_import_stubs.py` now lists 103 stubs.
+**What the game's own online flow then does** (`NFSMW_FAKE_LIVE=1 NFSMW_STUB_CONTINUE=1 NFSMW_NET_LOG=1`, Xbox Live menu item): `XNetStartup`, `WSAStartup`, the
+address, a TCP socket, a DNS lookup of **stestlobby03.beta.ea.com** (EA's beta lobby, baked in), a TCP connect to **port 30960**, then two messages in one stream
+with no waiting for a reply:
+  `@tic` + 4 zero bytes + length (23, big-endian, header included) + `RC4+MD5-V2\0`      (an encryption negotiation)
+  `@dir` + 4 zero bytes + length (174) + text lines `REGN=NA`, `CLST=192641`, `NETV=0`, `FROM=US`, `LANG=EN`, `MID=`, `PROD=nfs-xbox-2006`, `VERS="xbox/1.2-Nov...`  (the directory request)
+This is the console game's connection to EA's lobby service: tagged messages (4 characters, 4 bytes, a 4-byte length) carrying `KEY=VALUE` lines, with a negotiated
+RC4 stream and MD5 integrity and what looks like an RSA public key (the strings "Public Key", "SKEY", "DIRECT", "INGAME", build date Oct 19 2005 sit beside them). A
+directory server answers with where the next servers are (account, lobby); login, personas, game rooms, game creation and joining follow on other connections.
+**What option B needs:** a server that speaks this protocol as the client expects: the encryption handshake (and, if the game checks the server's key against the
+public key in the executable, replacing that key in the game's memory at start), the directory, authentication, the lobby and game-room services, and finally the
+peer-to-peer race protocol the lobby sets up (the SERVERSTATE machine and CARSPAM messages above). None of it is documented that I know of; each message's form
+would be read from the game's own code and tested one reply at a time. That is a long project (many sessions), with a native result at the end.
