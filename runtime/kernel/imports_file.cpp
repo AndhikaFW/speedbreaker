@@ -13,6 +13,7 @@
 #include "function.h"
 #include "vfs.h"
 
+#include <execinfo.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -204,6 +205,24 @@ namespace
     }
 }
 
+namespace
+{
+    // NFSMW_BT_OPEN=<text>: a backtrace (raw host addresses; resolve them with gdb's `info symbol`) of every open of a file whose guest path contains <text>,
+    // found or not, to see which of the game's functions asked for it.
+    void TraceOpen(const std::string& path)
+    {
+        static const char* want = std::getenv("NFSMW_BT_OPEN");
+        if (!want || path.find(want) == std::string::npos)
+            return;
+        void* frames[64];
+        const int n = backtrace(frames, 64);
+        fprintf(stderr, "[bt] %s:", path.c_str());
+        for (int i = 0; i < n; i++)
+            fprintf(stderr, " %p", frames[i]);
+        fprintf(stderr, "\n");
+    }
+}
+
 uint32_t NtCreateFile(be<uint32_t>* handleOut, uint32_t desiredAccess, XOBJECT_ATTRIBUTES* attributes,
     XIO_STATUS_BLOCK* iosb, be<uint64_t>* allocationSize, uint32_t fileAttributes, uint32_t shareAccess,
     uint32_t disposition, uint32_t createOptions)
@@ -221,6 +240,7 @@ uint32_t NtCreateFile(be<uint32_t>* handleOut, uint32_t desiredAccess, XOBJECT_A
 
     bool wantsWrite = (desiredAccess & (GENERIC_WRITE_ | FILE_WRITE_DATA | FILE_APPEND_DATA)) != 0;
     bool mayCreate = disposition != FILE_OPEN && disposition != FILE_OVERWRITE;
+    TraceOpen(*guestPath);
     auto resolved = vfs::Resolve(*guestPath, !mayCreate);
     if (!resolved)
     {

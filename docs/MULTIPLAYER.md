@@ -229,3 +229,18 @@ with the seed and showed the match screen). **Not done:** the guest and the host
 what the game does when a player quits mid-race, a password room tried in the UI, text fields on a controller (they need a keyboard).
 **Still open (step 3):** on the start event, the game's own front end has to be driven to the agreed race instead of asking the players to click through
 Quick Race > Split Screen by hand and press F8 at "Select player 2".
+
+## Step 3, automatic race start: what was tried (2026-10-18)
+Goal: on the lobby's start event, start the agreed race through the game's own code, with no menu navigation and no F8.
+- `NFSMW_BT_OPEN=<text>` (kernel/imports_file.cpp) logs a backtrace of every open whose path contains the text. The race load's `TRACKS\<track>\TrackMaps.bin` open
+  comes from a streaming thread (`sub_8284FE40` -> `sub_8261A318` -> `sub_8261EA18` -> `sub_82621280`/`sub_82621678` -> `sub_8284D6B8` -> NtCreateFile): the request was
+  queued earlier by another thread, so the backtrace does not reach the front end. Not the way in.
+- The executable's strings show the game has its own online lobby and race-start code: `UIOLGameRoom::StartGame`, `LobbyGames::StartGame`, `OLMGR: StartRace called at
+  WorldTime`, `MSG_U_BI_STARTRACESYNC`, `OL_Quickrace_Main.fng`, `MMOnlineQuickRace`, `Game_StartRace: %s`, and the front end's `QuickPlay` / `SplitScreen` items. These
+  are the native entry points to look for (their callers, and what a start needs: the race setup object and the player list). They reference each other through data
+  tables, so a plain search for the string's address in the recompiled code finds nothing for most of them; the way in is the data tables (message names ->
+  handlers) or running the game to the screen and breaking on its handler.
+- **Not done**, and the largest remaining piece of native work. Until then the lobby's start event ends in a message on the Online page asking the players to start
+  Split Screen by hand and link the pads (F8) at "Select player 2".
+- Tools kept in `~/.cache/NFS-MostWanted/tools` (not in the repo): `launch_sp.sh` (game on a throw-away data copy, windowed), `view.sh`, `label.sh` (small captures
+  of the window, to spare image quota).
