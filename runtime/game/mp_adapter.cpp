@@ -80,6 +80,57 @@ namespace
         }
     }
 
+    // The game's real physics body of a vehicle. A body object (the tracker the list holds) points at its owner (+8); the owner's component (+128) points through a
+    // pointer (+48) at the rigid body, an element of an array in static memory: orientation quaternion (x y z w) at +0, position at +0x10, linear velocity at +0x20,
+    // angular velocity at +0x30, mass at +0x2C, the orientation matrix (three 16-byte rows) at +0x80. Its axes are not the tracker's: tracker (x, y, z) = (z, -x, y)
+    // of the body's. The tracker the list holds is refreshed from this body by the game's step (sub_82528448), and collisions use this body, so the remote players'
+    // cars are written here (docs/MULTIPLAYER.md, "The physics body").
+    struct Phys
+    {
+        float q[4], pos[3], vel[3], ang[3];
+    };
+
+    uint32_t PhysBody(const uint8_t* base, uint32_t trackerObj)
+    {
+        const uint32_t owner = PPC_LOAD_U32(trackerObj + 8);
+        if (!owner)
+            return 0;
+        const uint32_t comp = PPC_LOAD_U32(owner + 128);
+        if (!comp)
+            return 0;
+        const uint32_t ptr = PPC_LOAD_U32(comp + 48);
+        return ptr ? PPC_LOAD_U32(ptr) : 0;
+    }
+
+    Phys ReadPhys(const uint8_t* base, uint32_t b)
+    {
+        Phys p;
+        for (int i = 0; i < 4; ++i) p.q[i] = LoadF(base, b + 4 * i);
+        for (int i = 0; i < 3; ++i)
+        {
+            p.pos[i] = LoadF(base, b + 0x10 + 4 * i);
+            p.vel[i] = LoadF(base, b + 0x20 + 4 * i);
+            p.ang[i] = LoadF(base, b + 0x30 + 4 * i);
+        }
+        return p;
+    }
+
+    void WritePhys(uint8_t* base, uint32_t b, const Phys& p)
+    {
+        float m[3][3];
+        mp::QuatToMat(p.q, m);
+        for (int i = 0; i < 4; ++i) StoreF(base, b + 4 * i, p.q[i]);
+        for (int r = 0; r < 3; ++r)
+            for (int c = 0; c < 3; ++c)
+                StoreF(base, b + 0x80 + 16 * r + 4 * c, m[r][c]);
+        for (int i = 0; i < 3; ++i)
+        {
+            StoreF(base, b + 0x10 + 4 * i, p.pos[i]);
+            StoreF(base, b + 0x20 + 4 * i, p.vel[i]);
+            StoreF(base, b + 0x30 + 4 * i, p.ang[i]);
+        }
+    }
+
     float Dist(const float* a, const float* b)
     {
         return std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
@@ -164,18 +215,16 @@ namespace
     {
         if (!a.net || !a.net->Connected())
             return;
-        const uint32_t s = PPC_LOAD_U32(obj + 28);
-        if (!s)
-            return;
         for (const auto& [id, body] : a.standIns)
         {
             if (body != obj)
                 continue;
+            const uint32_t pb = PhysBody(base, obj);
             mp::CarState c;
-            if (!a.net->RemoteCar(id, a.net->NowMs(), c))
+            if (!pb || !a.net->RemoteCar(id, a.net->NowMs(), c))
                 return;
-            Pose out;
-            mp::QuatToMat(c.rot, out.m);
+            Phys out;
+            for (int i = 0; i < 4; ++i) out.q[i] = c.rot[i];
             for (int i = 0; i < 3; ++i) { out.pos[i] = c.pos[i]; out.vel[i] = c.vel[i]; out.ang[i] = c.angVel[i]; }
             // Every game puts its own player in grid slot 0, so on the grid all cars would stand in one place. Show each remote car beside ours instead, 3.5 m
             // per step of join order along the car's side axis, and let the shift fade out over the first 20 m that car drives, after which it is where its player is.
@@ -192,11 +241,13 @@ namespace
                     if (rid < a.net->MyId()) --d;
                 }
                 if (id > a.net->MyId()) ++d;   // the local player is before them
+                float m[3][3];
+                mp::QuatToMat(out.q, m);
                 const float shift = 3.5f * float(d) * fade;
                 for (int i = 0; i < 3; ++i)
-                    out.pos[i] += out.m[1][i] * shift;
+                    out.pos[i] += m[0][i] * shift;   // row 0 of the body's matrix is its side axis
             }
-            WritePose(base, s, out);
+            WritePhys(base, pb, out);
             return;
         }
     }
@@ -280,10 +331,14 @@ PPC_FUNC(sub_82528448)
             if (a.net->Connected() && now - a.lastSend >= 1.0 / 30.0)
             {
                 a.lastSend = now;
-                mp::CarState c;
-                for (int i = 0; i < 3; ++i) { c.pos[i] = pose.pos[i]; c.vel[i] = pose.vel[i]; c.angVel[i] = pose.ang[i]; }
-                mp::MatToQuat(pose.m, c.rot);
-                a.net->SendCar(c);
+                if (const uint32_t pb = PhysBody(base, obj))
+                {
+                    const Phys ph = ReadPhys(base, pb);
+                    mp::CarState c;
+                    for (int i = 0; i < 4; ++i) c.rot[i] = ph.q[i];
+                    for (int i = 0; i < 3; ++i) { c.pos[i] = ph.pos[i]; c.vel[i] = ph.vel[i]; c.angVel[i] = ph.ang[i]; }
+                    a.net->SendCar(c);
+                }
             }
         }
         if (now - a.lastLog > 3.0)
