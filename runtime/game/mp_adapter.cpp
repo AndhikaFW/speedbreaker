@@ -150,7 +150,15 @@ namespace
         std::string server, name = "player";
         double lastSend = 0, lastTry = 0;
         std::map<uint8_t, std::array<float, 3>> dbgShift;       // per remote: distance driven since first seen, shift in metres, join-order step (for the log)
-        std::map<uint8_t, std::array<float, 3>> remoteStart;   // where each remote car was when first drawn: the grid offset fades with the distance from it
+        // Per remote car, the life of the grid shift: 0 = rolling into the grid (full shift), 1 = stationary on the grid, fading with the distance driven from
+        // there, 2 = faded for good (also for a car first seen already racing).
+        struct Grid
+        {
+            int phase = 0;
+            std::array<float, 3> last{}, rest{};
+            double stableSince = 0, firstSeen = 0;
+        };
+        std::map<uint8_t, Grid> grids;
         double localSince = 0, connectedAt = 0, lastTable = -1;
         std::map<uint8_t, uint32_t> standIns;   // remote player id -> body object
         double lastLog = -10;
@@ -229,12 +237,44 @@ namespace
             for (int i = 0; i < 3; ++i) { out.pos[i] = c.pos[i]; out.vel[i] = c.vel[i]; out.ang[i] = c.angVel[i]; }
             // Every game puts its own player in grid slot 0, so on the grid all cars would stand in one place. Show each remote car beside ours instead, 3.5 m
             // per step of join order along the car's side axis, and let the shift fade out over the first 20 m that car drives, after which it is where its player is.
+            const double now = a.Now();
+            float fade = 1.f, travelled = 0.f;
             {
-                auto it = a.remoteStart.find(id);
-                if (it == a.remoteStart.end())
-                    it = a.remoteStart.emplace(id, std::array<float, 3>{ out.pos[0], out.pos[1], out.pos[2] }).first;
-                const float travelled = Dist(out.pos, it->second.data());
-                const float fade = travelled >= 20.f ? 0.f : 1.f - travelled / 20.f;
+                Adapter::Grid& g = a.grids[id];
+                if (g.firstSeen == 0)
+                {
+                    g.firstSeen = now;
+                    g.stableSince = now;
+                    g.last = { out.pos[0], out.pos[1], out.pos[2] };
+                }
+                const float speed = std::sqrt(out.vel[0] * out.vel[0] + out.vel[1] * out.vel[1] + out.vel[2] * out.vel[2]);
+                if (g.phase == 0)
+                {
+                    if (Dist(out.pos, g.last.data()) > 0.05f)
+                    {
+                        g.last = { out.pos[0], out.pos[1], out.pos[2] };
+                        g.stableSince = now;
+                    }
+                    if (now - g.stableSince > 1.0)
+                    {
+                        g.phase = 1;
+                        g.rest = g.last;
+                    }
+                    else if (speed > 8.f || now - g.firstSeen > 90.0)
+                        g.phase = 2;   // already racing when first seen
+                }
+                if (g.phase == 1)
+                {
+                    travelled = Dist(out.pos, g.rest.data());
+                    if (travelled >= 20.f)
+                        g.phase = 2;
+                    else
+                        fade = 1.f - travelled / 20.f;
+                }
+                if (g.phase == 2)
+                    fade = 0.f;
+            }
+            {
                 int d = 0;   // join-order rank of that player minus ours
                 for (const auto& [rid, r] : a.net->Remotes())
                 {
@@ -284,7 +324,7 @@ PPC_FUNC(sub_82528448)
             a.standIns.clear();
             a.standInObj = 0;
             a.history.clear();
-            a.remoteStart.clear();
+            a.grids.clear();
             a.localSince = now;
         }
     }
