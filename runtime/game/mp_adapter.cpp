@@ -98,8 +98,8 @@ namespace
         std::string server, name = "player";
         double lastSend = 0, lastTry = 0;
         bool gridDone = false;                  // this race: the local car has been put in its own grid slot (or the race had already started)
-        std::vector<Pose> slots;                // the poses of the game's vehicles when the race appeared, player first: the grid
-        double localSince = 0, connectedAt = 0, lastTable = -1;
+        double localSince = 0, connectedAt = 0, lastTable = -1, stableSince = 0;
+        float stablePos[3] = {};
         std::map<uint8_t, uint32_t> standIns;   // remote player id -> body object
         double lastLog = -10;
         std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
@@ -156,9 +156,37 @@ namespace
     }
 }
 
+namespace
+{
+    // If `obj` stands in for a remote player, write that player's state into it. Done before the game's step as well as after it: the game finds contacts
+    // from the pose it starts the step with, so the remote car is where its player is when it is hit, and the step's own drift is undone afterwards.
+    void ApplyRemote(Adapter& a, uint8_t* base, uint32_t obj)
+    {
+        if (!a.net || !a.net->Connected() || !a.gridDone)
+            return;
+        const uint32_t s = PPC_LOAD_U32(obj + 28);
+        if (!s)
+            return;
+        for (const auto& [id, body] : a.standIns)
+        {
+            if (body != obj)
+                continue;
+            mp::CarState c;
+            if (!a.net->RemoteCar(id, a.net->NowMs(), c))
+                return;
+            Pose out;
+            mp::QuatToMat(c.rot, out.m);
+            for (int i = 0; i < 3; ++i) { out.pos[i] = c.pos[i]; out.vel[i] = c.vel[i]; out.ang[i] = c.angVel[i]; }
+            WritePose(base, s, out);
+            return;
+        }
+    }
+}
+
 PPC_FUNC(sub_82528448)
 {
     const uint32_t obj = ctx.r3.u32;
+    ApplyRemote(A(), base, obj);
     __imp__sub_82528448(ctx, base);
 
     Adapter& a = A();
@@ -186,12 +214,6 @@ PPC_FUNC(sub_82528448)
             a.history.clear();
             a.gridDone = false;
             a.localSince = now;
-            a.slots.clear();
-            for (uint32_t b : vb)
-            {
-                const uint32_t bs = b ? PPC_LOAD_U32(b + 28) : 0;
-                a.slots.push_back(bs ? ReadPose(base, bs) : Pose{});
-            }
         }
     }
     const float here[3] = { LoadF(base, s + 48), LoadF(base, s + 52), LoadF(base, s + 56) };
@@ -227,17 +249,30 @@ PPC_FUNC(sub_82528448)
                 a.connectedAt = 0;
             if (!a.gridDone && a.net->Connected() && now - a.connectedAt > 0.5)   // by then the list of players already there has arrived
             {
-                a.gridDone = true;
-                size_t rank = 0;
-                for (const auto& [id, r] : a.net->Remotes())
-                    if (id < a.net->MyId())
-                        ++rank;
-                const float speed = std::sqrt(pose.vel[0] * pose.vel[0] + pose.vel[1] * pose.vel[1] + pose.vel[2] * pose.vel[2]);
-                if (rank > 0 && rank < a.slots.size() && speed < 0.5f && now - a.localSince < 20.0)
+                // Stationary = the position has not moved for a second (the cars roll into the grid on their own before the countdown, with no velocity).
+                if (Dist(pose.pos, a.stablePos) > 0.05f)
                 {
-                    WritePose(base, s, a.slots[rank]);
-                    fprintf(stderr, "[mp] player %zu in join order: moved to grid slot %zu\n", rank, rank);
+                    memcpy(a.stablePos, pose.pos, sizeof a.stablePos);
+                    a.stableSince = now;
                 }
+                if (now - a.stableSince > 1.0)
+                {
+                    // The cars are stationary on the grid: take this player's slot (the pose of the game's n-th vehicle, which is still its own AI car, since the remote
+                    // cars are not written until this is done).
+                    a.gridDone = true;
+                    size_t rank = 0;
+                    for (const auto& [id, r] : a.net->Remotes())
+                        if (id < a.net->MyId())
+                            ++rank;
+                    const std::vector<uint32_t> vb = VehicleBodies(base);
+                    if (rank > 0 && rank < vb.size() && vb[rank])
+                    {
+                        WritePose(base, s, ReadPose(base, PPC_LOAD_U32(vb[rank] + 28)));
+                        fprintf(stderr, "[mp] player %zu in join order: moved to grid slot %zu\n", rank, rank);
+                    }
+                }
+                else if (now - a.localSince > 90.0)
+                    a.gridDone = true;   // joined a race that is already under way
             }
             if (a.net->Failed() && now - a.lastTry > 5.0)
             {
@@ -303,7 +338,7 @@ PPC_FUNC(sub_82528448)
 
     // Network: each remote player drives one opponent vehicle's body, in the order of the game's vehicle table (player first). NFSMW_MP_BODIES=i,j,... picks list
     // positions by hand instead (the log above shows the list).
-    if (a.net && a.net->Connected() && a.localObj)
+    if (a.net && a.net->Connected() && a.localObj && a.gridDone)
     {
         if (a.standIns.size() < a.net->Remotes().size())
         {
@@ -338,18 +373,6 @@ PPC_FUNC(sub_82528448)
                 ++k;
             }
         }
-        for (const auto& [id, body] : a.standIns)
-        {
-            if (body != obj)
-                continue;
-            mp::CarState c;
-            if (!a.net->RemoteCar(id, a.net->NowMs(), c))
-                break;
-            Pose out;
-            mp::QuatToMat(c.rot, out.m);
-            for (int i = 0; i < 3; ++i) { out.pos[i] = c.pos[i]; out.vel[i] = c.vel[i]; out.ang[i] = c.angVel[i]; }
-            WritePose(base, s, out);
-            break;
-        }
+        ApplyRemote(a, base, obj);
     }
 }
