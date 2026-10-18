@@ -12,9 +12,12 @@
 #include <stdafx.h>
 
 #include <kernel/function.h>
+#include <net/mp_client.h>
 #include <chrono>
 #include <cmath>
 #include <deque>
+#include <map>
+#include <memory>
 #include <vector>
 
 extern "C" PPC_FUNC(__imp__sub_82528448);
@@ -73,6 +76,39 @@ namespace
         }
     }
 
+    // Matrix (rows as the game stores them) <-> quaternion (x y z w). Both directions use the same convention, so a round trip is the identity.
+    void ToQuat(const float m[3][3], float q[4])
+    {
+        const float t = m[0][0] + m[1][1] + m[2][2];
+        if (t > 0)
+        {
+            const float r = std::sqrt(1.f + t) * 2;
+            q[3] = 0.25f * r; q[0] = (m[2][1] - m[1][2]) / r; q[1] = (m[0][2] - m[2][0]) / r; q[2] = (m[1][0] - m[0][1]) / r;
+        }
+        else if (m[0][0] > m[1][1] && m[0][0] > m[2][2])
+        {
+            const float r = std::sqrt(1.f + m[0][0] - m[1][1] - m[2][2]) * 2;
+            q[3] = (m[2][1] - m[1][2]) / r; q[0] = 0.25f * r; q[1] = (m[0][1] + m[1][0]) / r; q[2] = (m[0][2] + m[2][0]) / r;
+        }
+        else if (m[1][1] > m[2][2])
+        {
+            const float r = std::sqrt(1.f + m[1][1] - m[0][0] - m[2][2]) * 2;
+            q[3] = (m[0][2] - m[2][0]) / r; q[0] = (m[0][1] + m[1][0]) / r; q[1] = 0.25f * r; q[2] = (m[1][2] + m[2][1]) / r;
+        }
+        else
+        {
+            const float r = std::sqrt(1.f + m[2][2] - m[0][0] - m[1][1]) * 2;
+            q[3] = (m[1][0] - m[0][1]) / r; q[0] = (m[0][2] + m[2][0]) / r; q[1] = (m[1][2] + m[2][1]) / r; q[2] = 0.25f * r;
+        }
+    }
+    void FromQuat(const float q[4], float m[3][3])
+    {
+        const float x = q[0], y = q[1], z = q[2], w = q[3];
+        m[0][0] = 1 - 2 * (y * y + z * z); m[0][1] = 2 * (x * y + z * w);     m[0][2] = 2 * (x * z - y * w);
+        m[1][0] = 2 * (x * y - z * w);     m[1][1] = 1 - 2 * (x * x + z * z); m[1][2] = 2 * (y * z + x * w);
+        m[2][0] = 2 * (x * z + y * w);     m[2][1] = 2 * (y * z - x * w);     m[2][2] = 1 - 2 * (x * x + y * y);
+    }
+
     float Dist(const float* a, const float* b)
     {
         return std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
@@ -87,11 +123,18 @@ namespace
         uint32_t localObj = 0;
         uint32_t standInObj = 0;
         std::deque<std::pair<double, Pose>> history;
+        // Network (NFSMW_MP_SERVER=host[:port], NFSMW_MP_NAME): the local car goes out at 30 Hz, each remote player drives one stand-in body.
+        std::unique_ptr<mp::Client> net;
+        std::string server, name = "player";
+        double lastSend = 0;
+        std::map<uint8_t, uint32_t> standIns;   // remote player id -> body object
         double lastLog = -10;
         std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
 
         Adapter()
         {
+            if (const char* sv = std::getenv("NFSMW_MP_SERVER")) server = sv;
+            if (const char* n = std::getenv("NFSMW_MP_NAME")) name = n;
             if (const char* g = std::getenv("NFSMW_MP_GHOST")) { ghost = true; ghostSeconds = float(atof(g)); }
             if (const char* b = std::getenv("NFSMW_MP_BODY")) ghostBody = atoi(b);
             if (const char* o = std::getenv("NFSMW_MP_OFFSET")) ghostOffset = float(atof(o));
@@ -126,7 +169,7 @@ PPC_FUNC(sub_82528448)
     __imp__sub_82528448(ctx, base);
 
     Adapter& a = A();
-    if (!a.ghost)
+    if (!a.ghost && a.server.empty())
         return;
     const uint32_t s = PPC_LOAD_U32(obj + 28);
     if (!s)
@@ -140,9 +183,37 @@ PPC_FUNC(sub_82528448)
     if (havePlayer && (obj == a.localObj || (!a.localObj && Dist(player, here) < 1.0f)))
     {
         a.localObj = obj;
-        a.history.emplace_back(now, ReadPose(base, s));
-        while (a.history.size() > 2 && a.history[1].first < now - a.ghostSeconds - 1.0)
-            a.history.pop_front();
+        const Pose pose = ReadPose(base, s);
+        if (a.ghost)
+        {
+            a.history.emplace_back(now, pose);
+            while (a.history.size() > 2 && a.history[1].first < now - a.ghostSeconds - 1.0)
+                a.history.pop_front();
+        }
+        if (!a.server.empty())
+        {
+            if (!a.net)
+            {
+                a.net.reset(new mp::Client);
+                std::string host = a.server;
+                uint16_t port = mp::kDefaultPort;
+                const size_t colon = host.rfind(':');
+                if (colon != std::string::npos) { port = uint16_t(atoi(host.c_str() + colon + 1)); host.resize(colon); }
+                if (!a.net->Connect(host, port, a.name))
+                    fprintf(stderr, "[mp] cannot connect to %s\n", a.server.c_str());
+                else
+                    fprintf(stderr, "[mp] connecting to %s:%u as %s\n", host.c_str(), port, a.name.c_str());
+            }
+            a.net->Service();
+            if (a.net->Connected() && now - a.lastSend >= 1.0 / 30.0)
+            {
+                a.lastSend = now;
+                mp::CarState c;
+                for (int i = 0; i < 3; ++i) { c.pos[i] = pose.pos[i]; c.vel[i] = pose.vel[i]; c.angVel[i] = pose.ang[i]; }
+                ToQuat(pose.m, c.rot);
+                a.net->SendCar(c);
+            }
+        }
         if (now - a.lastLog > 3.0)
         {
             a.lastLog = now;
@@ -153,29 +224,72 @@ PPC_FUNC(sub_82528448)
                 uint32_t bs = PPC_LOAD_U32(bodies[i] + 28);
                 fprintf(stderr, " #%zu %08X(%.0f,%.0f)", i, bodies[i], bs ? LoadF(base, bs + 48) : 0.f, bs ? LoadF(base, bs + 52) : 0.f);
             }
+            if (a.net)
+                fprintf(stderr, " | net %s, %zu remote, rtt %u ms", a.net->Connected() ? "up" : a.net->Failed() ? "FAILED" : "connecting", a.net->Remotes().size(), a.net->RttMs());
             fprintf(stderr, "\n");
         }
         return;
     }
 
-    // The stand-in: the n-th body of the list (chosen with NFSMW_MP_BODY, see the log above), replaying the local car from `ghostSeconds` ago.
-    if (a.ghostBody < 0)
-        return;
-    if (!a.standInObj)
+    // Ghost test: the n-th body of the list (NFSMW_MP_BODY, see the log above) replays the local car from `ghostSeconds` ago.
+    if (a.ghost && a.ghostBody >= 0)
     {
-        std::vector<uint32_t> bodies = Bodies(base);
-        if (size_t(a.ghostBody) < bodies.size())
-            a.standInObj = bodies[a.ghostBody];
+        if (!a.standInObj)
+        {
+            std::vector<uint32_t> bodies = Bodies(base);
+            if (size_t(a.ghostBody) < bodies.size())
+                a.standInObj = bodies[a.ghostBody];
+        }
+        if (obj == a.standInObj && !a.history.empty())
+        {
+            const double want = now - a.ghostSeconds;
+            const Pose* pick = &a.history.front().second;
+            for (const auto& h : a.history)
+                if (h.first <= want)
+                    pick = &h.second;
+            Pose out = *pick;
+            for (int c = 0; c < 3; ++c)
+                out.pos[c] += out.m[0][c] * a.ghostOffset;
+            WritePose(base, s, out);
+        }
     }
-    if (obj != a.standInObj || a.history.empty())
-        return;
-    const double want = now - a.ghostSeconds;
-    const Pose* pick = &a.history.front().second;
-    for (const auto& h : a.history)
-        if (h.first <= want)
-            pick = &h.second;
-    Pose out = *pick;
-    for (int c = 0; c < 3; ++c)
-        out.pos[c] += out.m[0][c] * a.ghostOffset;
-    WritePose(base, s, out);
+
+    // Network: remote players drive stand-in bodies. Which bodies: NFSMW_MP_BODIES=i,j,... picks list positions, one per remote player in id order
+    // (the log above shows the list); until the game's opponents are told apart from traffic by their class this is chosen by hand.
+    if (a.net && a.net->Connected() && a.localObj)
+    {
+        if (a.standIns.size() < a.net->Remotes().size())
+        {
+            static const std::vector<int> picks = [] {
+                std::vector<int> v;
+                if (const char* e = std::getenv("NFSMW_MP_BODIES"))
+                    for (const char* c = e; *c;) { v.push_back(atoi(c)); while (*c && *c != ',') ++c; if (*c) ++c; }
+                return v;
+            }();
+            const std::vector<uint32_t> bodies = Bodies(base);
+            size_t k = 0;
+            for (const auto& [id, r] : a.net->Remotes())
+            {
+                if (!a.standIns.count(id) && k < picks.size() && size_t(picks[k]) < bodies.size())
+                {
+                    a.standIns[id] = bodies[picks[k]];
+                    fprintf(stderr, "[mp] remote player %u (%s) drives body #%d %08X\n", id, r.name.c_str(), picks[k], bodies[picks[k]]);
+                }
+                ++k;
+            }
+        }
+        for (const auto& [id, body] : a.standIns)
+        {
+            if (body != obj)
+                continue;
+            mp::CarState c;
+            if (!a.net->RemoteCar(id, a.net->NowMs(), c))
+                break;
+            Pose out;
+            FromQuat(c.rot, out.m);
+            for (int i = 0; i < 3; ++i) { out.pos[i] = c.pos[i]; out.vel[i] = c.vel[i]; out.ang[i] = c.angVel[i]; }
+            WritePose(base, s, out);
+            break;
+        }
+    }
 }

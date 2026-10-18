@@ -346,3 +346,20 @@ Result: the player's rigid body state is a heap block laid out as
   0x8290BE18 holds a pointer to the block at -0x40 of the position but the other entries of that list are not bodies).
 The heap moves between launches, so a fixed address does not work; the car has to be found through globals or by the position match against
 0x82A2DBF0 at start-up.
+
+## Multiplayer v2 status (2026-10-18): the game's cars driven over our own network layer
+Pieces (all off unless the environment variables are set; nothing changes for normal play):
+- `runtime/net/mp_proto.h`, `mp_client.*`, `mp_server.*`, tools `mp_server [port]` and `mp_bot host[:port] [delay s] [offset m]` (target `mp_net` and the two programs);
+  tests `tests/mp_net_test.cpp`, `tests/enet_loopback_test.cpp`.
+- `runtime/game/mp_adapter.cpp` hooks `sub_82528448(body, dt)`, the game's step of one rigid body (the list head is 0x8290BE18, see "The player's car in memory"), runs the
+  game's own step first, then (a) reads the local player's car (the body at the static position copy 0x82A2DBF0) and sends it at 30 Hz, (b) writes the received state of a remote
+  player into the body that stands for that player (matrix, position, linear and angular velocity). The rendered car follows the body.
+  Variables: `NFSMW_MP_SERVER=host[:port]`, `NFSMW_MP_NAME`, `NFSMW_MP_BODIES=i,j,...` (list positions of the stand-in bodies, one per remote player in id order; the log shows the
+  list every 3 s), and for a test without a network `NFSMW_MP_GHOST=<s>` + `NFSMW_MP_BODY=<i>` + `NFSMW_MP_OFFSET=<m>`.
+- `tools/quickrace.sh <name> [env]`: menus to a Quick Play race on a throw-away data copy.
+**Checked (one machine, the real server and protocol):** ghost mode: the opponent body follows the local car 3 s late (positions match to a metre) and with a 5 m offset the
+rendered opponent drives next to the player. Network mode: `mp_server` + `mp_bot` (replays the player delayed 3 s, +8 m in x): the game log shows "net up, 1 remote, rtt 74 ms",
+the stand-in body (#1, a grid opponent) sits at the local car's position + 8 m when the delay is short, and 40 m behind it with a 3 s delay.
+**Not done yet:** telling the game's opponents from traffic by class (the list position is chosen by hand), what happens when the local car hits a stand-in (it is overwritten
+every step, so it is immovable; the plan is to blend the state in and let the game's collision act), AI of the stand-in cars switched off, car model per player, start
+synchronisation, laps and finish shared, a real two-machine run, lobby, modes.

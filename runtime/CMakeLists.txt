@@ -59,6 +59,8 @@ target_link_libraries(mp_net PUBLIC enet)
 target_compile_features(mp_net PUBLIC cxx_std_20)
 add_executable(mp_server ${CMAKE_CURRENT_SOURCE_DIR}/net/mp_server_main.cpp)
 target_link_libraries(mp_server PRIVATE mp_net)
+add_executable(mp_bot ${CMAKE_CURRENT_SOURCE_DIR}/net/mp_bot_main.cpp)
+target_link_libraries(mp_bot PRIVATE mp_net)
 add_library(o1heap STATIC ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/o1heap/o1heap.c)
 target_include_directories(o1heap PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/o1heap)
 if(IOS)
@@ -154,7 +156,7 @@ add_custom_target(nfsmw_build_info
     VERBATIM)
 add_dependencies(SpeedBreaker nfsmw_build_info)
 
-target_link_libraries(SpeedBreaker PRIVATE NfsmwRecompLib XenonUtilsLite o1heap imgui SDL3::SDL3 Vulkan::Vulkan glslang::glslang glslang::glslang-default-resource-limits ${AVCODEC_LIBRARY} ${AVUTIL_LIBRARY})
+target_link_libraries(SpeedBreaker PRIVATE NfsmwRecompLib XenonUtilsLite o1heap imgui mp_net SDL3::SDL3 Vulkan::Vulkan glslang::glslang glslang::glslang-default-resource-limits ${AVCODEC_LIBRARY} ${AVUTIL_LIBRARY})
 # glslang before 15 (the Steam Frame's 14) keeps the C API's SPIR-V
 # generation in its own library.
 if(TARGET glslang::SPIRV)
