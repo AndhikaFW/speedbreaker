@@ -26,7 +26,6 @@ extern "C" PPC_FUNC(__imp__sub_82528448);
 namespace
 {
     constexpr uint32_t kBodyListHead = 0x8290BE18;
-    constexpr uint32_t kPlayerPosCopy = 0x82A2DBF0;
     // The game's vehicle table: a fixed vector at 0x82C745A8 ({vtable, data, capacity in bytes, count}, data = 8-byte entries {owner object, 1}), the player first,
     // then the opponents in creation order. A vehicle's body is the body whose +8 points at that owner object.
     constexpr uint32_t kVehicleTable = 0x82C745A8;
@@ -100,7 +99,7 @@ namespace
         double lastSend = 0, lastTry = 0;
         bool gridDone = false;                  // this race: the local car has been put in its own grid slot (or the race had already started)
         std::vector<Pose> slots;                // the poses of the game's vehicles when the race appeared, player first: the grid
-        double localSince = 0, connectedAt = 0;
+        double localSince = 0, connectedAt = 0, lastTable = -1;
         std::map<uint8_t, uint32_t> standIns;   // remote player id -> body object
         double lastLog = -10;
         std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
@@ -170,37 +169,34 @@ PPC_FUNC(sub_82528448)
         return;
     const double now = a.Now();
 
-    // Which body is the local player's: the one at the static position copy.
-    const float player[3] = { LoadF(base, kPlayerPosCopy), LoadF(base, kPlayerPosCopy + 4), LoadF(base, kPlayerPosCopy + 8) };
-    const float here[3] = { LoadF(base, s + 48), LoadF(base, s + 52), LoadF(base, s + 56) };
-    const bool havePlayer = std::fabs(player[0]) + std::fabs(player[1]) > 1.0f;   // the copy is zero before a race
-    bool isLocal = havePlayer && obj == a.localObj;
-    if (havePlayer && !isLocal && Dist(player, here) < 1.0f)
+    // The local player's body: the first vehicle of the game's vehicle table (the player is always first). Looked up a few times a second, so a new race
+    // (new bodies) is noticed, and not by position, because a stand-in can overlap the car.
+    if (now - a.lastTable > 0.25)
     {
-        // Another body sits at the player's position. Take it over only if the body we had is no longer there (a new race): a stand-in can overlap the car.
-        const uint32_t ls = a.localObj ? PPC_LOAD_U32(a.localObj + 28) : 0;
-        const float old[3] = { ls ? LoadF(base, ls + 48) : 0.f, ls ? LoadF(base, ls + 52) : 0.f, ls ? LoadF(base, ls + 56) : 0.f };
-        isLocal = !ls || Dist(player, old) > 3.0f;
-    }
-    if (isLocal)
-    {
-        if (obj != a.localObj)
+        a.lastTable = now;
+        const std::vector<uint32_t> vb = VehicleBodies(base);
+        const uint32_t first = vb.empty() ? 0 : vb[0];
+        if (first && first != a.localObj)
         {
             // A new race builds new bodies: forget the old ones (the stand-ins are looked up again) and say so.
-            fprintf(stderr, "[mp] local car body is now %08X\n", obj);
-            a.localObj = obj;
+            fprintf(stderr, "[mp] local car body is now %08X\n", first);
+            a.localObj = first;
             a.standIns.clear();
             a.standInObj = 0;
             a.history.clear();
             a.gridDone = false;
             a.localSince = now;
             a.slots.clear();
-            for (uint32_t b : VehicleBodies(base))
+            for (uint32_t b : vb)
             {
                 const uint32_t bs = b ? PPC_LOAD_U32(b + 28) : 0;
                 a.slots.push_back(bs ? ReadPose(base, bs) : Pose{});
             }
         }
+    }
+    const float here[3] = { LoadF(base, s + 48), LoadF(base, s + 52), LoadF(base, s + 56) };
+    if (a.localObj && obj == a.localObj)
+    {
         const Pose pose = ReadPose(base, s);
         if (a.ghost)
         {
