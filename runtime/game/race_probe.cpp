@@ -7,6 +7,7 @@
 // guest stack: at a function's entry r1 is its caller's frame; a frame's first word is its caller's frame, and a function saves its link register at
 // (its caller's frame) - 8.
 #include <stdafx.h>
+#include <chrono>
 
 #include <kernel/function.h>
 
@@ -80,7 +81,25 @@ PROBE(8236C180)
 PROBE(8233DC58)
 PROBE(8232D7D8)
 PROBE(8235DA08)
-PROBE(823993C0)
+// The event dispatcher: every distinct event id (r5) is logged once, with the time, so the events around the countdown can be read off (NFSMW_PROBE_RACE=3).
+#include <mutex>
+#include <set>
+PPC_FUNC(sub_823993C0)
+{
+    static const bool distinct = std::getenv("NFSMW_PROBE_RACE") && std::getenv("NFSMW_PROBE_RACE")[0] == '3';
+    if (distinct)
+    {
+        static std::mutex m;
+        static std::set<uint32_t> seen;
+        static const auto t0 = std::chrono::steady_clock::now();
+        std::lock_guard<std::mutex> g(m);
+        if (seen.insert(ctx.r5.u32).second)
+            fprintf(stderr, "[event] %8.2f s (epoch %.1f) id %08X r3=%08X r4=%08X r6=%08X\n", std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count(), ctx.r5.u32, ctx.r3.u32, ctx.r4.u32, ctx.r6.u32);
+    }
+    else if (Enabled())
+        LogCall("sub_823993C0", ctx, base);
+    __imp__sub_823993C0(ctx, base);
+}
 
 // Counted, not logged per call: how often each of these runs, printed once a second while NFSMW_PROBE_RACE=2 (the lobby thread's tick and the network module's).
 #include <atomic>
