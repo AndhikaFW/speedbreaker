@@ -332,3 +332,17 @@ layer that does not exist here. Career mode is not ported. The new layer is:
 - **Model:** each client runs the game's physics for its own car and sends its state about 30 times a second; other players' cars are the
   game's own opponent vehicles driven by interpolated state; the server settles collisions; one client is the traffic and police authority.
 - Test: `tests/enet_loopback_test.cpp` (`-DSB_TESTS=ON`).
+
+## The player's car in memory (found 2026-10-18, Quick Play race, single player)
+Method (tools/): `quickrace.sh` reaches a race through the menus on a throw-away data copy; `findpos.py` takes the car position from a static copy
+(guest 0x82A2DBF0 holds the player's world position as three big-endian floats, metres) and finds every other place that holds the same triple and
+follows it while driving; `localvel.py` reads the area around it twice and lists triples equal to (pos2 - pos1) / dt.
+Result: the player's rigid body state is a heap block laid out as
+- `-48 / -32 / -16`: three 16-byte rows (x y z 0) of the orientation matrix (right, forward, up as seen: row 0 = (0.80, -0.60, 0.01) ...),
+- `+0`: world position (x, y, z, 1.0) in metres (x, y ground plane, z about 120 on the first Quick Play track),
+- `+16`: linear velocity (x, y, z, 0) in m/s (matches (pos2 - pos1) / dt),
+- `+32`: a second triple (looks like angular velocity or a previous velocity: not yet separated),
+- `+112` of the block is a vtable-like pointer (0x8208D884); the block start and the pointer chain from globals are not yet identified (a global at
+  0x8290BE18 holds a pointer to the block at -0x40 of the position but the other entries of that list are not bodies).
+The heap moves between launches, so a fixed address does not work; the car has to be found through globals or by the position match against
+0x82A2DBF0 at start-up.
