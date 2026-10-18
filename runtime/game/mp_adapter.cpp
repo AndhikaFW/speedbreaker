@@ -149,6 +149,7 @@ namespace
         std::unique_ptr<mp::Client> net;
         std::string server, name = "player";
         double lastSend = 0, lastTry = 0;
+        std::map<uint8_t, std::array<float, 3>> dbgShift;       // per remote: distance driven since first seen, shift in metres, join-order step (for the log)
         std::map<uint8_t, std::array<float, 3>> remoteStart;   // where each remote car was when first drawn: the grid offset fades with the distance from it
         double localSince = 0, connectedAt = 0, lastTable = -1;
         std::map<uint8_t, uint32_t> standIns;   // remote player id -> body object
@@ -244,6 +245,7 @@ namespace
                 float m[3][3];
                 mp::QuatToMat(out.q, m);
                 const float shift = 3.5f * float(d) * fade;
+                a.dbgShift[id] = { travelled, shift, float(d) };
                 for (int i = 0; i < 3; ++i)
                     out.pos[i] += m[0][i] * shift;   // row 0 of the body's matrix is its side axis
             }
@@ -351,6 +353,8 @@ PPC_FUNC(sub_82528448)
                 uint32_t bs = PPC_LOAD_U32(bodies[i] + 28);
                 fprintf(stderr, " #%zu %08X(%.0f,%.0f)", i, bodies[i], bs ? LoadF(base, bs + 48) : 0.f, bs ? LoadF(base, bs + 52) : 0.f);
             }
+            for (const auto& [id, v] : a.dbgShift)
+                fprintf(stderr, " | remote %u: driven %.0f m since first seen, grid shift %.2f m (step %.0f)", id, v[0], v[1], v[2]);
             if (a.net)
                 fprintf(stderr, " | net %s, %zu remote, rtt %u ms", a.net->Connected() ? "up" : a.net->Failed() ? "FAILED" : "connecting", a.net->Remotes().size(), a.net->RttMs());
             fprintf(stderr, "\n");
