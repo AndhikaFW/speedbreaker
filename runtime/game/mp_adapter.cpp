@@ -526,7 +526,7 @@ namespace game
             if (r.hasCar && (r.latest.flags & mp::kFlagReady))
                 ++ready;
         const bool all = a.net->Connected() && ready + 1 >= a.expected;
-        const bool timeout = now - a.barrierSince > 120.0 || (a.net->Failed() && now - a.barrierSince > 10.0);
+        const bool timeout = now - a.barrierSince > 300.0 || (a.net->Failed() && now - a.barrierSince > 10.0);
         if (all || timeout)
         {
             a.barrier = false;

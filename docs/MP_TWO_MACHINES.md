@@ -16,7 +16,7 @@ a small server, and shows the other player's car as one of its opponents.
 2. Machine A: `NFSMW_MP_SERVER=<server-ip>:27960 NFSMW_MP_NAME=a NFSMW_MP_PLAYERS=2 build/main/runtime/SpeedBreaker`
    Machine B: `NFSMW_MP_SERVER=<server-ip>:27960 NFSMW_MP_NAME=b NFSMW_MP_PLAYERS=2 build/main/runtime/SpeedBreaker`
    `NFSMW_MP_PLAYERS=2` is the **start barrier**: the race is held (the world stands still, on the loading bar) from the moment it appears until the other player's game is
-   there and ready too, then both start together. Without it each game starts when it is ready (the cars start at different times). It gives up after 120 s.
+   there and ready too, then both start together. Without it each game starts when it is ready (the cars start at different times). It gives up after 5 minutes.
 3. Start the same race on both. The log (or terminal) shows `[mp] connecting to ...`, then every 3 s `net up, 1 remote, rtt N ms`, and
    `[mp] remote player 1 (b) drives body ...` when the other player's car is taken over.
 4. What to look for: the other player's car appears at their position and drives as they drive; when a car hits the other, each machine sees its own car react.
