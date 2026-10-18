@@ -26,6 +26,9 @@ namespace
 {
     constexpr uint32_t kBodyListHead = 0x8290BE18;
     constexpr uint32_t kPlayerPosCopy = 0x82A2DBF0;
+    // The game's vehicle table: a fixed vector at 0x82C745A8 ({vtable, data, capacity in bytes, count}, data = 8-byte entries {owner object, 1}), the player first,
+    // then the opponents in creation order. A vehicle's body is the body whose +8 points at that owner object.
+    constexpr uint32_t kVehicleTable = 0x82C745A8;
 
     struct Pose
     {
@@ -161,6 +164,26 @@ namespace
         }
         return v;
     }
+
+    // Bodies of the racing vehicles (player first), 0 where a vehicle's body is not (yet) in the list.
+    std::vector<uint32_t> VehicleBodies(const uint8_t* base)
+    {
+        std::vector<uint32_t> out;
+        const uint32_t data = PPC_LOAD_U32(kVehicleTable + 4);
+        const uint32_t count = PPC_LOAD_U32(kVehicleTable + 12);
+        if (data != kVehicleTable + 16 || count > 16)
+            return out;
+        const std::vector<uint32_t> bodies = Bodies(base);
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            const uint32_t owner = PPC_LOAD_U32(data + 8 * i);
+            uint32_t body = 0;
+            for (uint32_t b : bodies)
+                if (PPC_LOAD_U32(b + 8) == owner) { body = b; break; }
+            out.push_back(body);
+        }
+        return out;
+    }
 }
 
 PPC_FUNC(sub_82528448)
@@ -254,8 +277,8 @@ PPC_FUNC(sub_82528448)
         }
     }
 
-    // Network: remote players drive stand-in bodies. Which bodies: NFSMW_MP_BODIES=i,j,... picks list positions, one per remote player in id order
-    // (the log above shows the list); until the game's opponents are told apart from traffic by their class this is chosen by hand.
+    // Network: each remote player drives one opponent vehicle's body, in the order of the game's vehicle table (player first). NFSMW_MP_BODIES=i,j,... picks list
+    // positions by hand instead (the log above shows the list).
     if (a.net && a.net->Connected() && a.localObj)
     {
         if (a.standIns.size() < a.net->Remotes().size())
@@ -266,14 +289,27 @@ PPC_FUNC(sub_82528448)
                     for (const char* c = e; *c;) { v.push_back(atoi(c)); while (*c && *c != ',') ++c; if (*c) ++c; }
                 return v;
             }();
-            const std::vector<uint32_t> bodies = Bodies(base);
+            std::vector<uint32_t> candidates;
+            if (picks.empty())
+            {
+                for (uint32_t b : VehicleBodies(base))
+                    if (b && b != a.localObj)
+                        candidates.push_back(b);
+            }
+            else
+            {
+                const std::vector<uint32_t> bodies = Bodies(base);
+                for (int p : picks)
+                    if (size_t(p) < bodies.size())
+                        candidates.push_back(bodies[p]);
+            }
             size_t k = 0;
             for (const auto& [id, r] : a.net->Remotes())
             {
-                if (!a.standIns.count(id) && k < picks.size() && size_t(picks[k]) < bodies.size())
+                if (!a.standIns.count(id) && k < candidates.size())
                 {
-                    a.standIns[id] = bodies[picks[k]];
-                    fprintf(stderr, "[mp] remote player %u (%s) drives body #%d %08X\n", id, r.name.c_str(), picks[k], bodies[picks[k]]);
+                    a.standIns[id] = candidates[k];
+                    fprintf(stderr, "[mp] remote player %u (%s) drives body %08X\n", id, r.name.c_str(), candidates[k]);
                 }
                 ++k;
             }

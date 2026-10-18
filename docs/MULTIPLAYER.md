@@ -360,6 +360,9 @@ Pieces (all off unless the environment variables are set; nothing changes for no
 **Checked (one machine, the real server and protocol):** ghost mode: the opponent body follows the local car 3 s late (positions match to a metre) and with a 5 m offset the
 rendered opponent drives next to the player. Network mode: `mp_server` + `mp_bot` (replays the player delayed 3 s, +8 m in x): the game log shows "net up, 1 remote, rtt 74 ms",
 the stand-in body (#1, a grid opponent) sits at the local car's position + 8 m when the delay is short, and 40 m behind it with a 3 s delay.
-**Not done yet:** telling the game's opponents from traffic by class (the list position is chosen by hand), what happens when the local car hits a stand-in (it is overwritten
+**Stand-ins are found without picking by hand:** the game keeps its racing vehicles in a fixed vector at 0x82C745A8 ({vtable, data, capacity in bytes, count}; 8-byte entries
+{owner object, 1}; the player first, then the opponents in creation order); a vehicle's body is the body whose +8 is that owner. Remote players, in id order, drive the opponents in that order
+(`NFSMW_MP_BODIES` still overrides). Checked with `mp_server` + `mp_bot`: "remote player 1 (bot) drives body BBE1A3C0", at the local car's position + the bot's offset.
+**Not done yet:** what happens when the local car hits a stand-in (it is overwritten
 every step, so it is immovable; the plan is to blend the state in and let the game's collision act), AI of the stand-in cars switched off, car model per player, start
 synchronisation, laps and finish shared, a real two-machine run, lobby, modes.
