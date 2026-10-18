@@ -164,3 +164,5 @@ target_include_directories(vblank_lock_sim PRIVATE ${RT})
 # The multiplayer transport (vendored ENet): two peers on loopback, reliable and unreliable channels.
 sb_test(enet_loopback_test)
 target_link_libraries(enet_loopback_test PRIVATE enet)
+sb_test(mp_net_test)
+target_link_libraries(mp_net_test PRIVATE mp_net)

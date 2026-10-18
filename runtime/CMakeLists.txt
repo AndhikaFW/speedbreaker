@@ -16,7 +16,7 @@ target_compile_definitions(XenonUtilsLite PRIVATE NOMINMAX)
 target_compile_options(XenonUtilsLite PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-include cstdlib>)
 
 file(GLOB_RECURSE RUNTIME_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
-list(FILTER RUNTIME_SOURCES EXCLUDE REGEX "/thirdparty/")
+list(FILTER RUNTIME_SOURCES EXCLUDE REGEX "/thirdparty/|/net/mp_")
 # Nayuki's QR Code generator (thirdparty/qrcodegen, vendored, C): the
 # download page's code in Check for Updates. Part of the runtime itself, not
 # a library of its own, so the iOS app (scripts/ios/build.sh) links it too.
@@ -51,6 +51,14 @@ if(WIN32)
     target_link_libraries(enet PUBLIC ws2_32 winmm)
 endif()
 set_target_properties(enet PROPERTIES POSITION_INDEPENDENT_CODE ON)
+# The multiplayer layer without any game code (net/mp_*.cpp): protocol, client and dedicated server. mp_server
+# is a stand-alone program that needs no game files.
+add_library(mp_net STATIC ${CMAKE_CURRENT_SOURCE_DIR}/net/mp_client.cpp ${CMAKE_CURRENT_SOURCE_DIR}/net/mp_server.cpp)
+target_include_directories(mp_net PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/net)
+target_link_libraries(mp_net PUBLIC enet)
+target_compile_features(mp_net PUBLIC cxx_std_20)
+add_executable(mp_server ${CMAKE_CURRENT_SOURCE_DIR}/net/mp_server_main.cpp)
+target_link_libraries(mp_server PRIVATE mp_net)
 add_library(o1heap STATIC ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/o1heap/o1heap.c)
 target_include_directories(o1heap PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/o1heap)
 if(IOS)

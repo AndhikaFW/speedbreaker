@@ -1,0 +1,239 @@
+#include "mp_client.h"
+#include <enet/enet.h>
+#include <chrono>
+#include <cmath>
+#include <deque>
+
+namespace mp
+{
+    namespace
+    {
+        constexpr uint32_t kInterpDelayMs = 100;    // render remote cars this far in the past: about three snapshots
+        constexpr uint32_t kMaxExtrapMs = 250;      // after that hold the last pose
+        constexpr size_t kHistory = 16;
+
+        struct Stamped { uint32_t localMs; CarState s; };
+    }
+
+    CarState Lerp(const CarState& a, const CarState& b, float t)
+    {
+        CarState o = b;
+        for (int i = 0; i < 3; ++i)
+        {
+            o.pos[i] = a.pos[i] + (b.pos[i] - a.pos[i]) * t;
+            o.vel[i] = a.vel[i] + (b.vel[i] - a.vel[i]) * t;
+            o.angVel[i] = a.angVel[i] + (b.angVel[i] - a.angVel[i]) * t;
+        }
+        float dot = 0;
+        for (int i = 0; i < 4; ++i) dot += a.rot[i] * b.rot[i];
+        float s = dot < 0 ? -1.f : 1.f;   // shortest arc
+        float n = 0;
+        for (int i = 0; i < 4; ++i)
+        {
+            o.rot[i] = a.rot[i] * (1 - t) + b.rot[i] * s * t;   // nlerp: fine for the small steps between snapshots
+            n += o.rot[i] * o.rot[i];
+        }
+        n = 1.f / std::sqrt(n > 1e-12f ? n : 1.f);
+        for (float& f : o.rot) f *= n;
+        o.steer = a.steer + (b.steer - a.steer) * t;
+        o.throttle = a.throttle + (b.throttle - a.throttle) * t;
+        o.brake = a.brake + (b.brake - a.brake) * t;
+        return o;
+    }
+
+    struct Client::Impl
+    {
+        ENetHost* host = nullptr;
+        ENetPeer* peer = nullptr;
+        std::string name;
+        bool welcome = false, failed = false;
+        uint8_t myId = 0;
+        uint32_t seq = 0;
+        std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+        std::map<uint8_t, Remote> remotes;
+        std::map<uint8_t, std::deque<Stamped>> hist;
+
+        uint32_t Now() const
+        {
+            return uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count());
+        }
+        void Send(int ch, const Writer& w, bool reliable)
+        {
+            if (peer)
+                enet_peer_send(peer, ch, enet_packet_create(w.b.data(), w.b.size(), reliable ? ENET_PACKET_FLAG_RELIABLE : ENET_PACKET_FLAG_UNSEQUENCED));
+        }
+    };
+
+    Client::Client() : m(new Impl) {}
+    Client::~Client() { Disconnect(); }
+
+    bool Client::Connect(const std::string& hostName, uint16_t port, const std::string& name)
+    {
+        if (enet_initialize() != 0) return false;
+        m->host = enet_host_create(nullptr, 1, kChannels, 0, 0);
+        ENetAddress a{};
+        if (!m->host || enet_address_set_host(&a, hostName.c_str()) != 0) return false;
+        a.port = port;
+        m->peer = enet_host_connect(m->host, &a, kChannels, 0);
+        m->name = name;
+        m->welcome = m->failed = false;
+        return m->peer != nullptr;
+    }
+
+    void Client::Disconnect()
+    {
+        if (m->peer)
+        {
+            enet_peer_disconnect_now(m->peer, 0);
+            m->peer = nullptr;
+        }
+        if (m->host)
+        {
+            enet_host_destroy(m->host);
+            m->host = nullptr;
+        }
+        m->welcome = false;
+        m->remotes.clear();
+        m->hist.clear();
+    }
+
+    void Client::Service()
+    {
+        if (!m->host) return;
+        ENetEvent ev;
+        while (enet_host_service(m->host, &ev, 0) > 0)
+        {
+            if (ev.type == ENET_EVENT_TYPE_CONNECT)
+            {
+                Writer w(Msg::Hello); w.u32(kProtocolVersion); w.str(m->name);
+                m->Send(kChanEvent, w, true);
+            }
+            else if (ev.type == ENET_EVENT_TYPE_DISCONNECT)
+            {
+                m->failed = true;
+                m->welcome = false;
+                m->peer = nullptr;
+            }
+            else if (ev.type == ENET_EVENT_TYPE_RECEIVE)
+            {
+                Reader r(ev.packet->data, ev.packet->dataLength);
+                switch (r.type())
+                {
+                case Msg::Welcome:
+                    m->myId = r.u8();
+                    m->welcome = r.ok();
+                    break;
+                case Msg::Reject:
+                    m->failed = true;
+                    break;
+                case Msg::PlayerJoin:
+                {
+                    uint8_t id = r.u8();
+                    std::string n = r.str();
+                    if (r.ok() && id != m->myId)
+                    {
+                        m->remotes[id].id = id;
+                        m->remotes[id].name = n;
+                    }
+                    break;
+                }
+                case Msg::PlayerLeave:
+                {
+                    uint8_t id = r.u8();
+                    m->remotes.erase(id);
+                    m->hist.erase(id);
+                    break;
+                }
+                case Msg::Snapshot:
+                {
+                    uint8_t n = r.u8();
+                    uint32_t now = m->Now();
+                    for (uint8_t i = 0; i < n && r.ok(); ++i)
+                    {
+                        uint8_t id = r.u8();
+                        CarState c = r.car();
+                        if (!r.ok()) break;
+                        Remote& rm = m->remotes[id];
+                        rm.id = id;
+                        auto& h = m->hist[id];
+                        if (!h.empty() && int32_t(c.seq - h.back().s.seq) <= 0)
+                            continue;   // old or duplicate
+                        rm.latest = c;
+                        rm.hasCar = true;
+                        h.push_back({now, c});
+                        if (h.size() > kHistory) h.pop_front();
+                    }
+                    break;
+                }
+                case Msg::Chat:
+                {
+                    uint8_t id = r.u8();
+                    std::string t = r.str();
+                    if (r.ok() && onChat) onChat(id, t);
+                    break;
+                }
+                default: break;
+                }
+                enet_packet_destroy(ev.packet);
+            }
+        }
+    }
+
+    bool Client::Connected() const { return m->welcome; }
+    bool Client::Failed() const { return m->failed; }
+    uint8_t Client::MyId() const { return m->myId; }
+    uint32_t Client::NowMs() const { return m->Now(); }
+    uint32_t Client::RttMs() const { return m->peer ? m->peer->roundTripTime : 0; }
+    const std::map<uint8_t, Remote>& Client::Remotes() const { return m->remotes; }
+
+    void Client::SendCar(const CarState& c)
+    {
+        if (!m->welcome) return;
+        CarState s = c;
+        s.seq = ++m->seq;
+        s.ownerTimeMs = m->Now();
+        Writer w(Msg::CarState);
+        w.car(s);
+        m->Send(kChanState, w, false);
+    }
+
+    void Client::SendChat(const std::string& text)
+    {
+        Writer w(Msg::Chat); w.str(text);
+        m->Send(kChanEvent, w, true);
+    }
+
+    bool Client::RemoteCar(uint8_t id, uint32_t nowMs, CarState& out) const
+    {
+        auto it = m->hist.find(id);
+        if (it == m->hist.end() || it->second.empty()) return false;
+        const auto& h = it->second;
+        uint32_t target = nowMs - kInterpDelayMs;
+        // Arrival times are jittery, so use them only to order and to pick the pair around `target`.
+        if (int32_t(target - h.front().localMs) <= 0)
+        {
+            out = h.front().s;
+            return true;
+        }
+        for (size_t i = 1; i < h.size(); ++i)
+        {
+            if (int32_t(target - h[i].localMs) <= 0)
+            {
+                const Stamped &a = h[i - 1], &b = h[i];
+                uint32_t span = b.localMs - a.localMs;
+                float t = span ? float(target - a.localMs) / float(span) : 1.f;
+                out = Lerp(a.s, b.s, t < 0 ? 0 : t > 1 ? 1 : t);
+                return true;
+            }
+        }
+        // Newer than anything received: dead reckon from the last state.
+        const Stamped& l = h.back();
+        uint32_t dt = target - l.localMs;
+        if (dt > kMaxExtrapMs) dt = kMaxExtrapMs;
+        out = l.s;
+        float s = float(dt) * 0.001f;
+        for (int i = 0; i < 3; ++i)
+            out.pos[i] += l.s.vel[i] * s;
+        return true;
+    }
+}
