@@ -71,6 +71,15 @@ int main()
     mp::CarState m = mp::Lerp(p, q, 0.5f);
     assert(std::fabs(m.rot[0] * m.rot[0] + m.rot[3] * m.rot[3] - 1.f) < 1e-4f);
 
+    // A player that stops sending is given up on after two seconds (the stand-in goes back to the game's own driver).
+    {
+        mp::CarState seen;
+        assert(b.RemoteCar(a.MyId(), b.NowMs(), seen));
+        auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(2300);
+        while (std::chrono::steady_clock::now() < until) { server.Service(1); a.Service(); b.Service(); }
+        assert(!b.RemoteCar(a.MyId(), b.NowMs(), seen));
+    }
+
     b.Disconnect();
     Pump(server, a, b, 300);
     assert(server.PlayerCount() == 1 && a.Remotes().empty());

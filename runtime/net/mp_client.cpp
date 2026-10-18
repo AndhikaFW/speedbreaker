@@ -11,6 +11,7 @@ namespace mp
         constexpr uint32_t kInterpDelayMs = 100;    // render remote cars this far in the past: about three snapshots
         constexpr uint32_t kMaxExtrapMs = 250;      // after that hold the last pose
         constexpr size_t kHistory = 16;
+        constexpr uint32_t kStaleMs = 2000;         // no packet for this long: RemoteCar() reports nothing
 
         struct Stamped { uint32_t localMs; CarState s; };
     }
@@ -208,6 +209,8 @@ namespace mp
         auto it = m->hist.find(id);
         if (it == m->hist.end() || it->second.empty()) return false;
         const auto& h = it->second;
+        if (nowMs - h.back().localMs > kStaleMs)
+            return false;   // the player stopped sending: let the game's own driver have the car back
         uint32_t target = nowMs - kInterpDelayMs;
         // Arrival times are jittery, so use them only to order and to pick the pair around `target`.
         if (int32_t(target - h.front().localMs) <= 0)

@@ -203,9 +203,25 @@ PPC_FUNC(sub_82528448)
     const float player[3] = { LoadF(base, kPlayerPosCopy), LoadF(base, kPlayerPosCopy + 4), LoadF(base, kPlayerPosCopy + 8) };
     const float here[3] = { LoadF(base, s + 48), LoadF(base, s + 52), LoadF(base, s + 56) };
     const bool havePlayer = std::fabs(player[0]) + std::fabs(player[1]) > 1.0f;   // the copy is zero before a race
-    if (havePlayer && (obj == a.localObj || (!a.localObj && Dist(player, here) < 1.0f)))
+    bool isLocal = havePlayer && obj == a.localObj;
+    if (havePlayer && !isLocal && Dist(player, here) < 1.0f)
     {
-        a.localObj = obj;
+        // Another body sits at the player's position. Take it over only if the body we had is no longer there (a new race): a stand-in can overlap the car.
+        const uint32_t ls = a.localObj ? PPC_LOAD_U32(a.localObj + 28) : 0;
+        const float old[3] = { ls ? LoadF(base, ls + 48) : 0.f, ls ? LoadF(base, ls + 52) : 0.f, ls ? LoadF(base, ls + 56) : 0.f };
+        isLocal = !ls || Dist(player, old) > 3.0f;
+    }
+    if (isLocal)
+    {
+        if (obj != a.localObj)
+        {
+            // A new race builds new bodies: forget the old ones (the stand-ins are looked up again) and say so.
+            fprintf(stderr, "[mp] local car body is now %08X\n", obj);
+            a.localObj = obj;
+            a.standIns.clear();
+            a.standInObj = 0;
+            a.history.clear();
+        }
         const Pose pose = ReadPose(base, s);
         if (a.ghost)
         {
