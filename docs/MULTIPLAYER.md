@@ -379,3 +379,14 @@ synchronisation, laps and finish shared, a real two-machine run, lobby, modes.
   event id (0x319915CD) in a whole race, so the countdown is not driven through it; the strings `StartCountdown`, `NotifyCountdownDone`, `EShowRaceCountdown` and the OLMGR messages
   (`OLMGR: ReadyStartLine called.`, `mPostCountdownStartRaceTime`) are where to look next.
 - Not done: car model per player (the opponent keeps whichever car the game picked), minimap blips for remote cars, start barrier, laps/finish sharing, lobby and modes.
+
+## Grid slots and the start barrier (2026-10-19)
+- **Start barrier** (`NFSMW_MP_PLAYERS=n`, game/mp_adapter.cpp + game/frame_time.cpp): when the race appears (the vehicle table's first entry is a new body, about 0.4 s before the intro) the
+  world is held (`game::SetWorldHold`: the frame is given 0 time and the stepper 0 steps), each game sends its car state with `kFlagReady`, and everyone is released when n-1 others are ready
+  (timeout 5 minutes). Checked between ARM and x86: both leave the loading bar together, countdown and GO together.
+- **Grid slots**: every game puts its own player in slot 0 and drives all cars into the grid with `sub_82420FC0(vehicle, dt, pose, flag)` (pose = a 4x4 matrix in the body's axes, translation row at
+  +48), one call per racing vehicle per frame in the vehicle table's order. The local car's call is given the pose that join-order slot's vehicle was given (copy of the 16 words), so the car
+  starts in the slot of its join order. A remote car then sits in the opponent body that stood in that slot. Checked: separate lanes at the line on both machines, contact works, they stay in their lanes after GO.
+- **Not done**: car models. The opponent is whatever the race script created (`sub_82333680`, the native that creates a racing vehicle, is called per opponent with a 32-bit key in r4 that is a racer
+  (Attrib collection) key, not a car preset); the car presets are hashes in the game's data (no ASCII `lexusis300` anywhere, only display names like "Lexus IS300"). To show the other player's real car the race
+  has to be created with that car, i.e. the racer/preset that the script hands to `sub_82333680` has to be chosen, which needs the Attrib tables of racers and presets decoded. Probes: `NFSMW_PROBE_RACE=4`.

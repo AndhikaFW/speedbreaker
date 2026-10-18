@@ -12,6 +12,11 @@
 #include <kernel/function.h>
 
 extern "C" PPC_FUNC(__imp__sub_82365788);
+extern "C" PPC_FUNC(__imp__sub_82144CA0);
+extern "C" PPC_FUNC(__imp__sub_82333680);
+extern "C" PPC_FUNC(__imp__sub_824729E0);
+extern "C" PPC_FUNC(__imp__sub_82473100);
+extern "C" PPC_FUNC(__imp__sub_82473870);
 extern "C" PPC_FUNC(__imp__sub_8236C180);
 extern "C" PPC_FUNC(__imp__sub_8233DC58);
 extern "C" PPC_FUNC(__imp__sub_8232D7D8);
@@ -155,3 +160,73 @@ PPC_FUNC(sub_82365788)
         LogCall("sub_82365788 (StartRace)", ctx, base);
     __imp__sub_82365788(ctx, base);
 }
+
+// sub_82144CA0(out, text): the game's string-key constructor. sub_82333680 (the script native that creates a racing vehicle) calls it at 0x82333764 with the car's
+// preset name (a script parameter); NFSMW_PROBE_RACE=4 logs those names.
+PPC_FUNC(sub_82144CA0)
+{
+    static const bool on = std::getenv("NFSMW_PROBE_RACE") && std::getenv("NFSMW_PROBE_RACE")[0] == '4';
+    if (on)
+    {
+        static std::mutex m;
+        static std::set<std::string> seen;
+        const std::string t = Text(base, ctx.r4.u32);
+        bool upper = t.size() >= 6;
+        for (char c : t)
+            upper = upper && ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_');
+        if (upper)
+        {
+            std::lock_guard<std::mutex> g(m);
+            if (seen.insert(t).second)
+                fprintf(stderr, "[key] \"%s\" lr=%08X\n", t.c_str(), uint32_t(ctx.lr));
+        }
+    }
+    __imp__sub_82144CA0(ctx, base);
+}
+
+// sub_82333680(script call, car): the script native that creates a racing vehicle (docs/MULTIPLAYER.md); NFSMW_PROBE_RACE=4 dumps its two arguments.
+PPC_FUNC(sub_82333680)
+{
+    static const bool on = std::getenv("NFSMW_PROBE_RACE") && std::getenv("NFSMW_PROBE_RACE")[0] == '4';
+    if (on)
+    {
+        auto words = [&](uint32_t a, int n) {
+            std::string out;
+            for (int i = 0; i < n; ++i)
+            {
+                char b[16];
+                snprintf(b, sizeof b, " %08X", PPC_LOAD_U32(a + 4 * i));
+                out += b;
+            }
+            return out;
+        };
+        fprintf(stderr, "[create] sub_82333680 r3=%08X:%s | r4=%08X:%s\n", ctx.r3.u32, words(ctx.r3.u32, 12).c_str(), ctx.r4.u32, ctx.r4.u32 > 0x10000 ? words(ctx.r4.u32, 8).c_str() : "");
+    }
+    __imp__sub_82333680(ctx, base);
+}
+
+// The player's car creation chain (the first vehicle of a race): NFSMW_PROBE_RACE=4 dumps the arguments.
+#define PLAYER_PROBE(addr)                                                                                                                                  \
+    PPC_FUNC(sub_##addr)                                                                                                                                    \
+    {                                                                                                                                                       \
+        static const bool on = std::getenv("NFSMW_PROBE_RACE") && std::getenv("NFSMW_PROBE_RACE")[0] == '4';                                                \
+        if (on)                                                                                                                                             \
+        {                                                                                                                                                   \
+            auto words = [&](uint32_t a, int n) {                                                                                                           \
+                std::string out;                                                                                                                            \
+                for (int i = 0; i < n && a > 0x10000 && a < 0xD0000000; ++i)                                                                                \
+                {                                                                                                                                           \
+                    char b[16];                                                                                                                             \
+                    snprintf(b, sizeof b, " %08X", PPC_LOAD_U32(a + 4 * i));                                                                                \
+                    out += b;                                                                                                                               \
+                }                                                                                                                                           \
+                return out;                                                                                                                                 \
+            };                                                                                                                                              \
+            fprintf(stderr, "[create] sub_" #addr " r3=%08X r4=%08X r5=%08X r6=%08X | r3:%s | r4:%s | r5:%s\n", ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, \
+                words(ctx.r3.u32, 8).c_str(), words(ctx.r4.u32, 8).c_str(), words(ctx.r5.u32, 8).c_str());                                                  \
+        }                                                                                                                                                   \
+        __imp__sub_##addr(ctx, base);                                                                                                                       \
+    }
+PLAYER_PROBE(824729E0)
+PLAYER_PROBE(82473100)
+PLAYER_PROBE(82473870)
