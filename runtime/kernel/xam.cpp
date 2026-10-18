@@ -181,8 +181,8 @@ void XamNotifyLiveConnected()
     static bool done = false;
     if (done)
         return;
-    done = true;
     std::lock_guard lock(gListenersMutex);
+    int delivered = 0;
     auto send = [&](uint32_t id, uint32_t param) {
         int n = 0;
         for (const auto& listener : gListeners)
@@ -191,11 +191,13 @@ void XamNotifyLiveConnected()
                 listener->notifications.emplace_back(id, param);
                 n++;
             }
+        delivered += n;
         fprintf(stderr, "[live] notification %08X (%08X) queued for %d listeners\n", id, param, n);
     };
     send(0x0000000A, 1);          // XN_SYS_SIGNINCHANGED: one user signed in
     send(0x02000001, 0x001510F0);  // XN_LIVE_CONNECTIONCHANGED: XONLINE_S_LOGON_CONNECTION_ESTABLISHED
     send(0x02000002, 1);          // XN_LIVE_LINK_STATE_CHANGED: linked
+    done = delivered > 0;          // until a listener exists to hear it, try again at the next call
 }
 
 void XamNotifyEnqueueEvent(uint32_t dwId, uint32_t dwParam)
@@ -212,6 +214,7 @@ void XamNotifyEnqueueEvent(uint32_t dwId, uint32_t dwParam)
 
 bool XNotifyGetNext(uint32_t hNotification, uint32_t dwMsgFilter, be<uint32_t>* pdwId, be<uint32_t>* pParam)
 {
+    static const bool logNotify = std::getenv("NFSMW_NET_LOG") != nullptr;
     auto& listener = *GetKernelObject<XamListener>(hNotification);
     std::lock_guard lock(gListenersMutex);
 
@@ -228,7 +231,8 @@ bool XNotifyGetNext(uint32_t hNotification, uint32_t dwMsgFilter, be<uint32_t>* 
                     *pParam = std::get<1>(listener.notifications[i]);
 
                 listener.notifications.erase(listener.notifications.begin() + i);
-
+                if (logNotify)
+                    fprintf(stderr, "[net] XNotifyGetNext(filter %08X) delivers a notification\n", dwMsgFilter);
                 return true;
             }
         }

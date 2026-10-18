@@ -268,8 +268,11 @@ uint32_t XamUserWriteProfileSettings(uint32_t titleId, uint32_t userIndex, uint3
     return Finish(overlapped, X_ERROR_SUCCESS);
 }
 
+void NetLogChain(const char* what);  // kernel/imports_net.cpp
+
 uint32_t XamUserGetXUID(uint32_t userIndex, uint32_t typeMask, be<uint64_t>* xuid)
 {
+    NetLogChain("XamUserGetXUID");
     if (userIndex != 0)
         return X_ERROR_NO_SUCH_USER;
     *xuid = kXuid;

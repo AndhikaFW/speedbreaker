@@ -286,3 +286,27 @@ directory server answers with where the next servers are (account, lobby); login
 public key in the executable, replacing that key in the game's memory at start), the directory, authentication, the lobby and game-room services, and finally the
 peer-to-peer race protocol the lobby sets up (the SERVERSTATE machine and CARSPAM messages above). None of it is documented that I know of; each message's form
 would be read from the game's own code and tested one reply at a time. That is a long project (many sessions), with a native result at the end.
+
+## The game's own direct-connect mode (found 2026-10-18): online.cfg
+No EA server is needed for the game's own network race: the executable contains a developer configuration that skips the lobby entirely.
+- **The file.** `sub_82538950` loads `D:\online.cfg` (here `game/files/online.cfg`), `KEY=VALUE` lines, **CRLF line endings required** (with plain LF only the first lines were
+  applied, found by reading the parsed globals back from the running game); `sub_82538C10` applies each key to a global (`stricmp`, then `atoi` or a string copy).
+  Keys: `SKIPFE`, `SKIPFEPLAYERCAR`, `SKIPFENUMAICARS`, `SKIPFENUMLAPS`, `SKIPFETRACKNUMBER`, `SKIPMOVIES` (start a race without the front end), `ONLINEENABLED`,
+  `ISSERVER`, `NUMCLIENTCARS`, `SERVERIP`, `SERVERPORT`, `CLIENTIP0..2` (a direct host and clients), `NetworkUseLobbies`, `NetworkLobbyIP/Port`, `NetworkUserName`,
+  `NetworkPersona`, `NetworkPasswd`, `NetworkGameName`, `AutomaticLogin`, `NetworkDebug`, `GAMESPEED`, `USERECORDABLE`, `FORCECLIENTSHUTDOWN`, `SOUND`, `DIAGNOSTICLEVEL`.
+- **Nothing in the release build calls the loader** (no caller, no pointer to it), but the code that reads what it sets is live: the main loop (`sub_823B0008`) creates the game
+  (`sub_823AF408`), reads `SKIPFE` (`0x82A2CD44`) and starts either a race straight away (`sub_822BE238`) or the front end. **`NFSMW_ONLINE_CFG=1`** (game/online_cfg.cpp) calls
+  the loader once, right after the game is created. With `SKIPFE=1` the game does skip the front end (a loading screen replaces the title).
+- **The network race setup** is `sub_822BE418` (called when `ONLINEENABLED` is set): it starts the network module (`sub_82539A38`: the EA DirtySock-style `NetConn` state
+  machine and a lobby thread `sub_8253A4E0`), **waits for a 64-bit value at `0x82A2D7C8` to become non-zero** (the local identity/address formatted as `$<16 hex digits>` by
+  `sub_8281B578`), then as a server (`ISSERVER`) calls `sub_82546F80(id, 3)` or as a client `sub_825471D8` towards `SERVERIP`, registers each `CLIENTIP<n>` as an expected player
+  (`sub_825479D8`, names "TheHost", "Client%d") and waits until `NUMCLIENTCARS` players have joined.
+- **Where it stops now:** the `NetConn` state machine (`sub_82819520`, states 0-4) polls `XNetGetTitleXnAddr` about 1000 times a second and never leaves state 1. It decodes the
+  address flags (`sub_82819018`: `GATEWAY|DNS` -> '+isp'; the real flag values are NONE 1, ETHERNET 2, STATIC 4, DHCP 8, PPPOE 0x10, GATEWAY 0x20, DNS 0x40, ONLINE 0x80,
+  TROUBLESHOOT 0x8000; an earlier version returned wrong values), and drives itself from Xbox Live notifications (`XN_LIVE_CONNECTIONCHANGED` 0x02000001 with status codes
+  0x801510xx for failures, `XN_LIVE_LINK_STATE_CHANGED` 0x02000002). The notifications are delivered (`NFSMW_FAKE_LIVE=1`), the address is accepted, and state 1 still requires
+  `[conn+328] == 1` and `[conn+329] == 0` (set by the module's start-up parameter string, passed to `sub_828198C0` as `0x8206xxxx+15936`), which has not been read yet.
+- **Tools** (not in the repo, in `~/.cache/NFS-MostWanted/tools`): `image.bin` (a dump of the guest image), `xref.py` (code and data references to an address), `callers.py`,
+  `fstr.py` (strings used by a code range), `live_probe.sh`, `launch_sp.sh`, `view.sh`, `label.sh`. The in-repo ones: `NFSMW_PROBE_RACE`, `NFSMW_NET_LOG`, `NFSMW_BT_OPEN`.
+- **Next:** read `sub_828198C0` (the `NetConn` start-up and its parameter string) and the state machine's exits so the network module reaches its connected state with sockets
+  of its own (no EA server involved), then the race setup above. Then the race itself runs on the game's own protocol (SERVERSTATE, CARSPAM), one view per machine.

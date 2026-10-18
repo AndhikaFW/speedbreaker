@@ -12,6 +12,8 @@
 #include "dispatcher.h"
 #include "function.h"
 #include "memory.h"
+#include "xam.h"
+#include <cpu/ppc_context.h>
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -26,6 +28,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <format>
 #include <map>
 #include <mutex>
 #include <thread>
@@ -48,6 +51,28 @@ namespace
     constexpr uint32_t WSAEWOULDBLOCK = 10035, WSAEINPROGRESS = 10036, WSAENOTSOCK = 10038, WSAEINVAL = 10022, WSAECONNRESET = 10054,
                        WSAECONNREFUSED = 10061, WSAEADDRINUSE = 10048, WSAETIMEDOUT = 10060, WSAENOTCONN = 10057, WSAEMSGSIZE = 10040,
                        WSAEOPNOTSUPP = 10045, WSAEFAULT = 10014, WSAEAFNOSUPPORT = 10047, WSAENETUNREACH = 10051, WSAEHOSTUNREACH = 10065;
+
+    // NFSMW_NET_LOG=1: the guest call chain of the importing function (its return address, then each caller's), to see which game code makes a network call.
+    void LogChain(const char* what)
+    {
+        if (!s_log)
+            return;
+        PPCContext* ctx = GetPPCContext();
+        if (!ctx)
+            return;
+        uint8_t* base = g_memory.base;
+        std::string chain = std::format("{:08X}", uint32_t(ctx->lr));
+        uint32_t frame = ctx->r1.u32;
+        for (int depth = 0; depth < 12 && frame; depth++)
+        {
+            const uint32_t older = PPC_LOAD_U32(frame);
+            if (older <= frame || older - frame > 0x100000)
+                break;
+            chain += std::format(" {:08X}", PPC_LOAD_U32(older - 8));
+            frame = older;
+        }
+        fprintf(stderr, "[net]   chain of %s: %s\n", what, chain.c_str());
+    }
 
     thread_local uint32_t t_lastError = 0;
 
@@ -195,6 +220,8 @@ namespace
     }
 }
 
+void NetLogChain(const char* what) { LogChain(what); }  // for other import files (NFSMW_NET_LOG=1)
+
 // ---- XamAlloc -------------------------------------------------------------------
 
 uint32_t XamAlloc(uint32_t flags, uint32_t size, be<uint32_t>* out)
@@ -258,6 +285,20 @@ void NetDll_WSASetLastError(uint32_t error)
 // XNADDR: ina (IN_ADDR, 4), inaOnline (4), wPortOnline (2), abEnet (6), abOnline (20): 36 bytes.
 uint32_t NetDll_XNetGetTitleXnAddr(uint32_t caller, uint8_t* xnaddr)
 {
+    {
+        static std::atomic<uint32_t> calls{ 0 };
+        const uint32_t n = calls.fetch_add(1) + 1;
+        if (n == 10 || n == 100 || n == 1000 || n % 5000 == 0)
+            NETLOG("XNetGetTitleXnAddr: %u calls so far", n);
+    }
+    // NFSMW_FAKE_LIVE=1: the game's NetConn state machine waits for the Live notifications (connection changed, link state) once it has an address.
+    if (std::getenv("NFSMW_FAKE_LIVE"))
+        XamNotifyLiveConnected();
+    {
+        static std::atomic<int> n{ 0 };
+        if (n.fetch_add(1) < 2)
+            LogChain("XNetGetTitleXnAddr");
+    }
     if (xnaddr)
     {
         memset(xnaddr, 0, 36);
@@ -265,11 +306,17 @@ uint32_t NetDll_XNetGetTitleXnAddr(uint32_t caller, uint8_t* xnaddr)
         xnaddr[0] = uint8_t(ina >> 24); xnaddr[1] = uint8_t(ina >> 16); xnaddr[2] = uint8_t(ina >> 8); xnaddr[3] = uint8_t(ina);
         // a made-up but fixed hardware address derived from the address, so peers can tell machines apart
         xnaddr[10] = 0x00; xnaddr[11] = 0x22; xnaddr[12] = 0x48; xnaddr[13] = xnaddr[1]; xnaddr[14] = xnaddr[2]; xnaddr[15] = xnaddr[3];
+        // the online (Xbox Live) address: the same, and a made-up online id
+        memcpy(xnaddr + 4, xnaddr, 4);   // inaOnline
+        for (int i = 0; i < 20; i++)
+            xnaddr[16 + i] = uint8_t(0x40 + i + xnaddr[3]);  // abOnline
     }
     static bool logged = false;
     if (!std::exchange(logged, true))
         NETLOG("XNetGetTitleXnAddr: %u.%u.%u.%u", LocalAddress() >> 24, (LocalAddress() >> 16) & 255, (LocalAddress() >> 8) & 255, LocalAddress() & 255);
-    return 0x04;  // XNET_GET_XNADDR_STATIC
+    // XNET_GET_XNADDR_ETHERNET 0x02 | STATIC 0x04 | GATEWAY 0x20 | DNS 0x40 | ONLINE 0x80. The game's NetConn state machine (sub_82819018) maps the bits to
+    // a status: GATEWAY or DNS present is "connected to an ISP" ('+isp') and lets it go on; with fewer it keeps polling ('~eth', '~dns', '~sta').
+    return 0x02 | 0x04 | 0x20 | 0x40 | 0x80;
 }
 
 uint32_t NetDll_XNetGetDebugXnAddr(uint32_t caller, uint8_t* xnaddr)
@@ -306,6 +353,7 @@ uint32_t NetDll_XNetGetConnectStatus(uint32_t caller, uint32_t ina)
 
 int NetDll_XNetConnect(uint32_t caller, uint32_t ina)
 {
+    LogChain("XNetConnect");
     NETLOG("XNetConnect(%08X)", ina);
     return 0;
 }
@@ -338,6 +386,7 @@ int NetDll_XNetUnregisterKey(uint32_t caller, const uint8_t* kid)
 
 int NetDll_XNetXnAddrToInAddr(uint32_t caller, const uint8_t* xnaddr, const uint8_t* kid, uint8_t* ina)
 {
+    LogChain("XnAddrToInAddr");
     if (!xnaddr || !ina)
         return WSAEINVAL;
     memcpy(ina, xnaddr, 4);  // the secure address is the machine's real address
@@ -475,6 +524,7 @@ int NetDll_XNetQosGetListenStats(uint32_t caller, const uint8_t* kid, uint8_t* s
 
 uint32_t NetDll_socket(uint32_t caller, int af, int type, int protocol)
 {
+    LogChain("socket");
     if (af != 2 || (type != 1 && type != 2))
     {
         NETLOG("socket(af %d, type %d, proto %d): refused", af, type, protocol);
@@ -596,6 +646,7 @@ int NetDll_getsockopt(uint32_t caller, uint32_t s, int level, int name, uint8_t*
 
 int NetDll_bind(uint32_t caller, uint32_t s, const uint8_t* name, int length)
 {
+    LogChain("bind");
     sockaddr_in a;
     const int fd = HostFd(s);
     if (fd < 0)
@@ -615,6 +666,7 @@ int NetDll_bind(uint32_t caller, uint32_t s, const uint8_t* name, int length)
 
 int NetDll_connect(uint32_t caller, uint32_t s, const uint8_t* name, int length)
 {
+    LogChain("connect");
     sockaddr_in a;
     const int fd = HostFd(s);
     if (fd < 0)
