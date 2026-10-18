@@ -16,6 +16,7 @@
 #include <net/mp_math.h>
 #include <chrono>
 #include <cmath>
+#include <array>
 #include <deque>
 #include <map>
 #include <memory>
@@ -97,9 +98,8 @@ namespace
         std::unique_ptr<mp::Client> net;
         std::string server, name = "player";
         double lastSend = 0, lastTry = 0;
-        bool gridDone = false;                  // this race: the local car has been put in its own grid slot (or the race had already started)
-        double localSince = 0, connectedAt = 0, lastTable = -1, stableSince = 0;
-        float stablePos[3] = {};
+        std::map<uint8_t, std::array<float, 3>> remoteStart;   // where each remote car was when first drawn: the grid offset fades with the distance from it
+        double localSince = 0, connectedAt = 0, lastTable = -1;
         std::map<uint8_t, uint32_t> standIns;   // remote player id -> body object
         double lastLog = -10;
         std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
@@ -162,7 +162,7 @@ namespace
     // from the pose it starts the step with, so the remote car is where its player is when it is hit, and the step's own drift is undone afterwards.
     void ApplyRemote(Adapter& a, uint8_t* base, uint32_t obj)
     {
-        if (!a.net || !a.net->Connected() || !a.gridDone)
+        if (!a.net || !a.net->Connected())
             return;
         const uint32_t s = PPC_LOAD_U32(obj + 28);
         if (!s)
@@ -177,6 +177,25 @@ namespace
             Pose out;
             mp::QuatToMat(c.rot, out.m);
             for (int i = 0; i < 3; ++i) { out.pos[i] = c.pos[i]; out.vel[i] = c.vel[i]; out.ang[i] = c.angVel[i]; }
+            // Every game puts its own player in grid slot 0, so on the grid all cars would stand in one place. Show each remote car beside ours instead, 3.5 m
+            // per step of join order along the car's side axis, and let the shift fade out over the first 20 m that car drives, after which it is where its player is.
+            {
+                auto it = a.remoteStart.find(id);
+                if (it == a.remoteStart.end())
+                    it = a.remoteStart.emplace(id, std::array<float, 3>{ out.pos[0], out.pos[1], out.pos[2] }).first;
+                const float travelled = Dist(out.pos, it->second.data());
+                const float fade = travelled >= 20.f ? 0.f : 1.f - travelled / 20.f;
+                int d = 0;   // join-order rank of that player minus ours
+                for (const auto& [rid, r] : a.net->Remotes())
+                {
+                    if (rid < id) ++d;
+                    if (rid < a.net->MyId()) --d;
+                }
+                if (id > a.net->MyId()) ++d;   // the local player is before them
+                const float shift = 3.5f * float(d) * fade;
+                for (int i = 0; i < 3; ++i)
+                    out.pos[i] += out.m[1][i] * shift;
+            }
             WritePose(base, s, out);
             return;
         }
@@ -212,7 +231,7 @@ PPC_FUNC(sub_82528448)
             a.standIns.clear();
             a.standInObj = 0;
             a.history.clear();
-            a.gridDone = false;
+            a.remoteStart.clear();
             a.localSince = now;
         }
     }
@@ -241,39 +260,10 @@ PPC_FUNC(sub_82528448)
                     fprintf(stderr, "[mp] connecting to %s:%u as %s\n", host.c_str(), port, a.name.c_str());
             }
             a.net->Service();
-            // Every player starts in the player slot of their own game, so on the grid the cars would overlap: player n (in join order) takes the n-th grid
-            // slot (where that machine's n-th opponent stands), before the race starts.
             if (a.net->Connected() && a.connectedAt == 0)
                 a.connectedAt = now;
             if (!a.net->Connected())
                 a.connectedAt = 0;
-            if (!a.gridDone && a.net->Connected() && now - a.connectedAt > 0.5)   // by then the list of players already there has arrived
-            {
-                // Stationary = the position has not moved for a second (the cars roll into the grid on their own before the countdown, with no velocity).
-                if (Dist(pose.pos, a.stablePos) > 0.05f)
-                {
-                    memcpy(a.stablePos, pose.pos, sizeof a.stablePos);
-                    a.stableSince = now;
-                }
-                if (now - a.stableSince > 1.0)
-                {
-                    // The cars are stationary on the grid: take this player's slot (the pose of the game's n-th vehicle, which is still its own AI car, since the remote
-                    // cars are not written until this is done).
-                    a.gridDone = true;
-                    size_t rank = 0;
-                    for (const auto& [id, r] : a.net->Remotes())
-                        if (id < a.net->MyId())
-                            ++rank;
-                    const std::vector<uint32_t> vb = VehicleBodies(base);
-                    if (rank > 0 && rank < vb.size() && vb[rank])
-                    {
-                        WritePose(base, s, ReadPose(base, PPC_LOAD_U32(vb[rank] + 28)));
-                        fprintf(stderr, "[mp] player %zu in join order: moved to grid slot %zu\n", rank, rank);
-                    }
-                }
-                else if (now - a.localSince > 90.0)
-                    a.gridDone = true;   // joined a race that is already under way
-            }
             if (a.net->Failed() && now - a.lastTry > 5.0)
             {
                 // The server went away or refused us: try again every few seconds (the stand-ins are looked up again once it is back).
@@ -338,7 +328,7 @@ PPC_FUNC(sub_82528448)
 
     // Network: each remote player drives one opponent vehicle's body, in the order of the game's vehicle table (player first). NFSMW_MP_BODIES=i,j,... picks list
     // positions by hand instead (the log above shows the list).
-    if (a.net && a.net->Connected() && a.localObj && a.gridDone)
+    if (a.net && a.net->Connected() && a.localObj)
     {
         if (a.standIns.size() < a.net->Remotes().size())
         {
