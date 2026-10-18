@@ -13,14 +13,17 @@
 
 #include <kernel/function.h>
 #include "frame_time.h"
+#include "mp_adapter.h"
 #include <net/mp_client.h>
 #include <net/mp_math.h>
+#include <net/multiplayer_config.h>
 #include <chrono>
 #include <cmath>
 #include <array>
 #include <deque>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 extern "C" PPC_FUNC(__imp__sub_82528448);
@@ -28,6 +31,9 @@ extern "C" PPC_FUNC(__imp__sub_82420FC0);
 
 namespace
 {
+    std::mutex g_statusMutex;
+    std::string g_status = "Multiplayer is off.";
+
     constexpr uint32_t kBodyListHead = 0x8290BE18;
     // The game's vehicle table: a fixed vector at 0x82C745A8 ({vtable, data, capacity in bytes, count}, data = 8-byte entries {owner object, 1}), the player first,
     // then the opponents in creation order. A vehicle's body is the body whose +8 points at that owner object.
@@ -150,7 +156,7 @@ namespace
         // Network (NFSMW_MP_SERVER=host[:port], NFSMW_MP_NAME): the local car goes out at 30 Hz, each remote player drives one stand-in body.
         std::unique_ptr<mp::Client> net;
         std::string server, name = "player";
-        double lastSend = 0, lastTry = 0;
+        double lastSend = 0, lastTry = 0, lastStatus = -10;
         // Start barrier (NFSMW_MP_PLAYERS=n, n > 1): the race is held, world frozen, from the moment it appears until n-1 other players are there and ready too.
         int expected = 0;
         bool barrier = false;
@@ -163,12 +169,29 @@ namespace
 
         Adapter()
         {
-            if (const char* sv = std::getenv("NFSMW_MP_SERVER")) server = sv;
-            if (const char* n = std::getenv("NFSMW_MP_NAME")) name = n;
-            if (const char* n = std::getenv("NFSMW_MP_PLAYERS")) expected = atoi(n);
+            Reload();
             if (const char* g = std::getenv("NFSMW_MP_GHOST")) { ghost = true; ghostSeconds = float(atof(g)); }
             if (const char* b = std::getenv("NFSMW_MP_BODY")) ghostBody = atoi(b);
             if (const char* o = std::getenv("NFSMW_MP_OFFSET")) ghostOffset = float(atof(o));
+        }
+        // The settings (Settings > Online > Multiplayer, or the NFSMW_MP_* variables), read again every couple of seconds so a change applies to the next race.
+        double lastCfg = -10;
+        void Reload()
+        {
+            const mpcfg::Config c = mpcfg::Load();
+            const std::string wanted = c.enabled ? c.server : std::string();
+            if (wanted != server)
+            {
+                server = wanted;
+                if (net)
+                {
+                    net->Disconnect();
+                    net.reset();
+                }
+                standIns.clear();
+            }
+            name = c.name;
+            expected = c.players;
         }
         double Now() const { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); }
     };
@@ -421,6 +444,42 @@ namespace game
     void MpFramePump()
     {
         Adapter& a = A();
+        {
+            const double t = a.Now();
+            if (t - a.lastCfg > 2.0)
+            {
+                a.lastCfg = t;
+                a.Reload();
+            }
+            if (t - a.lastStatus > 0.5)
+            {
+                a.lastStatus = t;
+                std::string text;
+                if (a.server.empty())
+                    text = "Multiplayer is off.";
+                else if (!a.net)
+                    text = "On. Waiting for a race to start (the connection is made when a race begins).";
+                else if (a.net->Failed())
+                    text = "Cannot reach " + a.server + ", retrying.";
+                else if (!a.net->Connected())
+                    text = "Connecting to " + a.server + "...";
+                else
+                {
+                    int ready = 0;
+                    for (const auto& [id, r] : a.net->Remotes())
+                        if (r.hasCar && (r.latest.flags & mp::kFlagReady))
+                            ++ready;
+                    char b[160];
+                    if (a.barrier)
+                        snprintf(b, sizeof b, "Connected. Holding the start: %d of %d players ready.", ready + 1, a.expected);
+                    else
+                        snprintf(b, sizeof b, "Connected as player %u with %zu other player(s), %u ms.", unsigned(a.net->MyId()), a.net->Remotes().size(), a.net->RttMs());
+                    text = b;
+                }
+                std::lock_guard<std::mutex> g(g_statusMutex);
+                g_status = text;
+            }
+        }
         // NFSMW_MP_WATCH=1: log when the state words found by tools/statdiff.py change (which of them mark the end of loading / the start of the intro).
         static const bool watch = std::getenv("NFSMW_MP_WATCH") != nullptr;
         if (watch)
@@ -526,4 +585,14 @@ PPC_FUNC(sub_82420FC0)
         ++n;
     }
     __imp__sub_82420FC0(ctx, base);
+}
+
+// For the settings page (ui/online_menu.cpp), any thread.
+namespace game
+{
+    std::string MpStatus()
+    {
+        std::lock_guard<std::mutex> g(g_statusMutex);
+        return g_status;
+    }
 }

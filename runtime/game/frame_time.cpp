@@ -43,6 +43,7 @@
 #include <stdafx.h>
 #include "frame_time.h"
 #include "whole_vblanks.h"
+#include "mp_adapter.h"
 
 #include <cpu/guest_time.h>
 #include <kernel/function.h>
@@ -139,7 +140,6 @@ namespace game
 
 // GameFrameTime, before `bl 0x823AFE20` at 0x823B0148 in the main loop: r3 is
 // the frame's measured time, milliseconds in 16.16 fixed point.
-namespace game { void MpFramePump(); }
 void GameFrameTime(PPCRegister& r3)
 {
     game::MpFramePump();

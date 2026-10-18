@@ -6,7 +6,9 @@
 #include <stdafx.h>
 #include "ui.h"
 
+#include <game/mp_adapter.h>
 #include <net/lobby.h>
+#include <net/multiplayer_config.h>
 #include <user/settings.h>
 
 #include <imgui.h>
@@ -60,9 +62,59 @@ namespace ui
         }
     }
 
+    namespace
+    {
+        // Multiplayer: the new layer (net/mp_*, game/mp_adapter.cpp): a dedicated server relays each player's car; the races are the game's own Quick Race / Custom Race.
+        void DrawMultiplayerSection()
+        {
+            static mpcfg::Config cfg;
+            static char server[96], name[24];
+            static bool loaded = false;
+            if (!loaded)
+            {
+                loaded = true;
+                cfg = mpcfg::Load();
+                snprintf(server, sizeof server, "%s", cfg.server.c_str());
+                snprintf(name, sizeof name, "%s", cfg.name.c_str());
+            }
+            bool changed = false;
+            ImGui::Spacing();
+            ImGui::TextUnformatted("Multiplayer races");
+            ImGui::TextWrapped("Race other players in the game's own races: start the same race (same track and direction, with at least one opponent) on every machine; "
+                "each one waits at the start for the others. Needs a multiplayer server (mp_server) that every player can reach.");
+            ImGui::Spacing();
+            changed |= ImGui::Checkbox("Join multiplayer races", &cfg.enabled);
+            ImGui::TextUnformatted("Server (address:port)");
+            ImGui::SetNextItemWidth(-1);
+            ImGui::InputText("##mpserver", server, sizeof server);
+            changed |= ImGui::IsItemDeactivatedAfterEdit();
+            ImGui::TextUnformatted("Your name");
+            ImGui::SetNextItemWidth(-1);
+            ImGui::InputText("##mpname", name, sizeof name);
+            changed |= ImGui::IsItemDeactivatedAfterEdit();
+            ImGui::TextUnformatted("Players to wait for at the start (1 = don't wait)");
+            ImGui::SetNextItemWidth(-1);
+            changed |= ImGui::SliderInt("##mpplayers", &cfg.players, 1, 8);
+            if (changed)
+            {
+                cfg.server = server;
+                cfg.name = name;
+                mpcfg::Save(cfg);
+            }
+            ImGui::Spacing();
+            const std::string status = game::MpStatus();
+            ImGui::TextWrapped("%s", status.c_str());
+            if (std::getenv("NFSMW_MP_SERVER") || std::getenv("NFSMW_MP_NAME") || std::getenv("NFSMW_MP_PLAYERS"))
+                ImGui::TextWrapped("(NFSMW_MP_* environment variables are set and override these values.)");
+        }
+    }
+
     void DrawOnlinePage()
     {
         Init();
+        DrawMultiplayerSection();
+        ImGui::Spacing();
+        ImGui::Separator();
         if (!settings::GetBool(settings::Id::OnlinePlay))
         {
             ImGui::Spacing();

@@ -12,6 +12,10 @@ a small server, and shows the other player's car as one of its opponents.
 - UDP port 27960 open to the other machine on the machine that runs the server (Fedora: `sudo firewall-cmd --add-port=27960/udp`, temporary).
 
 ## Run
+**Without environment variables:** open the settings (F1, or Back + Start on a pad), **Online** page, section *Multiplayer races*: tick *Join multiplayer races*, enter the server
+(`address:port`), your name and how many players to wait for at the start. It is saved in `multiplayer.txt` in the user data folder and read again every couple of seconds, so it applies
+to the next race. The page shows the connection status. The environment variables below still work and override the page (for scripts).
+
 1. Server (either machine, or any host both reach): `build/main/runtime/mp_server 27960`. It prints a line when a player joins.
 2. Machine A: `NFSMW_MP_SERVER=<server-ip>:27960 NFSMW_MP_NAME=a NFSMW_MP_PLAYERS=2 build/main/runtime/SpeedBreaker`
    Machine B: `NFSMW_MP_SERVER=<server-ip>:27960 NFSMW_MP_NAME=b NFSMW_MP_PLAYERS=2 build/main/runtime/SpeedBreaker`
