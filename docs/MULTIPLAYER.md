@@ -366,3 +366,16 @@ the stand-in body (#1, a grid opponent) sits at the local car's position + 8 m w
 **Not done yet:** what happens when the local car hits a stand-in (it is overwritten
 every step, so it is immovable; the plan is to blend the state in and let the game's collision act), AI of the stand-in cars switched off, car model per player, start
 synchronisation, laps and finish shared, a real two-machine run, lobby, modes.
+
+## Findings from the first real two-machine runs (2026-10-18/19, ARM Linux <-> x86 Linux over ZeroTier, rtt about 30 ms)
+- Works: both machines connect to `mp_server`, each sees the other's car and its movement, cars collide (after writing the **physics body** instead of the tracker copy).
+- **The physics body** (docs above): the list the step sub_82528448 walks holds *trackers*; a tracker's owner (+8) has a component (+128) whose +48 points at a pointer to the
+  rigid body in a static array: quaternion +0, position +0x10, linear velocity +0x20, angular velocity +0x30, mass +0x2C, matrix rows +0x80. Axes: tracker (x, y, z) = (body z, -body x, body y).
+  The step reads the body (vtable +64 matrix, +32 position, +36 velocity) and fills the tracker, so writing the body before the step moves both the car and its collisions.
+- **Every game puts its own player in grid slot 0** and drives the cars into the grid itself (about 26 m of rolling, before the countdown), so a teleport to another slot is undone.
+  Workaround: a remote car is shown 3.5 m per join-order step beside ours from the moment it is first seen until it has stood still on the grid and driven 20 m.
+- **The two machines are not at the line at the same time**: loading and the intro (about 15 s of fly-in and burnouts, then 3-2-1-GO) take different times on each machine, so one car
+  can be on the line while the other is still rolling in. Fixing that needs a start barrier (hold the race until every player is at the line). The dispatcher sub_823993C0 saw a single
+  event id (0x319915CD) in a whole race, so the countdown is not driven through it; the strings `StartCountdown`, `NotifyCountdownDone`, `EShowRaceCountdown` and the OLMGR messages
+  (`OLMGR: ReadyStartLine called.`, `mPostCountdownStartRaceTime`) are where to look next.
+- Not done: car model per player (the opponent keeps whichever car the game picked), minimap blips for remote cars, start barrier, laps/finish sharing, lobby and modes.
