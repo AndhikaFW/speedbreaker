@@ -123,6 +123,10 @@ namespace game
             s_multiStep.load(std::memory_order_relaxed), s_snapped.load(std::memory_order_relaxed) };
     }
 
+    std::atomic<bool> s_hold{ false };
+    void SetWorldHold(bool hold) { s_hold.store(hold, std::memory_order_relaxed); }
+    bool WorldHeld() { return s_hold.load(std::memory_order_relaxed); }
+
     int FixedSteps() { return s_fixedSteps; }
     uint64_t WorldFrameIndex() { return s_worldFrames.load(std::memory_order_relaxed); }
     int64_t RaceFrame() { return s_raceFrame.load(std::memory_order_relaxed); }
@@ -135,8 +139,17 @@ namespace game
 
 // GameFrameTime, before `bl 0x823AFE20` at 0x823B0148 in the main loop: r3 is
 // the frame's measured time, milliseconds in 16.16 fixed point.
+namespace game { void MpFramePump(); }
 void GameFrameTime(PPCRegister& r3)
 {
+    game::MpFramePump();
+    if (game::WorldHeld())
+    {
+        // No time passes for the world while it is held: not in the clock, not in the stepper's accumulator.
+        r3.u64 = 0;
+        s_frames.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
     // Whatever the frame is given below (or its measured time), on every path.
     struct AddToClock
     {
@@ -232,6 +245,8 @@ void WorldStepTime(PPCRegister& f10)
 void WorldSteps(PPCRegister& r30)
 {
     s_worldFrames.fetch_add(1, std::memory_order_relaxed);
+    if (game::WorldHeld())
+        r30.u32 = 0;
     // NFSMW_LOG_WORLD_CLOCK=1: the game's world clock (a float in seconds at 0x82A153B8, found by watching it advance in real time and matching the
     // HUD's race clock, which is this minus a constant 9.95 s) with each world step run, to see whether it advances by a fixed amount per frame.
     {

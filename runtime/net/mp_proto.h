@@ -28,6 +28,8 @@ namespace mp
         Chat,           // both ways reliable
     };
 
+    constexpr uint16_t kFlagReady = 0x10;   // CarState::flags: this game is held at the start barrier and ready to go
+
     enum RejectReason : uint8_t { kRejectVersion = 1, kRejectFull = 2 };
 
     // One car's physical state as the game's own physics produced it on its owner's machine.

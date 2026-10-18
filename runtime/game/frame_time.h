@@ -34,4 +34,10 @@ namespace game
     // Frames the world stepper has run so far (calls of the stepper since launch: the front end has no world, a race does), for
     // inputs and captures keyed to the race's own clock.
     uint64_t WorldFrameIndex();
+
+    // Hold the world: while set, the frames are given no time and the world stepper runs no steps (the game still draws and runs its menus and
+    // network), so a race stands still at the moment it was held. The multiplayer start barrier (game/mp_adapter.cpp) holds a race until every
+    // player's game is ready, then lets all of them go together. Thread-safe.
+    void SetWorldHold(bool hold);
+    bool WorldHeld();
 }

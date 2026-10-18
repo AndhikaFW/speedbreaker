@@ -12,6 +12,7 @@
 #include <stdafx.h>
 
 #include <kernel/function.h>
+#include "frame_time.h"
 #include <net/mp_client.h>
 #include <net/mp_math.h>
 #include <chrono>
@@ -159,6 +160,10 @@ namespace
             double stableSince = 0, firstSeen = 0;
         };
         std::map<uint8_t, Grid> grids;
+        // Start barrier (NFSMW_MP_PLAYERS=n, n > 1): the race is held, world frozen, from the moment it appears until n-1 other players are there and ready too.
+        int expected = 0;
+        bool barrier = false;
+        double barrierSince = 0;
         double localSince = 0, connectedAt = 0, lastTable = -1;
         std::map<uint8_t, uint32_t> standIns;   // remote player id -> body object
         double lastLog = -10;
@@ -168,6 +173,7 @@ namespace
         {
             if (const char* sv = std::getenv("NFSMW_MP_SERVER")) server = sv;
             if (const char* n = std::getenv("NFSMW_MP_NAME")) name = n;
+            if (const char* n = std::getenv("NFSMW_MP_PLAYERS")) expected = atoi(n);
             if (const char* g = std::getenv("NFSMW_MP_GHOST")) { ghost = true; ghostSeconds = float(atof(g)); }
             if (const char* b = std::getenv("NFSMW_MP_BODY")) ghostBody = atoi(b);
             if (const char* o = std::getenv("NFSMW_MP_OFFSET")) ghostOffset = float(atof(o));
@@ -319,12 +325,19 @@ PPC_FUNC(sub_82528448)
         if (first && first != a.localObj)
         {
             // A new race builds new bodies: forget the old ones (the stand-ins are looked up again) and say so.
-            fprintf(stderr, "[mp] local car body is now %08X\n", first);
+            fprintf(stderr, "[mp] %.2f s local car body is now %08X\n", now, first);
             a.localObj = first;
             a.standIns.clear();
             a.standInObj = 0;
             a.history.clear();
             a.grids.clear();
+            if (a.expected > 1 && !a.server.empty())
+            {
+                a.barrier = true;
+                a.barrierSince = now;
+                game::SetWorldHold(true);
+                fprintf(stderr, "[mp] start barrier: race held until %d players are ready\n", a.expected);
+            }
             a.localSince = now;
         }
     }
@@ -463,5 +476,62 @@ PPC_FUNC(sub_82528448)
             }
         }
         ApplyRemote(a, base, obj);
+    }
+}
+
+// The start barrier, once a game frame (from GameFrameTime, so it runs while the world is held, when no body is stepped): keep the network going, tell the others
+// this game is ready (the flag in the car state), and let the world go when the expected players are ready, or after a timeout.
+namespace game
+{
+    void MpFramePump()
+    {
+        Adapter& a = A();
+        // NFSMW_MP_WATCH=1: log when the state words found by tools/statdiff.py change (which of them mark the end of loading / the start of the intro).
+        static const bool watch = std::getenv("NFSMW_MP_WATCH") != nullptr;
+        if (watch)
+        {
+            static const uint32_t words[] = { 0x82A2C23C, 0x82A2C244, 0x82A3067C, 0x82A2C33C, 0x82A2BF4C, 0x82A2C26C, 0x82A2BB4C, 0x82A2DA3C, 0x82A2CF40, 0x82A2D608, 0x82A2C410 };
+            static uint32_t last[sizeof words / sizeof *words];
+            static bool first = true;
+            const uint8_t* wbase = g_memory.base;
+            for (size_t i = 0; i < sizeof words / sizeof *words; ++i)
+            {
+                const uint32_t v = __builtin_bswap32(*(const volatile uint32_t*)(wbase + words[i]));
+                if (first || v != last[i])
+                    fprintf(stderr, "[watch] %7.2f s %08X = %u%s\n", a.Now(), words[i], v, first ? " (initial)" : "");
+                last[i] = v;
+            }
+            first = false;
+        }
+        if (!a.barrier || !a.net)
+            return;
+        const uint8_t* base = g_memory.base;
+        const double now = a.Now();
+        a.net->Service();
+        if (a.net->Connected() && now - a.lastSend >= 1.0 / 30.0 && a.localObj)
+        {
+            if (const uint32_t pb = PhysBody(base, a.localObj))
+            {
+                a.lastSend = now;
+                const Phys ph = ReadPhys(base, pb);
+                mp::CarState c;
+                for (int i = 0; i < 4; ++i) c.rot[i] = ph.q[i];
+                for (int i = 0; i < 3; ++i) { c.pos[i] = ph.pos[i]; c.vel[i] = ph.vel[i]; c.angVel[i] = ph.ang[i]; }
+                c.flags = mp::kFlagReady;
+                a.net->SendCar(c);
+            }
+        }
+        int ready = 0;
+        for (const auto& [id, r] : a.net->Remotes())
+            if (r.hasCar && (r.latest.flags & mp::kFlagReady))
+                ++ready;
+        const bool all = a.net->Connected() && ready + 1 >= a.expected;
+        const bool timeout = now - a.barrierSince > 120.0 || (a.net->Failed() && now - a.barrierSince > 10.0);
+        if (all || timeout)
+        {
+            a.barrier = false;
+            game::SetWorldHold(false);
+            fprintf(stderr, "[mp] start barrier released after %.1f s (%s)\n", now - a.barrierSince, all ? "everyone is ready" : "timeout");
+        }
     }
 }
