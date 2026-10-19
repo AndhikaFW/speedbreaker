@@ -166,6 +166,7 @@ namespace
         bool gridLogged = false;
         int raceEpoch = 0;   // counts new races and finished races: the grid animation's vehicle list starts over with each
         double barrierSince = 0;
+        double readyUntil = 0;   // the ready flag is kept on for a while after the release: a game that released at once (the others were ready) must still be seen as ready
         double localSince = 0, connectedAt = 0, lastTable = -1;
         std::map<uint8_t, uint32_t> standIns;   // remote player id -> body object
         double lastLog = -10;
@@ -319,6 +320,7 @@ namespace
                 {
                     a.barrier = true;
                     a.barrierSince = now;
+                    a.readyUntil = now + 20.0;
                     game::SetWorldHold(true);
                     fprintf(stderr, "[mp] start barrier: race held until %d players are ready\n", a.expected);
                     ui::Toast(kWaitToast, 600.0);
@@ -371,7 +373,7 @@ namespace
                 mp::CarState c;
                 for (int i = 0; i < 4; ++i) c.rot[i] = ph.q[i];
                 for (int i = 0; i < 3; ++i) { c.pos[i] = ph.pos[i]; c.vel[i] = ph.vel[i]; c.angVel[i] = ph.ang[i]; }
-                c.flags = a.barrier ? mp::kFlagReady : 0;
+                c.flags = (a.barrier || now < a.readyUntil) ? mp::kFlagReady : 0;
                 a.net->SendCar(c);
             }
         }
