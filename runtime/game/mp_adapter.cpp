@@ -161,6 +161,7 @@ namespace
         int expected = 0;
         bool barrier = false;
         bool gridLogged = false;
+        int raceEpoch = 0;   // counts new races and finished races: the grid animation's vehicle list starts over with each
         double barrierSince = 0;
         double localSince = 0, connectedAt = 0, lastTable = -1;
         std::map<uint8_t, uint32_t> standIns;   // remote player id -> body object
@@ -290,6 +291,7 @@ namespace
             {
                 // The race is over (the vehicles are gone).
                 fprintf(stderr, "[mp] %.2f s race over\n", now);
+                ++a.raceEpoch;
                 a.localObj = 0;
                 a.standIns.clear();
                 a.standInObj = 0;
@@ -303,6 +305,8 @@ namespace
             {
                 // A new race: forget the old bodies (the stand-ins are looked up again) and hold the start if others are expected.
                 fprintf(stderr, "[mp] %.2f s local car body is now %08X\n", now, first);
+                ++a.raceEpoch;
+                a.gridLogged = false;
                 a.localObj = first;
                 a.standIns.clear();
                 a.standInObj = 0;
@@ -562,6 +566,15 @@ PPC_FUNC(sub_82420FC0)
     static std::vector<uint32_t> vehicles;                   // vehicle objects in order of first call: the table order
     static std::vector<std::array<uint32_t, 16>> given;      // the last pose each was given by the animation (raw guest words), before any change
     const uint32_t v = ctx.r3.u32, m = ctx.r4.u32;
+    {
+        static int epoch = 0;
+        if (epoch != A().raceEpoch)
+        {
+            epoch = A().raceEpoch;
+            vehicles.clear();
+            given.clear();
+        }
+    }
     size_t idx = 0;
     while (idx < vehicles.size() && vehicles[idx] != v)
         ++idx;
