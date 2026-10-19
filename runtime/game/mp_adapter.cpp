@@ -228,10 +228,12 @@ namespace
         std::vector<uint32_t> out;
         const uint32_t data = PPC_LOAD_U32(kVehicleTable + 4);
         const uint32_t count = PPC_LOAD_U32(kVehicleTable + 12);
-        if (data != kVehicleTable + 16 || count > 20)   // 20 entries is the table's capacity: traffic fills it in a busy race
+        if (data != kVehicleTable + 16)
             return out;
+        // The count word grows with the traffic (29 was seen about a lap into a race) while the room in the table is 20 entries: read at most 20. The player and the
+        // opponents are the first entries; what comes after is traffic.
         const std::vector<uint32_t> bodies = Bodies(base);
-        for (uint32_t i = 0; i < count; ++i)
+        for (uint32_t i = 0; i < std::min<uint32_t>(count, 20); ++i)
         {
             const uint32_t owner = PPC_LOAD_U32(data + 8 * i);
             uint32_t body = 0;
