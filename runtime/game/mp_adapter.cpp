@@ -164,6 +164,7 @@ namespace
         int expected = 0;
         bool barrier = false;
         bool gridLogged = false;
+        double emptySince = 0;
         int raceEpoch = 0;   // counts new races and finished races: the grid animation's vehicle list starts over with each
         double barrierSince = 0;
         double readyUntil = 0;   // the ready flag is kept on for a while after the release: a game that released at once (the others were ready) must still be seen as ready
@@ -291,10 +292,15 @@ namespace
         {
             const std::vector<uint32_t> vb = VehicleBodies(base);
             const uint32_t first = vb.empty() ? 0 : vb[0];
-            if (!first && a.localObj)
+            // The race is over when the vehicle table has been empty for a while: it can be empty for a moment inside a race (the game rebuilds it), and a
+            // false "new race" would hold the start again in the middle of a race.
+            if (first)
+                a.emptySince = 0;
+            else if (a.emptySince == 0)
+                a.emptySince = now;
+            if (!first && a.localObj && now - a.emptySince > 2.5)
             {
-                // The race is over (the vehicles are gone).
-                fprintf(stderr, "[mp] %.2f s race over\n", now);
+                fprintf(stderr, "[mp] %.2f s race over (the vehicle table, %08X count %u, has been empty since %.2f s)\n", now, PPC_LOAD_U32(kVehicleTable + 4), PPC_LOAD_U32(kVehicleTable + 12), a.emptySince);
                 ++a.raceEpoch;
                 a.localObj = 0;
                 a.standIns.clear();
