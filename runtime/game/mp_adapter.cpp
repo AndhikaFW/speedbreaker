@@ -262,6 +262,149 @@ namespace
     }
 }
 
+namespace
+{
+    std::vector<std::string> ParseHostPort(const std::string& hostPort, uint16_t& port)
+    {
+        std::string host = hostPort;
+        port = mp::kDefaultPort;
+        const size_t colon = host.rfind(':');
+        if (colon != std::string::npos) { port = uint16_t(atoi(host.c_str() + colon + 1)); host.resize(colon); }
+        return { host };
+    }
+
+    // The multiplayer layer's once-a-frame work, from MpFramePump (so it also runs while the world is held, when no body is stepped): follow the races
+    // (the local player's body, new race / race over, the start barrier), keep the connection (only while a race is on), send the local car, and hand the
+    // remote players their opponent bodies.
+    void Tick(Adapter& a, uint8_t* base, double now)
+    {
+        if (a.server.empty() && !a.ghost)
+            return;
+
+        // The local player's body: the first vehicle of the game's vehicle table (the player is always first), looked up every frame so a new race (new bodies, or the
+        // same addresses after the vehicles were gone) is noticed at once, and not by position, because a stand-in can overlap the car.
+        {
+            const std::vector<uint32_t> vb = VehicleBodies(base);
+            const uint32_t first = vb.empty() ? 0 : vb[0];
+            if (!first && a.localObj)
+            {
+                // The race is over (the vehicles are gone).
+                fprintf(stderr, "[mp] %.2f s race over\n", now);
+                a.localObj = 0;
+                a.standIns.clear();
+                a.standInObj = 0;
+                if (a.barrier)
+                {
+                    a.barrier = false;
+                    game::SetWorldHold(false);
+                }
+            }
+            if (first && first != a.localObj)
+            {
+                // A new race: forget the old bodies (the stand-ins are looked up again) and hold the start if others are expected.
+                fprintf(stderr, "[mp] %.2f s local car body is now %08X\n", now, first);
+                a.localObj = first;
+                a.standIns.clear();
+                a.standInObj = 0;
+                a.history.clear();
+                if (a.expected > 1 && !a.server.empty())
+                {
+                    a.barrier = true;
+                    a.barrierSince = now;
+                    game::SetWorldHold(true);
+                    fprintf(stderr, "[mp] start barrier: race held until %d players are ready\n", a.expected);
+                }
+                a.localSince = now;
+            }
+        }
+        if (a.server.empty() || !a.localObj)
+        {
+            // No race (or only the ghost test): no connection. Drop it when the race is over so the server sees the player leave.
+            if (a.net && !a.localObj)
+            {
+                a.net->Disconnect();
+                a.net.reset();
+                a.standIns.clear();
+            }
+            return;
+        }
+
+        // The connection.
+        uint16_t port;
+        if (!a.net)
+        {
+            a.net.reset(new mp::Client);
+            const std::string host = ParseHostPort(a.server, port)[0];
+            if (!a.net->Connect(host, port, a.name))
+                fprintf(stderr, "[mp] cannot connect to %s\n", a.server.c_str());
+            else
+                fprintf(stderr, "[mp] connecting to %s:%u as %s\n", host.c_str(), port, a.name.c_str());
+        }
+        a.net->Service();
+        if (a.net->Failed() && now - a.lastTry > 5.0)
+        {
+            // The server went away or refused us: try again every few seconds (the stand-ins are looked up again once it is back).
+            a.lastTry = now;
+            a.standIns.clear();
+            const std::string host = ParseHostPort(a.server, port)[0];
+            a.net->Disconnect();
+            a.net->Connect(host, port, a.name);
+            fprintf(stderr, "[mp] connection lost, reconnecting to %s\n", a.server.c_str());
+        }
+
+        // The local car, 30 times a second, with the ready flag while the start is held.
+        if (a.net->Connected() && now - a.lastSend >= 1.0 / 30.0)
+        {
+            if (const uint32_t pb = PhysBody(base, a.localObj))
+            {
+                a.lastSend = now;
+                const Phys ph = ReadPhys(base, pb);
+                mp::CarState c;
+                for (int i = 0; i < 4; ++i) c.rot[i] = ph.q[i];
+                for (int i = 0; i < 3; ++i) { c.pos[i] = ph.pos[i]; c.vel[i] = ph.vel[i]; c.angVel[i] = ph.ang[i]; }
+                c.flags = a.barrier ? mp::kFlagReady : 0;
+                a.net->SendCar(c);
+            }
+        }
+
+        // Each remote player drives one opponent vehicle's body, in the order of the game's vehicle table (player first). NFSMW_MP_BODIES=i,j,... picks list
+        // positions by hand instead (the log of the step hook shows the list).
+        if (a.net->Connected() && a.standIns.size() < a.net->Remotes().size())
+        {
+            static const std::vector<int> picks = [] {
+                std::vector<int> v;
+                if (const char* e = std::getenv("NFSMW_MP_BODIES"))
+                    for (const char* c = e; *c;) { v.push_back(atoi(c)); while (*c && *c != ',') ++c; if (*c) ++c; }
+                return v;
+            }();
+            std::vector<uint32_t> candidates;
+            if (picks.empty())
+            {
+                for (uint32_t b : VehicleBodies(base))
+                    if (b && b != a.localObj)
+                        candidates.push_back(b);
+            }
+            else
+            {
+                const std::vector<uint32_t> bodies = Bodies(base);
+                for (int p : picks)
+                    if (size_t(p) < bodies.size())
+                        candidates.push_back(bodies[p]);
+            }
+            size_t k = 0;
+            for (const auto& [id, r] : a.net->Remotes())
+            {
+                if (!a.standIns.count(id) && k < candidates.size())
+                {
+                    a.standIns[id] = candidates[k];
+                    fprintf(stderr, "[mp] remote player %u (%s) drives body %08X\n", id, r.name.c_str(), candidates[k]);
+                }
+                ++k;
+            }
+        }
+    }
+}
+
 PPC_FUNC(sub_82528448)
 {
     const uint32_t obj = ctx.r3.u32;
@@ -276,31 +419,6 @@ PPC_FUNC(sub_82528448)
         return;
     const double now = a.Now();
 
-    // The local player's body: the first vehicle of the game's vehicle table (the player is always first). Looked up a few times a second, so a new race
-    // (new bodies) is noticed, and not by position, because a stand-in can overlap the car.
-    if (now - a.lastTable > 0.25)
-    {
-        a.lastTable = now;
-        const std::vector<uint32_t> vb = VehicleBodies(base);
-        const uint32_t first = vb.empty() ? 0 : vb[0];
-        if (first && first != a.localObj)
-        {
-            // A new race builds new bodies: forget the old ones (the stand-ins are looked up again) and say so.
-            fprintf(stderr, "[mp] %.2f s local car body is now %08X\n", now, first);
-            a.localObj = first;
-            a.standIns.clear();
-            a.standInObj = 0;
-            a.history.clear();
-            if (a.expected > 1 && !a.server.empty())
-            {
-                a.barrier = true;
-                a.barrierSince = now;
-                game::SetWorldHold(true);
-                fprintf(stderr, "[mp] start barrier: race held until %d players are ready\n", a.expected);
-            }
-            a.localSince = now;
-        }
-    }
     const float here[3] = { LoadF(base, s + 48), LoadF(base, s + 52), LoadF(base, s + 56) };
     if (a.localObj && obj == a.localObj)
     {
@@ -310,51 +428,6 @@ PPC_FUNC(sub_82528448)
             a.history.emplace_back(now, pose);
             while (a.history.size() > 2 && a.history[1].first < now - a.ghostSeconds - 1.0)
                 a.history.pop_front();
-        }
-        if (!a.server.empty())
-        {
-            if (!a.net)
-            {
-                a.net.reset(new mp::Client);
-                std::string host = a.server;
-                uint16_t port = mp::kDefaultPort;
-                const size_t colon = host.rfind(':');
-                if (colon != std::string::npos) { port = uint16_t(atoi(host.c_str() + colon + 1)); host.resize(colon); }
-                if (!a.net->Connect(host, port, a.name))
-                    fprintf(stderr, "[mp] cannot connect to %s\n", a.server.c_str());
-                else
-                    fprintf(stderr, "[mp] connecting to %s:%u as %s\n", host.c_str(), port, a.name.c_str());
-            }
-            a.net->Service();
-            if (a.net->Connected() && a.connectedAt == 0)
-                a.connectedAt = now;
-            if (!a.net->Connected())
-                a.connectedAt = 0;
-            if (a.net->Failed() && now - a.lastTry > 5.0)
-            {
-                // The server went away or refused us: try again every few seconds (the stand-ins are looked up again once it is back).
-                a.lastTry = now;
-                a.standIns.clear();
-                std::string host = a.server;
-                uint16_t port = mp::kDefaultPort;
-                const size_t colon = host.rfind(':');
-                if (colon != std::string::npos) { port = uint16_t(atoi(host.c_str() + colon + 1)); host.resize(colon); }
-                a.net->Disconnect();
-                a.net->Connect(host, port, a.name);
-                fprintf(stderr, "[mp] connection lost, reconnecting to %s\n", a.server.c_str());
-            }
-            if (a.net->Connected() && now - a.lastSend >= 1.0 / 30.0)
-            {
-                a.lastSend = now;
-                if (const uint32_t pb = PhysBody(base, obj))
-                {
-                    const Phys ph = ReadPhys(base, pb);
-                    mp::CarState c;
-                    for (int i = 0; i < 4; ++i) c.rot[i] = ph.q[i];
-                    for (int i = 0; i < 3; ++i) { c.pos[i] = ph.pos[i]; c.vel[i] = ph.vel[i]; c.angVel[i] = ph.ang[i]; }
-                    a.net->SendCar(c);
-                }
-            }
         }
         if (now - a.lastLog > 3.0)
         {
@@ -396,45 +469,7 @@ PPC_FUNC(sub_82528448)
         }
     }
 
-    // Network: each remote player drives one opponent vehicle's body, in the order of the game's vehicle table (player first). NFSMW_MP_BODIES=i,j,... picks list
-    // positions by hand instead (the log above shows the list).
-    if (a.net && a.net->Connected() && a.localObj)
-    {
-        if (a.standIns.size() < a.net->Remotes().size())
-        {
-            static const std::vector<int> picks = [] {
-                std::vector<int> v;
-                if (const char* e = std::getenv("NFSMW_MP_BODIES"))
-                    for (const char* c = e; *c;) { v.push_back(atoi(c)); while (*c && *c != ',') ++c; if (*c) ++c; }
-                return v;
-            }();
-            std::vector<uint32_t> candidates;
-            if (picks.empty())
-            {
-                for (uint32_t b : VehicleBodies(base))
-                    if (b && b != a.localObj)
-                        candidates.push_back(b);
-            }
-            else
-            {
-                const std::vector<uint32_t> bodies = Bodies(base);
-                for (int p : picks)
-                    if (size_t(p) < bodies.size())
-                        candidates.push_back(bodies[p]);
-            }
-            size_t k = 0;
-            for (const auto& [id, r] : a.net->Remotes())
-            {
-                if (!a.standIns.count(id) && k < candidates.size())
-                {
-                    a.standIns[id] = candidates[k];
-                    fprintf(stderr, "[mp] remote player %u (%s) drives body %08X\n", id, r.name.c_str(), candidates[k]);
-                }
-                ++k;
-            }
-        }
-        ApplyRemote(a, base, obj);
-    }
+    ApplyRemote(a, base, obj);
 }
 
 // The start barrier, once a game frame (from GameFrameTime, so it runs while the world is held, when no body is stepped): keep the network going, tell the others
@@ -497,24 +532,10 @@ namespace game
             }
             first = false;
         }
+        Tick(a, g_memory.base, a.Now());
         if (!a.barrier || !a.net)
             return;
-        const uint8_t* base = g_memory.base;
         const double now = a.Now();
-        a.net->Service();
-        if (a.net->Connected() && now - a.lastSend >= 1.0 / 30.0 && a.localObj)
-        {
-            if (const uint32_t pb = PhysBody(base, a.localObj))
-            {
-                a.lastSend = now;
-                const Phys ph = ReadPhys(base, pb);
-                mp::CarState c;
-                for (int i = 0; i < 4; ++i) c.rot[i] = ph.q[i];
-                for (int i = 0; i < 3; ++i) { c.pos[i] = ph.pos[i]; c.vel[i] = ph.vel[i]; c.angVel[i] = ph.ang[i]; }
-                c.flags = mp::kFlagReady;
-                a.net->SendCar(c);
-            }
-        }
         int ready = 0;
         for (const auto& [id, r] : a.net->Remotes())
             if (r.hasCar && (r.latest.flags & mp::kFlagReady))
