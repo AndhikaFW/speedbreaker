@@ -14,6 +14,8 @@
 #include <kernel/function.h>
 #include "frame_time.h"
 #include "mp_adapter.h"
+#include <hid/input.h>
+#include <ui/ui.h>
 #include <net/mp_client.h>
 #include <net/mp_math.h>
 #include <net/multiplayer_config.h>
@@ -31,6 +33,7 @@ extern "C" PPC_FUNC(__imp__sub_82420FC0);
 
 namespace
 {
+    constexpr const char* kWaitToast = "Waiting for the other players. Press B to start without them.";
     std::mutex g_statusMutex;
     std::string g_status = "Multiplayer is off.";
 
@@ -299,6 +302,7 @@ namespace
                 {
                     a.barrier = false;
                     game::SetWorldHold(false);
+                    ui::WithdrawToast(kWaitToast);
                 }
             }
             if (first && first != a.localObj)
@@ -317,6 +321,7 @@ namespace
                     a.barrierSince = now;
                     game::SetWorldHold(true);
                     fprintf(stderr, "[mp] start barrier: race held until %d players are ready\n", a.expected);
+                    ui::Toast(kWaitToast, 600.0);
                 }
                 a.localSince = now;
             }
@@ -546,11 +551,14 @@ namespace game
                 ++ready;
         const bool all = a.net->Connected() && ready + 1 >= a.expected;
         const bool timeout = now - a.barrierSince > 300.0 || (a.net->Failed() && now - a.barrierSince > 10.0);
-        if (all || timeout)
+        // B (or Back) leaves the wait: start without the others.
+        const bool cancel = (hid::GameButtons() & (0x2000 | 0x0020)) != 0 && now - a.barrierSince > 1.0;
+        if (all || timeout || cancel)
         {
             a.barrier = false;
             game::SetWorldHold(false);
-            fprintf(stderr, "[mp] start barrier released after %.1f s (%s)\n", now - a.barrierSince, all ? "everyone is ready" : "timeout");
+            ui::WithdrawToast(kWaitToast);
+            fprintf(stderr, "[mp] start barrier released after %.1f s (%s)\n", now - a.barrierSince, all ? "everyone is ready" : cancel ? "cancelled with B" : "timeout");
         }
     }
 }

@@ -1084,9 +1084,11 @@ namespace hid
     namespace
     {
         std::atomic<uint8_t> s_gameRightTrigger{ 0 }, s_gameLeftTrigger{ 0 };
+        std::atomic<uint16_t> s_gameButtons{ 0 };
     }
     uint8_t GameRightTrigger() { return s_gameRightTrigger.load(std::memory_order_relaxed); }
     uint8_t GameLeftTrigger() { return s_gameLeftTrigger.load(std::memory_order_relaxed); }
+    uint16_t GameButtons() { return s_gameButtons.load(std::memory_order_relaxed); }
 }
 
 // Lockstep (net/netplay.h): in a race, with the pads linked and NFSMW_FIXED_STEPS on, the game's controllers 0 and 1 are the local pad as it was a few
@@ -1199,6 +1201,7 @@ uint32_t XamInputGetState(uint32_t userIndex, uint32_t flags, XAMINPUT_STATE* st
     }
     hid::s_gameRightTrigger.store(p.rightTrigger, std::memory_order_relaxed);
     hid::s_gameLeftTrigger.store(p.leftTrigger, std::memory_order_relaxed);
+    hid::s_gameButtons.store(uint16_t(p.buttons), std::memory_order_relaxed);
     state->dwPacketNumber = ByteSwap(packet);
     state->Gamepad.wButtons = ByteSwap(p.buttons);
     state->Gamepad.bLeftTrigger = p.leftTrigger;
