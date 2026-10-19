@@ -317,7 +317,7 @@ Setting the word at 0x82A2D7C8 (what sub_822BE418 waits for) after the online.cf
 (server start), which then crashes at +0x4e4: it calls sub_82542C98 (a connection/player-object constructor, `this`=0x82C652D0), and its
 field +372 stays -1, so the code takes `r29 = 0` and reads [0+12]. So the word alone is not the missing piece: the object that
 sub_82542C98 should have filled in (its +372 handle, normally set by the platform session/matchmaking layer) is also missing in this
-mode. Disassemble any guest range with `tools/dis.sh <addr> [bytes]`.
+mode. Disassemble any guest range with `scripts/mp/dis.py <addr> [bytes]`.
 
 ## Direction (v2): a multiplayer layer of our own, not the game's EA stack
 
@@ -334,7 +334,7 @@ layer that does not exist here. Career mode is not ported. The new layer is:
 - Test: `tests/enet_loopback_test.cpp` (`-DSB_TESTS=ON`).
 
 ## The player's car in memory (found 2026-10-18, Quick Play race, single player)
-Method (tools/): `quickrace.sh` reaches a race through the menus on a throw-away data copy; `findpos.py` takes the car position from a static copy
+Method (scripts/mp/): `quickrace.sh` reaches a race through the menus on a throw-away data copy; `findpos.py` takes the car position from a static copy
 (guest 0x82A2DBF0 holds the player's world position as three big-endian floats, metres) and finds every other place that holds the same triple and
 follows it while driving; `localvel.py` reads the area around it twice and lists triples equal to (pos2 - pos1) / dt.
 Result: the player's rigid body state is a heap block laid out as
@@ -356,7 +356,7 @@ Pieces (all off unless the environment variables are set; nothing changes for no
   player into the body that stands for that player (matrix, position, linear and angular velocity). The rendered car follows the body.
   Variables: `NFSMW_MP_SERVER=host[:port]`, `NFSMW_MP_NAME`, `NFSMW_MP_BODIES=i,j,...` (list positions of the stand-in bodies, one per remote player in id order; the log shows the
   list every 3 s), and for a test without a network `NFSMW_MP_GHOST=<s>` + `NFSMW_MP_BODY=<i>` + `NFSMW_MP_OFFSET=<m>`.
-- `tools/quickrace.sh <name> [env]`: menus to a Quick Play race on a throw-away data copy.
+- `scripts/mp/quickrace.sh <name> [env]`: menus to a Quick Play race on a throw-away data copy.
 **Checked (one machine, the real server and protocol):** ghost mode: the opponent body follows the local car 3 s late (positions match to a metre) and with a 5 m offset the
 rendered opponent drives next to the player. Network mode: `mp_server` + `mp_bot` (replays the player delayed 3 s, +8 m in x): the game log shows "net up, 1 remote, rtt 74 ms",
 the stand-in body (#1, a grid opponent) sits at the local car's position + 8 m when the delay is short, and 40 m behind it with a 3 s delay.
