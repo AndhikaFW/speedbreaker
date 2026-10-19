@@ -228,7 +228,7 @@ namespace
         std::vector<uint32_t> out;
         const uint32_t data = PPC_LOAD_U32(kVehicleTable + 4);
         const uint32_t count = PPC_LOAD_U32(kVehicleTable + 12);
-        if (data != kVehicleTable + 16 || count > 16)
+        if (data != kVehicleTable + 16 || count > 20)   // 20 entries is the table's capacity: traffic fills it in a busy race
             return out;
         const std::vector<uint32_t> bodies = Bodies(base);
         for (uint32_t i = 0; i < count; ++i)
