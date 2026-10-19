@@ -166,7 +166,7 @@ namespace
         bool gridLogged = false;
         double emptySince = 0;
         int raceEpoch = 0;   // counts new races and finished races: the grid animation's vehicle list starts over with each
-        double barrierSince = 0;
+        double barrierSince = 0, allReadyAt = 0;
         double readyUntil = 0;   // the ready flag is kept on for a while after the release: a game that released at once (the others were ready) must still be seen as ready
         double localSince = 0, connectedAt = 0, lastTable = -1;
         std::map<uint8_t, uint32_t> standIns;   // remote player id -> body object
@@ -328,6 +328,7 @@ namespace
                 {
                     a.barrier = true;
                     a.barrierSince = now;
+                    a.allReadyAt = 0;
                     a.readyUntil = now + 20.0;
                     game::SetWorldHold(true);
                     fprintf(stderr, "[mp] start barrier: race held until %d players are ready\n", a.expected);
@@ -565,15 +566,28 @@ namespace game
             if (r.hasCar && (r.latest.flags & mp::kFlagReady))
                 ++ready;
         const bool all = a.net->Connected() && ready + 1 >= a.expected;
+        // The games are not at the same point of their race world when they are held (the race appears at a different moment of loading on each machine: 1.8 s apart
+        // between the ARM and x86 test machines), so releasing together would start the countdown and GO at different times. Every game's world clock stands still
+        // while held and is in the ready flags: the game that is ahead waits the difference after everyone is ready, so the others catch up in real time.
+        float slowest = LoadF(g_memory.base, 0x82A153B8);
+        const float mine = slowest;
+        for (const auto& [id, r] : a.net->Remotes())
+            if (r.hasCar && (r.latest.flags & mp::kFlagReady) && std::isfinite(r.latest.raceClock))
+                slowest = std::min(slowest, r.latest.raceClock);
+        const double extra = std::clamp(double(mine - slowest), 0.0, 20.0);
+        if (all && a.allReadyAt == 0)
+            a.allReadyAt = now;
+        const bool aligned = all && now - a.allReadyAt >= extra;
         const bool timeout = now - a.barrierSince > 300.0 || (a.net->Failed() && now - a.barrierSince > 10.0);
         // B (or Back) leaves the wait: start without the others.
         const bool cancel = (hid::GameButtons() & (0x2000 | 0x0020)) != 0 && now - a.barrierSince > 1.0;
-        if (all || timeout || cancel)
+        if (aligned || timeout || cancel)
         {
             a.barrier = false;
+            a.allReadyAt = 0;
             game::SetWorldHold(false);
             ui::WithdrawToast(kWaitToast);
-            fprintf(stderr, "[mp] start barrier released after %.1f s (%s)\n", now - a.barrierSince, all ? "everyone is ready" : cancel ? "cancelled with B" : "timeout");
+            fprintf(stderr, "[mp] start barrier released after %.1f s (%s; waited %.2f s for the others' race clocks to catch up)\n", now - a.barrierSince, aligned ? "everyone is ready" : cancel ? "cancelled with B" : "timeout", extra);
         }
     }
 }
