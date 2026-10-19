@@ -44,6 +44,7 @@
 #include "frame_time.h"
 #include "whole_vblanks.h"
 #include "mp_adapter.h"
+#include <net/multiplayer_config.h>
 
 #include <cpu/guest_time.h>
 #include <kernel/function.h>
@@ -102,7 +103,9 @@ namespace game
     {
         const char* v = std::getenv("NFSMW_FIXED_STEPS");
         int n = v ? std::atoi(v) : 0;
-        if (!v && settings::GetBool(settings::Id::OnlinePlay))
+        // Settings > Online > Online Play is the old lockstep link (two steps a frame, whatever the frame took: on a machine that draws more than 30 frames a second the
+        // world then runs faster than real time). The multiplayer races (net/mp_*) need the world at real time, so they win when both are on.
+        if (!v && settings::GetBool(settings::Id::OnlinePlay) && !mpcfg::Load().enabled)
             n = 2;
         n = std::clamp(n, 0, 4);
         if (!n)
