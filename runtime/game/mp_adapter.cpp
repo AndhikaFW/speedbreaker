@@ -382,6 +382,7 @@ namespace
                 for (int i = 0; i < 4; ++i) c.rot[i] = ph.q[i];
                 for (int i = 0; i < 3; ++i) { c.pos[i] = ph.pos[i]; c.vel[i] = ph.vel[i]; c.angVel[i] = ph.ang[i]; }
                 c.flags = (a.barrier || now < a.readyUntil) ? mp::kFlagReady : 0;
+                c.raceClock = LoadF(base, 0x82A153B8);
                 a.net->SendCar(c);
             }
         }
@@ -458,6 +459,10 @@ PPC_FUNC(sub_82528448)
                 uint32_t bs = PPC_LOAD_U32(bodies[i] + 28);
                 fprintf(stderr, " #%zu %08X(%.0f,%.0f)", i, bodies[i], bs ? LoadF(base, bs + 48) : 0.f, bs ? LoadF(base, bs + 52) : 0.f);
             }
+            if (a.net)
+                for (const auto& [id, r] : a.net->Remotes())
+                    if (r.hasCar)
+                        fprintf(stderr, " | clock of player %u minus mine: %+.2f s", id, double(r.latest.raceClock) - double(LoadF(base, 0x82A153B8)) - 0.001 * a.net->RttMs() * 0.5);
             if (a.net)
                 fprintf(stderr, " | net %s, %zu remote, rtt %u ms", a.net->Connected() ? "up" : a.net->Failed() ? "FAILED" : "connecting", a.net->Remotes().size(), a.net->RttMs());
             fprintf(stderr, "\n");

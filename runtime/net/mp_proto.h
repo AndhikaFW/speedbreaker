@@ -10,7 +10,7 @@
 namespace mp
 {
     constexpr uint16_t kDefaultPort = 27960;
-    constexpr uint32_t kProtocolVersion = 1;
+    constexpr uint32_t kProtocolVersion = 2;
     constexpr int kMaxPlayers = 16;
     constexpr int kChanState = 0;   // unreliable, latest wins
     constexpr int kChanEvent = 1;   // reliable, ordered
@@ -45,7 +45,8 @@ namespace mp
         float throttle = 0;        // 0..1
         float brake = 0;           // 0..1
         uint16_t carId = 0;        // which car model (game's own id), so the other side can spawn it
-        uint16_t flags = 0;        // bit 0: handbrake, bit 1: nitrous, bit 2: horn
+        uint16_t flags = 0;        // bit 0: handbrake, bit 1: nitrous, bit 2: horn, bit 4 (kFlagReady): held at the start barrier
+        float raceClock = 0;       // the sender's world clock (seconds, game/frame_time: 0x82A153B8) when the state was taken, to compare the two games' clocks
     };
 
     // Writer/reader over a byte vector.
@@ -70,7 +71,7 @@ namespace mp
             for (float f : c.vel) f32(f);
             for (float f : c.angVel) f32(f);
             f32(c.steer); f32(c.throttle); f32(c.brake);
-            u16(c.carId); u16(c.flags);
+            u16(c.carId); u16(c.flags); f32(c.raceClock);
         }
         std::vector<uint8_t> b;
     private:
@@ -104,7 +105,7 @@ namespace mp
             for (float& f : c.vel) f = f32();
             for (float& f : c.angVel) f = f32();
             c.steer = f32(); c.throttle = f32(); c.brake = f32();
-            c.carId = u16(); c.flags = u16();
+            c.carId = u16(); c.flags = u16(); c.raceClock = f32();
             return c;
         }
     private:
