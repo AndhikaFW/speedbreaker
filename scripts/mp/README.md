@@ -7,4 +7,4 @@ Run on a throw-away copy of the game's data, never on the real saves (`launch_sp
   (`NFSMW_INPUT_CMD`), grab a small screenshot of the window (Hyprland: `hyprctl`, `grim`).
 - `gmem.py` (read the running game's guest memory through /proc), `findpos.py`, `findcar.py`, `findvel.py`, `localvel.py`, `bodies.py`, `walklist.py`, `ptrs.py`, `dumpobj.py`,
   `statdiff.py`: find the player's car and the game's state words, see docs/MULTIPLAYER.md.
-- `dis.py <addr> [bytes]` (and the older `dis.sh`): disassemble the dump one word at a time (needs `llvm-mc`); `dis.sh` loses its alignment after an undecodable VMX word, use `dis.py`.
+- `disasm.py <addr> [bytes]` (and the older `dis.sh`): disassemble the dump one word at a time (needs `llvm-mc`); `dis.sh` loses its alignment after an undecodable VMX word, use `disasm.py`.

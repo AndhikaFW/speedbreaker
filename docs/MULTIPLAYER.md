@@ -317,7 +317,7 @@ Setting the word at 0x82A2D7C8 (what sub_822BE418 waits for) after the online.cf
 (server start), which then crashes at +0x4e4: it calls sub_82542C98 (a connection/player-object constructor, `this`=0x82C652D0), and its
 field +372 stays -1, so the code takes `r29 = 0` and reads [0+12]. So the word alone is not the missing piece: the object that
 sub_82542C98 should have filled in (its +372 handle, normally set by the platform session/matchmaking layer) is also missing in this
-mode. Disassemble any guest range with `scripts/mp/dis.py <addr> [bytes]`.
+mode. Disassemble any guest range with `scripts/mp/disasm.py <addr> [bytes]`.
 
 ## Direction (v2): a multiplayer layer of our own, not the game's EA stack
 
