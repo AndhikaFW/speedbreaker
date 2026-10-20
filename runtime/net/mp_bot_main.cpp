@@ -1,4 +1,4 @@
-// mp_bot <host[:port]> [delay seconds] [offset metres]: a stand-in second player for testing with one game. It joins, watches the first other player
+// mp_bot <host[:port]> [delay seconds] [offset metres] [name to follow] [own name]: a stand-in second player for testing with one game. It joins, watches the first other player
 // and drives a car that replays that player's car delayed (default 3 s) and shifted sideways (default 8 m along x), through the real server and protocol.
 #include "mp_client.h"
 #include <chrono>
@@ -15,8 +15,10 @@ int main(int argc, char** argv)
     if (size_t c = host.rfind(':'); c != std::string::npos) { port = uint16_t(atoi(host.c_str() + c + 1)); host.resize(c); }
     const double delay = argc > 2 ? atof(argv[2]) : 3.0;
     const float offset = argc > 3 ? float(atof(argv[3])) : 8.f;
+    const std::string follow = argc > 4 ? argv[4] : "";   // replay only the player with this name (several bots must not follow each other)
+    const std::string ownName = argc > 5 ? argv[5] : "bot";
     mp::Client c;
-    if (!c.Connect(host, port, "bot")) return 1;
+    if (!c.Connect(host, port, ownName)) return 1;
     std::deque<std::pair<uint32_t, mp::CarState>> hist;   // (local ms, state)
     uint32_t lastSeq = 0, lastSend = 0, lastLog = 0;
     for (;;)
@@ -25,7 +27,7 @@ int main(int argc, char** argv)
         const uint32_t now = c.NowMs();
         if (c.Connected())
             for (const auto& [id, r] : c.Remotes())
-                if (r.hasCar && r.latest.seq != lastSeq)
+                if (r.hasCar && (follow.empty() || r.name == follow) && r.latest.seq != lastSeq)
                 {
                     lastSeq = r.latest.seq;
                     hist.emplace_back(now, r.latest);

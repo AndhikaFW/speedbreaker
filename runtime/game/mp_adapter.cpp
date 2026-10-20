@@ -164,6 +164,7 @@ namespace
         int expected = 0;
         bool barrier = false;
         bool gridLogged = false;
+        bool fewShown = false;        // this race: told the player that there are fewer opponent cars than other players
         bool mismatchShown = false;   // this race: the other player was seen in a different race
         double emptySince = 0;
         int raceEpoch = 0;   // counts new races and finished races: the grid animation's vehicle list starts over with each
@@ -327,6 +328,7 @@ namespace
                 a.refClock = -1;
                 a.gridLogged = false;
                 a.mismatchShown = false;
+                a.fewShown = false;
                 a.localObj = first;
                 a.standIns.clear();
                 a.standInObj = 0;
@@ -428,6 +430,13 @@ namespace
                     fprintf(stderr, "[mp] remote player %u (%s) drives body %08X\n", id, r.name.c_str(), candidates[k]);
                 }
                 ++k;
+            }
+            // More players than opponent cars: the last players have no car to drive here (the race needs at least as many opponents as other players).
+            if (!a.fewShown && !candidates.empty() && a.net->Remotes().size() > candidates.size())
+            {
+                a.fewShown = true;
+                ui::Toast("This race has fewer opponents than other players, so some players are not shown. Next time choose more opponents.", 20.0);
+                fprintf(stderr, "[mp] only %zu opponent cars for %zu other players\n", candidates.size(), a.net->Remotes().size());
             }
         }
     }
