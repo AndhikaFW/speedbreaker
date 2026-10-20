@@ -167,6 +167,9 @@ namespace
         double emptySince = 0;
         int raceEpoch = 0;   // counts new races and finished races: the grid animation's vehicle list starts over with each
         double barrierSince = 0, allReadyAt = 0;
+        // The agreed race clock after the start: every game aims at refClock + real seconds since refTime (game/frame_time.cpp nudges the world's speed to follow it),
+        // so the clocks stay together whatever each machine's loading did to its game time. refClock < 0: not in a synchronised race.
+        double refClock = -1, refTime = 0;
         double readyUntil = 0;   // the ready flag is kept on for a while after the release: a game that released at once (the others were ready) must still be seen as ready
         double localSince = 0, connectedAt = 0, lastTable = -1;
         std::map<uint8_t, uint32_t> standIns;   // remote player id -> body object
@@ -303,6 +306,7 @@ namespace
             if (!first && a.localObj && now - a.emptySince > 2.5)
             {
                 fprintf(stderr, "[mp] %.2f s race over (the vehicle table, %08X count %u, has been empty since %.2f s)\n", now, PPC_LOAD_U32(kVehicleTable + 4), PPC_LOAD_U32(kVehicleTable + 12), a.emptySince);
+                a.refClock = -1;
                 ++a.raceEpoch;
                 a.localObj = 0;
                 a.standIns.clear();
@@ -319,6 +323,7 @@ namespace
                 // A new race: forget the old bodies (the stand-ins are looked up again) and hold the start if others are expected.
                 fprintf(stderr, "[mp] %.2f s local car body is now %08X\n", now, first);
                 ++a.raceEpoch;
+                a.refClock = -1;
                 a.gridLogged = false;
                 a.localObj = first;
                 a.standIns.clear();
@@ -460,6 +465,8 @@ PPC_FUNC(sub_82528448)
                 uint32_t bs = PPC_LOAD_U32(bodies[i] + 28);
                 fprintf(stderr, " #%zu %08X(%.0f,%.0f)", i, bodies[i], bs ? LoadF(base, bs + 48) : 0.f, bs ? LoadF(base, bs + 52) : 0.f);
             }
+            if (const double want = game::MpWantedClock(); want >= 0)
+                fprintf(stderr, " | race clock minus the agreed clock: %+.3f s", double(LoadF(base, 0x82A153B8)) - want);
             if (a.net)
                 for (const auto& [id, r] : a.net->Remotes())
                     if (r.hasCar)
@@ -584,6 +591,12 @@ namespace game
         if (aligned || timeout || cancel)
         {
             a.barrier = false;
+            if (aligned && std::isfinite(slowest) && slowest >= 0)
+            {
+                // The slowest game's world starts when everyone is ready; one that waited `extra` s starts later with a clock that is `extra` s ahead, so the same line fits both.
+                a.refClock = double(slowest);
+                a.refTime = a.allReadyAt;
+            }
             a.allReadyAt = 0;
             game::SetWorldHold(false);
             ui::WithdrawToast(kWaitToast);
@@ -665,5 +678,17 @@ namespace game
     {
         std::lock_guard<std::mutex> g(g_statusMutex);
         return g_status;
+    }
+}
+
+// The race clock every game aims at (seconds), or a negative number when there is none (no synchronised race). Any thread that is the game's main loop.
+namespace game
+{
+    double MpWantedClock()
+    {
+        Adapter& a = A();
+        if (a.refClock < 0 || a.barrier)
+            return -1;
+        return a.refClock + std::max(0.0, a.Now() - a.refTime);
     }
 }

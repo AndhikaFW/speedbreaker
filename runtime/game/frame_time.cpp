@@ -159,6 +159,31 @@ void GameFrameTime(PPCRegister& r3)
         PPCRegister& r3;
         ~AddToClock() { s_clock.fetch_add(uint64_t(std::max(int32_t(r3.u32), 0)), std::memory_order_relaxed); }
     } addToClock{ r3 };
+    // Multiplayer race clock (game/mp_adapter.cpp): follow the agreed clock by giving the frame a little more or less time (at most 100% more, 50% less), so a game
+    // whose loading made its game time lag (or run ahead) closes the gap within a few seconds, before the cars leave the line.
+    struct FollowRaceClock
+    {
+        PPCRegister& r3;
+        ~FollowRaceClock()
+        {
+            const double want = game::MpWantedClock();
+            if (want < 0)
+                return;
+            const uint32_t bits = __builtin_bswap32(*reinterpret_cast<const uint32_t*>(g_memory.base + 0x82A153B8));
+            float clockNow;
+            memcpy(&clockNow, &bits, 4);
+            if (!(clockNow > 0.0f) || !std::isfinite(clockNow))
+                return;
+            const double err = want - double(clockNow);          // seconds the world is behind (positive) or ahead
+            if (std::abs(err) < 0.02 || std::abs(err) > 30.0)
+                return;
+            const double frameMs = double(int32_t(r3.u32)) / 65536.0;
+            if (frameMs <= 0.0)
+                return;
+            const double extraMs = std::clamp(err * 1000.0 * 0.25, -0.5 * frameMs, 1.0 * frameMs);
+            r3.u64 = uint32_t(std::llround((frameMs + extraMs) * 65536.0));
+        }
+    } followRaceClock{ r3 };
     static uint64_t last = 0;
     uint64_t now = video::GuestVblanks(), vblanks = now - last;
     last = now;
