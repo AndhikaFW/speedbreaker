@@ -50,6 +50,7 @@ namespace mp
         bool welcome = false, failed = false;
         uint8_t myId = 0;
         uint64_t myCarKey = 0;
+        bool myReady = false;
         uint32_t seq = 0;
         std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
         std::map<uint8_t, Remote> remotes;
@@ -124,9 +125,9 @@ namespace mp
                 case Msg::Welcome:
                     m->myId = r.u8();
                     m->welcome = r.ok();
-                    if (m->welcome && m->myCarKey)
+                    if (m->welcome && (m->myCarKey || m->myReady))
                     {
-                        Writer w(Msg::PlayerInfo); w.u32(uint32_t(m->myCarKey >> 32)); w.u32(uint32_t(m->myCarKey));
+                        Writer w(Msg::PlayerInfo); w.u32(uint32_t(m->myCarKey >> 32)); w.u32(uint32_t(m->myCarKey)); w.u8(m->myReady ? 1 : 0);
                         m->Send(kChanEvent, w, true);   // after a reconnect the server must hear it again
                     }
                     break;
@@ -134,8 +135,12 @@ namespace mp
                 {
                     const uint8_t id = r.u8();
                     const uint32_t hi = r.u32(), lo = r.u32();
+                    const uint8_t rdy = r.u8();
                     if (r.ok() && id != m->myId)
+                    {
                         m->remotes[id].carKey = (uint64_t(hi) << 32) | lo;
+                        m->remotes[id].lobbyReady = rdy != 0;
+                    }
                     break;
                 }
                 case Msg::Reject:
@@ -213,11 +218,12 @@ namespace mp
         m->Send(kChanState, w, false);
     }
 
-    void Client::SetCarKey(uint64_t key)
+    void Client::SetLobby(uint64_t key, bool ready)
     {
         m->myCarKey = key;
+        m->myReady = ready;
         if (!m->welcome) return;   // sent when the welcome arrives
-        Writer w(Msg::PlayerInfo); w.u32(uint32_t(key >> 32)); w.u32(uint32_t(key));
+        Writer w(Msg::PlayerInfo); w.u32(uint32_t(key >> 32)); w.u32(uint32_t(key)); w.u8(ready ? 1 : 0);
         m->Send(kChanEvent, w, true);
     }
     uint64_t Client::MyCarKey() const { return m->myCarKey; }

@@ -50,6 +50,8 @@ namespace hid
     uint8_t GameLeftTrigger();
     // The buttons of controller 0 (XINPUT_GAMEPAD_* bits) as the game last read them, from any thread: the multiplayer start barrier is left with B.
     uint16_t GameButtons();
+    // B or Back on the pad, Backspace or Esc on the keyboard, read from the devices (any thread), for a wait that must be left while the game is not polling its input.
+    bool CancelHeld();
 
     // Main thread, after SDL video is up.
     void Initialize();

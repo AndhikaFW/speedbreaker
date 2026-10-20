@@ -10,6 +10,9 @@ namespace game
     void MpFramePump();
     // The race clock (seconds) the world should be at now so that the games in a multiplayer race stay together, or < 0 if there is none.
     double MpWantedClock();
+    // The settings page: the car this player chose in the lobby (its type key, from game::CarCatalog) and whether it is ready for the next race. Any thread.
+    void MpSetLobby(uint64_t carKey, bool ready);
+    bool MpLobbyReady();
     // From game/car_select.cpp, on the guest thread: the player's vehicle was just created; the race script is about to create its opponents.
     void MpPlayerCreated(uint8_t* base);
     void MpBeforeOpponents(uint8_t* base);

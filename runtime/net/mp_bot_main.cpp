@@ -17,6 +17,7 @@ int main(int argc, char** argv)
     const float offset = argc > 3 ? float(atof(argv[3])) : 8.f;
     const std::string follow = argc > 4 ? argv[4] : "";   // replay only the player with this name (several bots must not follow each other)
     const std::string ownName = argc > 5 ? argv[5] : "bot";
+    const float offsetZ = argc > 7 ? float(atof(argv[7])) : 0.f;   // metres along the cars' z (in front or behind)
     const uint64_t carKey = argc > 6 ? strtoull(argv[6], nullptr, 16) : 0x0D928DCAF667ABA4ull;   // announced when it sees a player (default: an RX-8)
     mp::Client c;
     if (!c.Connect(host, port, ownName)) return 1;
@@ -27,7 +28,7 @@ int main(int argc, char** argv)
         c.Service();
         const uint32_t now = c.NowMs();
         if (c.Connected() && c.MyCarKey() == 0 && !c.Remotes().empty())
-            c.SetCarKey(carKey);
+            c.SetLobby(carKey, true);
         if (c.Connected())
             for (const auto& [id, r] : c.Remotes())
                 if (r.hasCar && (follow.empty() || r.name == follow) && r.latest.seq != lastSeq)
@@ -42,6 +43,7 @@ int main(int argc, char** argv)
             lastSend = now;
             mp::CarState s = hist.front().second;
             s.pos[0] += offset;
+            s.pos[2] += offsetZ;
             c.SendCar(s);
         }
         if (now - lastLog > 3000)

@@ -6,6 +6,7 @@
 #include <stdafx.h>
 #include "ui.h"
 
+#include <game/car_select.h>
 #include <game/mp_adapter.h>
 #include <net/lobby.h>
 #include <net/multiplayer_config.h>
@@ -92,7 +93,40 @@ namespace ui
             ImGui::SetNextItemWidth(-1);
             ImGui::InputText("##mpname", name, sizeof name);
             changed |= ImGui::IsItemDeactivatedAfterEdit();
-            ImGui::TextUnformatted("Players to wait for at the start (1 = don't wait)");
+            ImGui::TextUnformatted("Your car (the other players' games make an opponent of it)");
+            const std::vector<game::CarEntry> cars = game::CarCatalog();
+            uint64_t carKey = 0;
+            if (cars.empty())
+                ImGui::TextDisabled("(the car list appears once the game has loaded: wait a moment)");
+            else
+            {
+                std::string shown = "Choose a car";
+                for (const auto& c : cars)
+                    if (c.name == cfg.car)
+                    {
+                        shown = c.display;
+                        carKey = c.key;
+                    }
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::BeginCombo("##mpcar", shown.c_str()))
+                {
+                    for (const auto& c : cars)
+                        if (ImGui::Selectable(c.display.c_str(), c.name == cfg.car))
+                        {
+                            cfg.car = c.name;
+                            carKey = c.key;
+                            changed = true;
+                            game::MpSetLobby(carKey, game::MpLobbyReady());
+                        }
+                    ImGui::EndCombo();
+                }
+            }
+            bool ready = game::MpLobbyReady();
+            if (ImGui::Checkbox("Ready for the next race", &ready))
+                game::MpSetLobby(carKey, ready && carKey != 0);
+            ImGui::TextWrapped("Tick Ready when you are about to start the race, with the car above chosen in the game's car selection too. Everyone who is ready is in the next race, "
+                "and each game makes its opponents as their cars. (Not ready: the number below decides how many players the start waits for.)");
+            ImGui::TextUnformatted("Players to wait for at the start when not ready in the lobby (1 = don't wait)");
             ImGui::SetNextItemWidth(-1);
             changed |= ImGui::SliderInt("##mpplayers", &cfg.players, 1, 8);
             if (changed)
@@ -110,8 +144,7 @@ namespace ui
                 ImGui::Spacing();
                 ImGui::TextUnformatted("Players");
                 for (const auto& p : players)
-                    ImGui::BulletText("%s%s: %s", p.name.c_str(), p.self ? " (you)" : "", p.inRace ? (p.car.empty() ? "in a race" : ("in a race, " + p.car).c_str()) : "in the menus");
-                ImGui::TextWrapped("The cars are the ones the players chose in the game's own car selection: your opponents in a race are made as the other players' cars.");
+                    ImGui::BulletText("%s%s: %s%s", p.name.c_str(), p.self ? " (you)" : "", p.inRace ? "ready / in a race" : "in the menus", p.car.empty() ? "" : (", " + p.car).c_str());
             }
             if (std::getenv("NFSMW_MP_SERVER") || std::getenv("NFSMW_MP_NAME") || std::getenv("NFSMW_MP_PLAYERS"))
                 ImGui::TextWrapped("(NFSMW_MP_* environment variables are set and override these values.)");

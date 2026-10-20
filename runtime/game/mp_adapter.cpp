@@ -26,6 +26,7 @@
 #include <deque>
 #include <map>
 #include <memory>
+#include <atomic>
 #include <mutex>
 #include <vector>
 
@@ -34,8 +35,12 @@ extern "C" PPC_FUNC(__imp__sub_82420FC0);
 
 namespace
 {
-    // A remote player is in a race when it announced its car (a game that has created its player's vehicle) or is sending car states (older clients and the test bots).
-    bool InRace(const mp::Remote& r) { return r.carKey != 0 || r.hasCar; }
+    // A remote player is in the race when it is ready in the lobby (its car is made for it) or is sending car states (the test bots, a player who joined late).
+    bool InRace(const mp::Remote& r) { return r.lobbyReady || r.hasCar; }
+
+    // The lobby choice of this player (set from the settings page, any thread): the car's type key and whether it is ready to race.
+    std::atomic<uint64_t> g_lobbyCar{ 0 };
+    std::atomic<bool> g_lobbyReady{ false };
 
     constexpr const char* kWaitToast = "Waiting for the other players. Press B to start without them.";
     std::mutex g_statusMutex;
@@ -166,7 +171,22 @@ namespace
         std::string server, name = "player";
         double lastSend = 0, lastTry = 0, lastStatus = -10;
         // Start barrier (NFSMW_MP_PLAYERS=n, n > 1): the race is held, world frozen, from the moment it appears until n-1 other players are there and ready too.
-        int expected = 0;
+        std::string cfgCar;               // the lobby car from the settings file (by name; its key is looked up once the catalogue exists)
+        int expected = 0;                 // the number of players from the settings (used when this player is not ready in the lobby)
+        int barrierExpected = 0;          // players the barrier waits for in this race
+        bool pushedReady = false;
+        uint64_t pushedCar = 0;
+        // How many players the next race has: this one plus the others that are ready in the lobby, or the number from the settings when this player is not ready.
+        int Expected() const
+        {
+            if (!g_lobbyReady.load() || !net)
+                return expected;
+            int n = 1;
+            for (const auto& [id, r] : net->Remotes())
+                if (r.lobbyReady)
+                    ++n;
+            return n;
+        }
         bool barrier = false;
         bool gridLogged = false;
         uint64_t myCarKey = 0;        // the car this player's vehicle was made (announced to the others)
@@ -174,6 +194,8 @@ namespace
         bool mismatchShown = false;   // this race: the other player was seen in a different race
         double emptySince = 0;
         int raceEpoch = 0;   // counts new races and finished races: the grid animation's vehicle list starts over with each
+        bool barrierPending = false;      // a new race: the barrier is armed when the opponents exist
+        double barrierPendingSince = 0;
         double barrierSince = 0, allReadyAt = 0;
         // The agreed race clock after the start: every game aims at refClock + real seconds since refTime (game/frame_time.cpp nudges the world's speed to follow it),
         // so the clocks stay together whatever each machine's loading did to its game time. refClock < 0: not in a synchronised race.
@@ -209,6 +231,7 @@ namespace
             }
             name = c.name;
             expected = c.players;
+            cfgCar = c.car;
         }
         double Now() const { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); }
     };
@@ -320,8 +343,8 @@ namespace
                 a.standIns.clear();
                 a.standInObj = 0;
                 a.myCarKey = 0;
-                if (a.net)
-                    a.net->SetCarKey(0);
+                a.barrierPending = false;
+                g_lobbyReady = false;   // the next race needs the players to say they are ready again
                 game::ResetOpponentCount();
                 game::SetOpponentCars({});
                 if (a.barrier)
@@ -344,17 +367,29 @@ namespace
                 a.standIns.clear();
                 a.standInObj = 0;
                 a.history.clear();
-                if (a.expected > 1 && !a.server.empty())
-                {
-                    a.barrier = true;
-                    a.barrierSince = now;
-                    a.allReadyAt = 0;
-                    a.readyUntil = now + 20.0;
-                    game::SetWorldHold(true);
-                    fprintf(stderr, "[mp] start barrier: race held until %d players are ready\n", a.expected);
-                    ui::Toast(kWaitToast, 600.0);
-                }
+                // The start barrier (a held world) is armed once the race script has created its opponents (see below): a world held before that would create them after the
+                // loading phase, and their models would never appear.
+                a.barrierPending = a.Expected() > 1 && !a.server.empty();
+                a.barrierPendingSince = now;
                 a.localSince = now;
+            }
+        }
+
+        // Arm the start barrier once the race script has finished creating the opponents (none created for 0.5 s after the first), or after 5 s if it creates none.
+        if (a.barrierPending && a.localObj)
+        {
+            const int made = game::OpponentsCreated();
+            if ((made > 0 && game::SecondsSinceLastOpponent() > 0.5) || (made == 0 && now - a.barrierPendingSince > 5.0))
+            {
+                a.barrierPending = false;
+                a.barrier = true;
+                a.barrierExpected = a.Expected();
+                a.barrierSince = now;
+                a.allReadyAt = 0;
+                a.readyUntil = now + 20.0;
+                game::SetWorldHold(true);
+                fprintf(stderr, "[mp] start barrier: race held until %d players are ready (%d opponents made)\n", a.barrierExpected, made);
+                ui::Toast(kWaitToast, 600.0);
             }
         }
         if (a.server.empty())
@@ -390,6 +425,12 @@ namespace
             a.net->Disconnect();
             a.net->Connect(host, port, a.name);
             fprintf(stderr, "[mp] connection lost, reconnecting to %s\n", a.server.c_str());
+        }
+        if (a.net->Connected() && (a.pushedReady != g_lobbyReady.load() || a.pushedCar != g_lobbyCar.load()))
+        {
+            a.pushedReady = g_lobbyReady.load();
+            a.pushedCar = g_lobbyCar.load();
+            a.net->SetLobby(a.pushedCar, a.pushedReady);
         }
         if (!a.localObj)
             return;
@@ -568,7 +609,7 @@ namespace game
                             ++ready;
                     char b[160];
                     if (a.barrier)
-                        snprintf(b, sizeof b, "Connected. Holding the start: %d of %d players ready.", ready + 1, a.expected);
+                        snprintf(b, sizeof b, "Connected. Holding the start: %d of %d players ready.", ready + 1, a.barrierExpected);
                     else
                     {
                         int inRace = 0;
@@ -579,6 +620,16 @@ namespace game
                     }
                     text = b;
                 }
+                // NFSMW_MP_READY=1 / NFSMW_MP_CAR=<name> (tests and scripts): the lobby choice without the settings page.
+                static const bool envReady = std::getenv("NFSMW_MP_READY") != nullptr;
+                if (const char* ec = std::getenv("NFSMW_MP_CAR"))
+                    a.cfgCar = ec;
+                if (!g_lobbyCar.load() && !a.cfgCar.empty())
+                    for (const auto& c : game::CarCatalog())
+                        if (c.name == a.cfgCar)
+                            g_lobbyCar = c.key;
+                if (envReady && g_lobbyCar.load() && !g_lobbyReady.load() && !a.localObj)
+                    g_lobbyReady = true;
                 std::vector<game::MpPlayer> players;
                 if (a.net && a.net->Connected())
                 {
@@ -589,7 +640,7 @@ namespace game
                                 return c.display;
                         return std::string(key ? "a car" : "");
                     };
-                    players.push_back({ a.name, carName(a.myCarKey), a.myCarKey != 0, true });
+                    players.push_back({ a.name, carName(g_lobbyCar.load() ? g_lobbyCar.load() : a.myCarKey), g_lobbyReady.load() || a.localObj != 0, true });
                     for (const auto& [id, r] : a.net->Remotes())
                         players.push_back({ r.name, carName(r.carKey), InRace(r), false });
                 }
@@ -638,7 +689,7 @@ namespace game
                         break;
                     }
             }
-        const bool all = a.net->Connected() && ready + 1 >= a.expected;
+        const bool all = a.net->Connected() && ready + 1 >= a.barrierExpected;
         // The games are not at the same point of their race world when they are held (the race appears at a different moment of loading on each machine: 1.8 s apart
         // between the ARM and x86 test machines), so releasing together would start the countdown and GO at different times. Every game's world clock stands still
         // while held and is in the ready flags: the game that is ahead waits the difference after everyone is ready, so the others catch up in real time.
@@ -704,7 +755,7 @@ PPC_FUNC(sub_82420FC0)
         for (int i = 0; i < 16; ++i)
             given[idx][i] = *(const volatile uint32_t*)(base + m + 4 * i);   // raw, still big-endian
         Adapter& a = A();
-        if (idx == 0 && a.expected > 1 && a.net && a.net->Connected())
+        if (idx == 0 && a.Expected() > 1 && a.net && a.net->Connected())
         {
             size_t rank = 0;
             for (const auto& [id, r] : a.net->Remotes())
@@ -759,8 +810,8 @@ namespace game
     }
 }
 
-// Called by game/car_select.cpp right after the game created the player's vehicle (the first vehicle of a race): tell the others which car it is, before anybody creates their
-// opponents.
+// Called by game/car_select.cpp right after the game created the player's vehicle (the first vehicle of a race): check that it is the car this player chose in the lobby (the others
+// were given that car when they created their opponents), and say so if it is not.
 namespace game
 {
     void MpPlayerCreated(uint8_t* base)
@@ -776,54 +827,42 @@ namespace game
         if (!key)
             return;
         a.myCarKey = key;
-        std::string name = "?";
-        for (const auto& c : game::CarCatalog())
-            if (c.key == key)
-                name = c.display;
-        fprintf(stderr, "[mp] my car is %s (%016llX)\n", name.c_str(), (unsigned long long)key);
-        if (a.net)
-            a.net->SetCarKey(key);
+        auto nameOf = [](uint64_t k) {
+            for (const auto& c : game::CarCatalog())
+                if (c.key == k)
+                    return c.display;
+            return std::string("another car");
+        };
+        fprintf(stderr, "[mp] my car is %s (%016llX)\n", nameOf(key).c_str(), (unsigned long long)key);
+        const uint64_t chosen = g_lobbyCar.load();
+        if (g_lobbyReady.load() && chosen && chosen != key)
+        {
+            const std::string text = "You are racing the " + nameOf(key) + ", but the other players were given the " + nameOf(chosen) + " for you. Choose the " + nameOf(chosen) + " in the car selection next time.";
+            ui::Toast(text, 25.0);
+            fprintf(stderr, "[mp] car mismatch: chose %s in the lobby, races %s\n", nameOf(chosen).c_str(), nameOf(key).c_str());
+        }
     }
 
-    // Called by game/car_select.cpp before the race script creates its first opponent: wait (a few seconds at most) until the other players of the race have announced their cars,
-    // then have the opponents made as those cars, in the order of the players' ids (the same order the stand-ins are given out in).
-    void MpBeforeOpponents(uint8_t* base)
+    // Called by game/car_select.cpp before the race script creates its first opponent: the opponents are made as the cars the other ready players chose in the lobby, in the order of the
+    // players' ids (the same order the stand-ins are given out in). Nothing is waited for: a car swapped in late is not drawn, so the choices have to be known by now.
+    void MpBeforeOpponents(uint8_t*)
     {
         Adapter& a = A();
-        if (a.server.empty() || !a.net)
-        {
-            game::SetOpponentCars({});
-            return;
-        }
-        const double t0 = a.Now();
-        const int need = std::max(0, a.expected - 1);
-        auto have = [&] {
-            int n = 0;
-            for (const auto& [id, r] : a.net->Remotes())
-                if (r.carKey)
-                    ++n;
-            return n;
-        };
-        bool waited = false;
-        while (need > 0 && have() < need && a.Now() - t0 < 25.0 && !a.net->Failed())
-        {
-            if (!waited)
-            {
-                waited = true;
-                fprintf(stderr, "[mp] waiting for the other players' cars (%d of %d announced)\n", have(), need);
-            }
-            a.net->Service();
-            if ((hid::GameButtons() & (0x2000 | 0x0020)) != 0 && a.Now() - t0 > 1.0)
-                break;   // B / Back: go on without them
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
         std::vector<uint64_t> keys;
-        for (const auto& [id, r] : a.net->Remotes())
-            if (r.carKey)
-                keys.push_back(r.carKey);
-        fprintf(stderr, "[mp] opponents are made as %zu announced car(s) (waited %.1f s)\n", keys.size(), a.Now() - t0);
+        if (!a.server.empty() && a.net)
+            for (const auto& [id, r] : a.net->Remotes())
+                if (r.lobbyReady && r.carKey)
+                    keys.push_back(r.carKey);
+        fprintf(stderr, "[mp] opponents are made as %zu car(s) chosen in the lobby\n", keys.size());
         game::SetOpponentCars(keys);
     }
+
+    void MpSetLobby(uint64_t carKey, bool ready)
+    {
+        g_lobbyCar = carKey;
+        g_lobbyReady = ready;
+    }
+    bool MpLobbyReady() { return g_lobbyReady.load(); }
 }
 
 namespace game

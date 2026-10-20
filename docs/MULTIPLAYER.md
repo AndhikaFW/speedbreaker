@@ -403,15 +403,18 @@ Measured with the race clock (the world clock at 0x82A153B8) that every game sen
   for an invalid table, which made the race look over and re-armed the barrier in the middle of the race.
 - The barrier can be left with B / Back (a toast says so); the ready flag stays on 20 s after the release (a game that released at once is otherwise seen as ready for one packet only).
 
-## Car models (solved 2026-10-21) and names
+## Car models (solved 2026-10-21, lobby-based) and names
 **How it works**: every car has a 64-bit type key, the string key (`sub_82144CA0`) of its folder name (IS300, RX8, ...), and a template record in the heap (key at +16, dimensions before it);
 a vehicle's creation record is at `owner + 0x74` (the template itself for the player's car, a copy for opponents). The race script creates each opponent with `sub_82333680(call, racer key)`;
 the car is instantiated from its template by `sub_82147BF8(layout, template, ...)`, and passing another car's template while `sub_82333680` runs makes the opponent that car (checked: all
 opponents RX8, with the RX8's mass 1631 kg and inertia). game/car_select.cpp does that, and builds a catalogue from the game's own name table (the heap run `RX8, rx8, LANCEREVO8, ...`;
 `NFSMW_LOG_CARS=1` prints it: 92 names with templates, cops and traffic filtered out). The player's own car cannot be changed from outside (its template pointer comes from the front end's state
-through the vehicle constructor `sub_823D83E8`; not found), so the lobby does not set cars: each game announces the car it actually made for its player right after `sub_824729E0` creates it
-(`PlayerInfo` message, protocol version 3), waits (at most 25 s) in `sub_82333680` for the other players of the race to announce theirs, and makes its opponents those cars in player id order,
-the order the stand-ins are handed out in. The connection is now kept from the moment multiplayer is on, so players and cars are known before a race.
+through the vehicle constructor `sub_823D83E8`; not found), so the lobby sets what the *others* see: each player chooses a car in the lobby and marks itself ready (`PlayerInfo`: car key and ready flag, protocol version 4); every game makes its
+opponents those cars, in player id order (the order the stand-ins are handed out in), and checks after creating its own player that the car is the lobby car (message if not). **A swapped
+car is only drawn if the swap happens within about a second of the player's creation**: waiting inside `sub_82333680` (tried: announce the actual car after creation and wait for the others)
+leaves the opponent without a body (wheels only), reproduced on one machine with `NFSMW_TEST_TEMPLATE=<key> NFSMW_TEST_OPP_DELAY=<s>`: delay 0 draws the car, 4 s and more do not. So the
+choices must be known before the race loads; the connection is kept from the moment multiplayer is on. The world hold of the start barrier is armed only after the opponents are created.
+The 32-bit key the creation looks up first (`sub_821E02C0`, same for the player and an opponent) is a vehicle behaviour preset, not the car.
 
 ## Earlier attempts on car models and names (2026-10-20), so they are not repeated
 - The race script creates each opponent with `sub_82333680(call, racer key)`: r4 is a racer (Attrib collection) key, not a car preset; presets are hashes in the game's data (no ASCII preset names in memory, only display names

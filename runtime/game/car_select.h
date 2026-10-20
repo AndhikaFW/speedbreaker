@@ -22,6 +22,9 @@ namespace game
     void SetOpponentCars(const std::vector<uint64_t>& keys);
     // The car the player's own vehicle is made, from the next race on (0 = the one chosen in the front end). Any thread.
     void SetPlayerCar(uint64_t key);
+    // How many opponents the race script has created in this race so far, and how long ago the last one was created (seconds; large if none). Any thread.
+    int OpponentsCreated();
+    double SecondsSinceLastOpponent();
     // Start counting the opponents of a race from the first again (a race is over). Any thread.
     void ResetOpponentCount();
     // The car type key of the vehicle whose creation record is at `record`, or 0 (the local player's car: owner + 0x74 points at it, the key is at +16).

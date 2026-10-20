@@ -15,6 +15,8 @@
 #include <kernel/function.h>
 
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <map>
 #include <mutex>
 
@@ -22,7 +24,8 @@ extern "C" PPC_FUNC(__imp__sub_823AFE20);   // the game's frame (the main loop c
 extern "C" PPC_FUNC(__imp__sub_82144CA0);   // the string key
 extern "C" PPC_FUNC(__imp__sub_82333680);   // the script native that creates a racing opponent
 extern "C" PPC_FUNC(__imp__sub_82147BF8);   // instantiates a car from its template
-extern "C" PPC_FUNC(__imp__sub_824729E0);   // creates the first vehicle of a race: the player's
+extern "C" PPC_FUNC(__imp__sub_824729E0);
+extern "C" PPC_FUNC(__imp__sub_82468148);   // creates the first vehicle of a race: the player's
 
 namespace
 {
@@ -34,6 +37,7 @@ namespace
     bool g_built = false;
     std::vector<uint64_t> g_opponentKeys;
     int g_opponentIndex = 0;
+    std::chrono::steady_clock::time_point g_lastOpponent = std::chrono::steady_clock::now() - std::chrono::hours(1);
     uint64_t g_playerKey = 0;
     thread_local uint64_t t_wantedKey = 0;
 
@@ -161,6 +165,16 @@ namespace game
         std::lock_guard<std::mutex> g(g_mutex);
         g_playerKey = key;
     }
+    int OpponentsCreated()
+    {
+        std::lock_guard<std::mutex> g(g_mutex);
+        return g_opponentIndex;
+    }
+    double SecondsSinceLastOpponent()
+    {
+        std::lock_guard<std::mutex> g(g_mutex);
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - g_lastOpponent).count();
+    }
     void ResetOpponentCount()
     {
         std::lock_guard<std::mutex> g(g_mutex);
@@ -202,7 +216,11 @@ PPC_FUNC(sub_82333680)
         first = g_opponentIndex == 0;
     }
     if (first)
+    {
+        if (const char* d = std::getenv("NFSMW_TEST_OPP_DELAY"))   // a test: the first opponent is created this many seconds late
+            std::this_thread::sleep_for(std::chrono::milliseconds(int(atof(d) * 1000)));
         game::MpBeforeOpponents(base);   // waits for the other players' cars and sets the opponents' cars
+    }
     uint64_t want = 0;
     {
         std::lock_guard<std::mutex> g(g_mutex);
@@ -217,6 +235,10 @@ PPC_FUNC(sub_82333680)
     t_wantedKey = want;
     __imp__sub_82333680(ctx, base);
     t_wantedKey = 0;
+    {
+        std::lock_guard<std::mutex> g(g_mutex);
+        g_lastOpponent = std::chrono::steady_clock::now();
+    }
 }
 
 PPC_FUNC(sub_82147BF8)

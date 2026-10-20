@@ -101,18 +101,18 @@ int main()
 
     // The car a player races in is announced to the others, also to one that joins later, and cleared again.
     {
-        a.SetCarKey(0x0145D39E6027E317ull);
+        a.SetLobby(0x0145D39E6027E317ull, true);
         Pump(server, a, b, 300);
-        assert(b.Remotes().at(a.MyId()).carKey == 0x0145D39E6027E317ull);
+        assert(b.Remotes().at(a.MyId()).carKey == 0x0145D39E6027E317ull && b.Remotes().at(a.MyId()).lobbyReady);
         mp::Client late;
         assert(late.Connect("127.0.0.1", 47124, "cora"));
         auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(400);
         while (std::chrono::steady_clock::now() < until) { server.Service(1); a.Service(); b.Service(); late.Service(); }
         assert(late.Connected() && late.Remotes().count(a.MyId()) && late.Remotes().at(a.MyId()).carKey == 0x0145D39E6027E317ull);
-        a.SetCarKey(0);
+        a.SetLobby(0, false);
         until = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
         while (std::chrono::steady_clock::now() < until) { server.Service(1); a.Service(); b.Service(); late.Service(); }
-        assert(b.Remotes().at(a.MyId()).carKey == 0 && late.Remotes().at(a.MyId()).carKey == 0);
+        assert(b.Remotes().at(a.MyId()).carKey == 0 && !b.Remotes().at(a.MyId()).lobbyReady && late.Remotes().at(a.MyId()).carKey == 0);
         late.Disconnect();
         Pump(server, a, b, 200);
     }

@@ -15,7 +15,8 @@ namespace mp
         std::string name;
         bool hasCar = false;
         CarState latest;   // newest state received
-        uint64_t carKey = 0;   // the car type key it announced (0: not in a race)
+        uint64_t carKey = 0;   // the car it chose in the lobby (type key, 0: none yet)
+        bool lobbyReady = false;   // it is ready to race (its game makes cars for the ones who are)
     };
 
     class Client
@@ -32,8 +33,8 @@ namespace mp
         uint8_t MyId() const;
         void SendCar(const CarState& c);   // unreliable; call at the send rate (about 30 Hz)
         void SendChat(const std::string& text);
-        // Tell everyone which car this player races in (the game's car type key), or 0 when not in a race.
-        void SetCarKey(uint64_t key);
+        // Tell everyone which car this player chose in the lobby (the game's car type key, 0: none) and whether it is ready to race.
+        void SetLobby(uint64_t carKey, bool ready);
         uint64_t MyCarKey() const;
         const std::map<uint8_t, Remote>& Remotes() const;
         // The pose of a remote car for the local clock `nowMs` (ms since the client started, see NowMs()), delayed by

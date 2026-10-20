@@ -1089,6 +1089,19 @@ namespace hid
     uint8_t GameRightTrigger() { return s_gameRightTrigger.load(std::memory_order_relaxed); }
     uint8_t GameLeftTrigger() { return s_gameLeftTrigger.load(std::memory_order_relaxed); }
     uint16_t GameButtons() { return s_gameButtons.load(std::memory_order_relaxed); }
+    bool CancelHeld()
+    {
+        // Straight from the devices, so it works while the game itself is not polling (the multiplayer game waits on its own thread for the other players' cars).
+        bool held = false;
+        if (s_gamepad)
+            held = SDL_GetGamepadButton(s_gamepad, SDL_GAMEPAD_BUTTON_EAST) || SDL_GetGamepadButton(s_gamepad, SDL_GAMEPAD_BUTTON_BACK);
+        if (!held)
+        {
+            const bool* k = SDL_GetKeyboardState(nullptr);
+            held = k && (k[SDL_SCANCODE_BACKSPACE] || k[SDL_SCANCODE_ESCAPE]);
+        }
+        return held || (GameButtons() & (0x2000 | 0x0020)) != 0;
+    }
 }
 
 // Lockstep (net/netplay.h): in a race, with the pads linked and NFSMW_FIXED_STEPS on, the game's controllers 0 and 1 are the local pad as it was a few
