@@ -17,6 +17,7 @@ int main(int argc, char** argv)
     const float offset = argc > 3 ? float(atof(argv[3])) : 8.f;
     const std::string follow = argc > 4 ? argv[4] : "";   // replay only the player with this name (several bots must not follow each other)
     const std::string ownName = argc > 5 ? argv[5] : "bot";
+    const uint64_t carKey = argc > 6 ? strtoull(argv[6], nullptr, 16) : 0x0D928DCAF667ABA4ull;   // announced when it sees a player (default: an RX-8)
     mp::Client c;
     if (!c.Connect(host, port, ownName)) return 1;
     std::deque<std::pair<uint32_t, mp::CarState>> hist;   // (local ms, state)
@@ -25,6 +26,8 @@ int main(int argc, char** argv)
     {
         c.Service();
         const uint32_t now = c.NowMs();
+        if (c.Connected() && c.MyCarKey() == 0 && !c.Remotes().empty())
+            c.SetCarKey(carKey);
         if (c.Connected())
             for (const auto& [id, r] : c.Remotes())
                 if (r.hasCar && (follow.empty() || r.name == follow) && r.latest.seq != lastSeq)

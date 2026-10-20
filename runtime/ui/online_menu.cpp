@@ -104,6 +104,15 @@ namespace ui
             ImGui::Spacing();
             const std::string status = game::MpStatus();
             ImGui::TextWrapped("%s", status.c_str());
+            const std::vector<game::MpPlayer> players = game::MpPlayers();
+            if (!players.empty())
+            {
+                ImGui::Spacing();
+                ImGui::TextUnformatted("Players");
+                for (const auto& p : players)
+                    ImGui::BulletText("%s%s: %s", p.name.c_str(), p.self ? " (you)" : "", p.inRace ? (p.car.empty() ? "in a race" : ("in a race, " + p.car).c_str()) : "in the menus");
+                ImGui::TextWrapped("The cars are the ones the players chose in the game's own car selection: your opponents in a race are made as the other players' cars.");
+            }
             if (std::getenv("NFSMW_MP_SERVER") || std::getenv("NFSMW_MP_NAME") || std::getenv("NFSMW_MP_PLAYERS"))
                 ImGui::TextWrapped("(NFSMW_MP_* environment variables are set and override these values.)");
         }

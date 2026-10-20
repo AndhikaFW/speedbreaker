@@ -27,6 +27,12 @@ Open the settings (F1, or Back + Start on a pad), the **Online** page, section *
 The settings are saved (`multiplayer.txt` in the user data folder) and take effect from the next race. The status line under them shows the connection. For scripts the environment variables
 `NFSMW_MP_SERVER`, `NFSMW_MP_NAME` and `NFSMW_MP_PLAYERS` override the page. The old *Online Play* switch (the earlier lockstep link) is ignored while multiplayer is on.
 
+## Cars
+Pick your car in the game's own car selection, as always. Your game announces the car it made for you to the others as soon as the race loads, and every game makes its opponents as the other
+players' cars: the opponent that stands for a player is that player's real car (same model), in the order the players joined. A game waits a few seconds (up to 25, or press B) for the other
+players of the race to announce their cars before it creates its opponents. The connection to the server is made as soon as multiplayer is switched on and kept between races, so the
+settings page shows who is on the server and whether they are in a race or in the menus.
+
 ## Race
 1. Every player starts **the same race**: the same mode, **the same track and direction**, with at least as many opponents as there are other players (the other players take over the first
    opponents). Choose it in Quick Race > Custom Race; Quick Play picks a random track.
@@ -37,7 +43,7 @@ The settings are saved (`multiplayer.txt` in the user data folder) and take effe
 4. Race. When the race is over (quit to the menu, or finish), your game leaves the server; start the next race the same way.
 
 ## Limits
-- The other players' cars are the opponent cars the game picked, not the cars the players chose, and they have no names or minimap marks.
+- Other players have no name tags or minimap marks (the settings page lists the players and their cars).
 - Laps and finishing places are the game's own (computed on each machine from where the cars are); there is no shared results screen yet.
 - No lobby: the players agree the race outside the game.
 - Basic protection only: the server and every game drop car states that are not finite or are far outside what a car can do, limit one player to 120 states a second, clean player names, and

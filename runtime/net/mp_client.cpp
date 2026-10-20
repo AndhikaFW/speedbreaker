@@ -49,6 +49,7 @@ namespace mp
         std::string name;
         bool welcome = false, failed = false;
         uint8_t myId = 0;
+        uint64_t myCarKey = 0;
         uint32_t seq = 0;
         std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
         std::map<uint8_t, Remote> remotes;
@@ -123,7 +124,20 @@ namespace mp
                 case Msg::Welcome:
                     m->myId = r.u8();
                     m->welcome = r.ok();
+                    if (m->welcome && m->myCarKey)
+                    {
+                        Writer w(Msg::PlayerInfo); w.u32(uint32_t(m->myCarKey >> 32)); w.u32(uint32_t(m->myCarKey));
+                        m->Send(kChanEvent, w, true);   // after a reconnect the server must hear it again
+                    }
                     break;
+                case Msg::PlayerInfo:
+                {
+                    const uint8_t id = r.u8();
+                    const uint32_t hi = r.u32(), lo = r.u32();
+                    if (r.ok() && id != m->myId)
+                        m->remotes[id].carKey = (uint64_t(hi) << 32) | lo;
+                    break;
+                }
                 case Msg::Reject:
                     m->failed = true;
                     break;
@@ -198,6 +212,15 @@ namespace mp
         w.car(s);
         m->Send(kChanState, w, false);
     }
+
+    void Client::SetCarKey(uint64_t key)
+    {
+        m->myCarKey = key;
+        if (!m->welcome) return;   // sent when the welcome arrives
+        Writer w(Msg::PlayerInfo); w.u32(uint32_t(key >> 32)); w.u32(uint32_t(key));
+        m->Send(kChanEvent, w, true);
+    }
+    uint64_t Client::MyCarKey() const { return m->myCarKey; }
 
     void Client::SendChat(const std::string& text)
     {

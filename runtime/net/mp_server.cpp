@@ -26,6 +26,7 @@ namespace mp
             CarState car;
             bool hasCar = false;
             uint32_t windowStart = 0, inWindow = 0;
+            uint64_t carKey = 0;
         };
         ENetHost* host = nullptr;
         uint16_t port = 0;
@@ -85,6 +86,11 @@ namespace mp
                 {
                     Writer j(Msg::PlayerJoin); j.u8(oid); j.str(op.name);
                     Send(peer, kChanEvent, j, true);
+                    if (op.carKey)
+                    {
+                        Writer inf(Msg::PlayerInfo); inf.u8(oid); inf.u32(uint32_t(op.carKey >> 32)); inf.u32(uint32_t(op.carKey));
+                        Send(peer, kChanEvent, inf, true);
+                    }
                 }
                 Writer j(Msg::PlayerJoin); j.u8(id); j.str(name);
                 Broadcast(kChanEvent, j, true);
@@ -106,6 +112,14 @@ namespace mp
                     pl->car = c;
                     pl->hasCar = true;
                 }
+            }
+            else if (t == Msg::PlayerInfo)
+            {
+                const uint32_t hi = r.u32(), lo = r.u32();
+                if (!r.ok()) return;
+                pl->carKey = (uint64_t(hi) << 32) | lo;
+                Writer w(Msg::PlayerInfo); w.u8(pl->id); w.u32(hi); w.u32(lo);
+                Broadcast(kChanEvent, w, true, pl->id);
             }
             else if (t == Msg::Chat)
             {

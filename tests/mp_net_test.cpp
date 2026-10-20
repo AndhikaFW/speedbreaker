@@ -99,6 +99,24 @@ int main()
         for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) assert(std::fabs(back[i][j] - m[i][j]) < 1e-4f);
     }
 
+    // The car a player races in is announced to the others, also to one that joins later, and cleared again.
+    {
+        a.SetCarKey(0x0145D39E6027E317ull);
+        Pump(server, a, b, 300);
+        assert(b.Remotes().at(a.MyId()).carKey == 0x0145D39E6027E317ull);
+        mp::Client late;
+        assert(late.Connect("127.0.0.1", 47124, "cora"));
+        auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(400);
+        while (std::chrono::steady_clock::now() < until) { server.Service(1); a.Service(); b.Service(); late.Service(); }
+        assert(late.Connected() && late.Remotes().count(a.MyId()) && late.Remotes().at(a.MyId()).carKey == 0x0145D39E6027E317ull);
+        a.SetCarKey(0);
+        until = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+        while (std::chrono::steady_clock::now() < until) { server.Service(1); a.Service(); b.Service(); late.Service(); }
+        assert(b.Remotes().at(a.MyId()).carKey == 0 && late.Remotes().at(a.MyId()).carKey == 0);
+        late.Disconnect();
+        Pump(server, a, b, 200);
+    }
+
     // Hostile or damaged states are not accepted anywhere.
     {
         mp::CarState good;

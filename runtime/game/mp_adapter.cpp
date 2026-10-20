@@ -16,6 +16,7 @@
 #include "mp_adapter.h"
 #include <hid/input.h>
 #include <ui/ui.h>
+#include "car_select.h"
 #include <net/mp_client.h>
 #include <net/mp_math.h>
 #include <net/multiplayer_config.h>
@@ -33,9 +34,13 @@ extern "C" PPC_FUNC(__imp__sub_82420FC0);
 
 namespace
 {
+    // A remote player is in a race when it announced its car (a game that has created its player's vehicle) or is sending car states (older clients and the test bots).
+    bool InRace(const mp::Remote& r) { return r.carKey != 0 || r.hasCar; }
+
     constexpr const char* kWaitToast = "Waiting for the other players. Press B to start without them.";
     std::mutex g_statusMutex;
     std::string g_status = "Multiplayer is off.";
+    std::vector<game::MpPlayer> g_players;
 
     constexpr uint32_t kBodyListHead = 0x8290BE18;
     // The game's vehicle table: a fixed vector at 0x82C745A8 ({vtable, data, capacity in bytes, count}, data = 8-byte entries {owner object, 1}), the player first,
@@ -164,6 +169,7 @@ namespace
         int expected = 0;
         bool barrier = false;
         bool gridLogged = false;
+        uint64_t myCarKey = 0;        // the car this player's vehicle was made (announced to the others)
         bool fewShown = false;        // this race: told the player that there are fewer opponent cars than other players
         bool mismatchShown = false;   // this race: the other player was seen in a different race
         double emptySince = 0;
@@ -313,6 +319,11 @@ namespace
                 a.localObj = 0;
                 a.standIns.clear();
                 a.standInObj = 0;
+                a.myCarKey = 0;
+                if (a.net)
+                    a.net->SetCarKey(0);
+                game::ResetOpponentCount();
+                game::SetOpponentCars({});
                 if (a.barrier)
                 {
                     a.barrier = false;
@@ -346,10 +357,10 @@ namespace
                 a.localSince = now;
             }
         }
-        if (a.server.empty() || !a.localObj)
+        if (a.server.empty())
         {
-            // No race (or only the ghost test): no connection. Drop it when the race is over so the server sees the player leave.
-            if (a.net && !a.localObj)
+            // Only the ghost test: no connection.
+            if (a.net)
             {
                 a.net->Disconnect();
                 a.net.reset();
@@ -358,7 +369,7 @@ namespace
             return;
         }
 
-        // The connection.
+        // The connection: made as soon as multiplayer is on and kept between races, so that the players present and their cars are known before a race is created.
         uint16_t port;
         if (!a.net)
         {
@@ -380,6 +391,8 @@ namespace
             a.net->Connect(host, port, a.name);
             fprintf(stderr, "[mp] connection lost, reconnecting to %s\n", a.server.c_str());
         }
+        if (!a.localObj)
+            return;
 
         // The local car, 30 times a second, with the ready flag while the start is held.
         if (a.net->Connected() && now - a.lastSend >= 1.0 / 30.0)
@@ -399,7 +412,11 @@ namespace
 
         // Each remote player drives one opponent vehicle's body, in the order of the game's vehicle table (player first). NFSMW_MP_BODIES=i,j,... picks list
         // positions by hand instead (the log of the step hook shows the list).
-        if (a.net->Connected() && a.standIns.size() < a.net->Remotes().size())
+        size_t inRaceCount = 0;
+        for (const auto& [id, r] : a.net->Remotes())
+            if (InRace(r))
+                ++inRaceCount;
+        if (a.net->Connected() && a.standIns.size() < inRaceCount)
         {
             static const std::vector<int> picks = [] {
                 std::vector<int> v;
@@ -424,6 +441,8 @@ namespace
             size_t k = 0;
             for (const auto& [id, r] : a.net->Remotes())
             {
+                if (!InRace(r))
+                    continue;
                 if (!a.standIns.count(id) && k < candidates.size())
                 {
                     a.standIns[id] = candidates[k];
@@ -432,11 +451,11 @@ namespace
                 ++k;
             }
             // More players than opponent cars: the last players have no car to drive here (the race needs at least as many opponents as other players).
-            if (!a.fewShown && !candidates.empty() && a.net->Remotes().size() > candidates.size())
+            if (!a.fewShown && !candidates.empty() && inRaceCount > candidates.size())
             {
                 a.fewShown = true;
                 ui::Toast("This race has fewer opponents than other players, so some players are not shown. Next time choose more opponents.", 20.0);
-                fprintf(stderr, "[mp] only %zu opponent cars for %zu other players\n", candidates.size(), a.net->Remotes().size());
+                fprintf(stderr, "[mp] only %zu opponent cars for %zu other players\n", candidates.size(), inRaceCount);
             }
         }
     }
@@ -536,7 +555,7 @@ namespace game
                 if (a.server.empty())
                     text = "Multiplayer is off.";
                 else if (!a.net)
-                    text = "On. Waiting for a race to start (the connection is made when a race begins).";
+                    text = "On. Connecting...";
                 else if (a.net->Failed())
                     text = "Cannot reach " + a.server + ", retrying.";
                 else if (!a.net->Connected())
@@ -551,11 +570,32 @@ namespace game
                     if (a.barrier)
                         snprintf(b, sizeof b, "Connected. Holding the start: %d of %d players ready.", ready + 1, a.expected);
                     else
-                        snprintf(b, sizeof b, "Connected as player %u with %zu other player(s), %u ms.", unsigned(a.net->MyId()), a.net->Remotes().size(), a.net->RttMs());
+                    {
+                        int inRace = 0;
+                        for (const auto& [id, r] : a.net->Remotes())
+                            if (InRace(r))
+                                ++inRace;
+                        snprintf(b, sizeof b, "Connected as player %u: %zu other player(s) on the server, %d in a race, %u ms.", unsigned(a.net->MyId()), a.net->Remotes().size(), inRace, a.net->RttMs());
+                    }
                     text = b;
+                }
+                std::vector<game::MpPlayer> players;
+                if (a.net && a.net->Connected())
+                {
+                    const std::vector<game::CarEntry> catalog = game::CarCatalog();
+                    auto carName = [&](uint64_t key) {
+                        for (const auto& c : catalog)
+                            if (c.key == key)
+                                return c.display;
+                        return std::string(key ? "a car" : "");
+                    };
+                    players.push_back({ a.name, carName(a.myCarKey), a.myCarKey != 0, true });
+                    for (const auto& [id, r] : a.net->Remotes())
+                        players.push_back({ r.name, carName(r.carKey), InRace(r), false });
                 }
                 std::lock_guard<std::mutex> g(g_statusMutex);
                 g_status = text;
+                g_players = std::move(players);
             }
         }
         // NFSMW_MP_WATCH=1: log when the state words found by tools/statdiff.py change (which of them mark the end of loading / the start of the intro).
@@ -668,7 +708,7 @@ PPC_FUNC(sub_82420FC0)
         {
             size_t rank = 0;
             for (const auto& [id, r] : a.net->Remotes())
-                if (id < a.net->MyId())
+                if (id < a.net->MyId() && InRace(r))
                     ++rank;
             if (rank > 0 && rank < vehicles.size())
             {
@@ -716,5 +756,81 @@ namespace game
         if (a.refClock < 0 || a.barrier)
             return -1;
         return a.refClock + std::max(0.0, a.Now() - a.refTime);
+    }
+}
+
+// Called by game/car_select.cpp right after the game created the player's vehicle (the first vehicle of a race): tell the others which car it is, before anybody creates their
+// opponents.
+namespace game
+{
+    void MpPlayerCreated(uint8_t* base)
+    {
+        Adapter& a = A();
+        if (a.server.empty())
+            return;
+        const uint32_t data = PPC_LOAD_U32(kVehicleTable + 4), count = PPC_LOAD_U32(kVehicleTable + 12);
+        if (data != kVehicleTable + 16 || count == 0)
+            return;
+        const uint32_t record = PPC_LOAD_U32(PPC_LOAD_U32(data) + 0x74);
+        const uint64_t key = game::CarKeyOfRecord(base, record);
+        if (!key)
+            return;
+        a.myCarKey = key;
+        std::string name = "?";
+        for (const auto& c : game::CarCatalog())
+            if (c.key == key)
+                name = c.display;
+        fprintf(stderr, "[mp] my car is %s (%016llX)\n", name.c_str(), (unsigned long long)key);
+        if (a.net)
+            a.net->SetCarKey(key);
+    }
+
+    // Called by game/car_select.cpp before the race script creates its first opponent: wait (a few seconds at most) until the other players of the race have announced their cars,
+    // then have the opponents made as those cars, in the order of the players' ids (the same order the stand-ins are given out in).
+    void MpBeforeOpponents(uint8_t* base)
+    {
+        Adapter& a = A();
+        if (a.server.empty() || !a.net)
+        {
+            game::SetOpponentCars({});
+            return;
+        }
+        const double t0 = a.Now();
+        const int need = std::max(0, a.expected - 1);
+        auto have = [&] {
+            int n = 0;
+            for (const auto& [id, r] : a.net->Remotes())
+                if (r.carKey)
+                    ++n;
+            return n;
+        };
+        bool waited = false;
+        while (need > 0 && have() < need && a.Now() - t0 < 25.0 && !a.net->Failed())
+        {
+            if (!waited)
+            {
+                waited = true;
+                fprintf(stderr, "[mp] waiting for the other players' cars (%d of %d announced)\n", have(), need);
+            }
+            a.net->Service();
+            if ((hid::GameButtons() & (0x2000 | 0x0020)) != 0 && a.Now() - t0 > 1.0)
+                break;   // B / Back: go on without them
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        std::vector<uint64_t> keys;
+        for (const auto& [id, r] : a.net->Remotes())
+            if (r.carKey)
+                keys.push_back(r.carKey);
+        fprintf(stderr, "[mp] opponents are made as %zu announced car(s) (waited %.1f s)\n", keys.size(), a.Now() - t0);
+        game::SetOpponentCars(keys);
+    }
+}
+
+namespace game
+{
+    std::vector<MpPlayer> MpPlayers()
+    {
+        std::lock_guard<std::mutex> g(g_statusMutex);
+        return g_players;
     }
 }

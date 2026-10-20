@@ -403,7 +403,17 @@ Measured with the race clock (the world clock at 0x82A153B8) that every game sen
   for an invalid table, which made the race look over and re-armed the barrier in the middle of the race.
 - The barrier can be left with B / Back (a toast says so); the ready flag stays on 20 s after the release (a game that released at once is otherwise seen as ready for one packet only).
 
-## Car models and names: what was tried (2026-10-20), so it is not repeated
+## Car models (solved 2026-10-21) and names
+**How it works**: every car has a 64-bit type key, the string key (`sub_82144CA0`) of its folder name (IS300, RX8, ...), and a template record in the heap (key at +16, dimensions before it);
+a vehicle's creation record is at `owner + 0x74` (the template itself for the player's car, a copy for opponents). The race script creates each opponent with `sub_82333680(call, racer key)`;
+the car is instantiated from its template by `sub_82147BF8(layout, template, ...)`, and passing another car's template while `sub_82333680` runs makes the opponent that car (checked: all
+opponents RX8, with the RX8's mass 1631 kg and inertia). game/car_select.cpp does that, and builds a catalogue from the game's own name table (the heap run `RX8, rx8, LANCEREVO8, ...`;
+`NFSMW_LOG_CARS=1` prints it: 92 names with templates, cops and traffic filtered out). The player's own car cannot be changed from outside (its template pointer comes from the front end's state
+through the vehicle constructor `sub_823D83E8`; not found), so the lobby does not set cars: each game announces the car it actually made for its player right after `sub_824729E0` creates it
+(`PlayerInfo` message, protocol version 3), waits (at most 25 s) in `sub_82333680` for the other players of the race to announce theirs, and makes its opponents those cars in player id order,
+the order the stand-ins are handed out in. The connection is now kept from the moment multiplayer is on, so players and cars are known before a race.
+
+## Earlier attempts on car models and names (2026-10-20), so they are not repeated
 - The race script creates each opponent with `sub_82333680(call, racer key)`: r4 is a racer (Attrib collection) key, not a car preset; presets are hashes in the game's data (no ASCII preset names in memory, only display names
   such as "Lexus IS300"). The player's car goes through `sub_824729E0` / `sub_82473100` / `sub_82473870`, which are generic (called for many objects).
 - The 64-bit values that looked like a per-car key at owner+0x84/+0x88 are not stable (small numbers and pointers in the next race). `sub_8212BFB8`, which is on every vehicle's creation path, is a generic hash helper.
