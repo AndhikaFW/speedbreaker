@@ -402,3 +402,11 @@ Measured with the race clock (the world clock at 0x82A153B8) that every game sen
 - **Vehicle table**: the count word at 0x82C745B4 grows with the traffic (29 seen about a lap in) while the table has room for 20 entries: read at most 20. A count above the room was once taken
   for an invalid table, which made the race look over and re-armed the barrier in the middle of the race.
 - The barrier can be left with B / Back (a toast says so); the ready flag stays on 20 s after the release (a game that released at once is otherwise seen as ready for one packet only).
+
+## Car models and names: what was tried (2026-10-20), so it is not repeated
+- The race script creates each opponent with `sub_82333680(call, racer key)`: r4 is a racer (Attrib collection) key, not a car preset; presets are hashes in the game's data (no ASCII preset names in memory, only display names
+  such as "Lexus IS300"). The player's car goes through `sub_824729E0` / `sub_82473100` / `sub_82473870`, which are generic (called for many objects).
+- The 64-bit values that looked like a per-car key at owner+0x84/+0x88 are not stable (small numbers and pointers in the next race). `sub_8212BFB8`, which is on every vehicle's creation path, is a generic hash helper.
+- Opponent names in the HUD standings come from text tables (looked up by key); the player's alias is a wide string in a profile struct (about 0x82C5E19C).
+- The camera is in static data: eye at 0x82A2DAC0, forward at 0x82A2DAE0 (tracker axes), look-at point at 0x82A2DB00. Name tags over the cars would need that plus the game's field of view and the picture fit
+  (letterbox, Hor+/Vert+ view scale: video/picture_fit.h) to place text at any window shape; not done.
