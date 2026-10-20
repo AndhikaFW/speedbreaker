@@ -130,7 +130,7 @@ namespace mp
                 case Msg::PlayerJoin:
                 {
                     uint8_t id = r.u8();
-                    std::string n = r.str();
+                    std::string n = SanitizeName(r.str());
                     if (r.ok() && id != m->myId)
                     {
                         m->remotes[id].id = id;
@@ -154,6 +154,7 @@ namespace mp
                         uint8_t id = r.u8();
                         CarState c = r.car();
                         if (!r.ok()) break;
+                        if (!Sane(c)) continue;   // never hand the game a car state its physics could not have produced
                         Remote& rm = m->remotes[id];
                         rm.id = id;
                         auto& h = m->hist[id];

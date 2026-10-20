@@ -99,6 +99,26 @@ int main()
         for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) assert(std::fabs(back[i][j] - m[i][j]) < 1e-4f);
     }
 
+    // Hostile or damaged states are not accepted anywhere.
+    {
+        mp::CarState good;
+        assert(mp::Sane(good));
+        mp::CarState bad = good; bad.pos[1] = std::nanf("");  assert(!mp::Sane(bad));
+        bad = good; bad.vel[0] = INFINITY;                   assert(!mp::Sane(bad));
+        bad = good; bad.pos[2] = 1.0e9f;                     assert(!mp::Sane(bad));
+        bad = good; bad.rot[3] = 0; /* quaternion of length 0 */ assert(!mp::Sane(bad));
+        bad = good; bad.angVel[1] = 1000.f;                  assert(!mp::Sane(bad));
+        assert(mp::SanitizeName("a\x01" "b\xff") == "a?b?" && mp::SanitizeName("") == "player" && mp::SanitizeName(std::string(60, 'x')).size() == 24);
+        // A client that sends garbage is not relayed: ben's view of anna stays at her last sane state.
+        mp::CarState s1; s1.pos[0] = 11.f; a.SendCar(s1);
+        Pump(server, a, b, 300);
+        mp::CarState seen;
+        assert(b.RemoteCar(a.MyId(), b.NowMs(), seen));
+        mp::CarState nan = good; nan.pos[0] = std::nanf(""); a.SendCar(nan);
+        Pump(server, a, b, 300);
+        assert(b.RemoteCar(a.MyId(), b.NowMs(), seen) && std::isfinite(seen.pos[0]));
+    }
+
     b.Disconnect();
     Pump(server, a, b, 300);
     assert(server.PlayerCount() == 1 && a.Remotes().empty());

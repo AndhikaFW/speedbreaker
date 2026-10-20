@@ -40,7 +40,8 @@ The settings are saved (`multiplayer.txt` in the user data folder) and take effe
 - The other players' cars are the opponent cars the game picked, not the cars the players chose, and they have no names or minimap marks.
 - Laps and finishing places are the game's own (computed on each machine from where the cars are); there is no shared results screen yet.
 - No lobby: the players agree the race outside the game.
-- There is no protection against a modified client (each game is trusted with its own car).
+- Basic protection only: the server and every game drop car states that are not finite or are far outside what a car can do, limit one player to 120 states a second, clean player names, and
+  disconnect a connection that does not say hello within five seconds. A modified client can still cheat with its own car (each game is trusted with it); there are no accounts or passwords.
 
 ## If it does not work
 - *Cannot reach the server*: the status line says so. Check the address, that `mp_server` is running, the firewall port, and (on ZeroTier) that the service is up and shows the address you typed.

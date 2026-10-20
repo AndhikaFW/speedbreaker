@@ -49,6 +49,29 @@ namespace mp
         float raceClock = 0;       // the sender's world clock (seconds, game/frame_time: 0x82A153B8) when the state was taken, to compare the two games' clocks
     };
 
+    // A state that a game's own physics could have produced: finite numbers in a plausible range and a quaternion that is roughly a unit. A damaged or modified
+    // client could send anything, and a remote car is written into the physics of every other game, so both the server and the clients drop what fails this.
+    inline bool Sane(const CarState& c)
+    {
+        auto ok = [](float v, float lim) { return v == v && v > -lim && v < lim; };   // NaN fails v == v, infinities fail the limit
+        for (float f : c.pos) if (!ok(f, 100000.f)) return false;
+        for (float f : c.vel) if (!ok(f, 600.f)) return false;
+        for (float f : c.angVel) if (!ok(f, 200.f)) return false;
+        float n = 0;
+        for (float f : c.rot) { if (!ok(f, 4.f)) return false; n += f * f; }
+        return n > 0.25f && n < 4.f && ok(c.raceClock, 1.0e7f);
+    }
+
+    // A player name as the others see it: printable ASCII only (the rest becomes '?'), 24 characters at most, never empty.
+    inline std::string SanitizeName(const std::string& in)
+    {
+        std::string out;
+        for (char ch : in)
+            if (out.size() < 24)
+                out += (ch >= 32 && ch < 127) ? ch : '?';
+        return out.empty() ? std::string("player") : out;
+    }
+
     // Writer/reader over a byte vector.
     class Writer
     {

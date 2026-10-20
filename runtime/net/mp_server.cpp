@@ -25,11 +25,13 @@ namespace mp
             ENetPeer* peer = nullptr;
             CarState car;
             bool hasCar = false;
+            uint32_t windowStart = 0, inWindow = 0;
         };
         ENetHost* host = nullptr;
         uint16_t port = 0;
         std::map<uint8_t, Player> players;
-        uint32_t nextTick = 0;
+        std::map<ENetPeer*, uint32_t> pending;   // connected, no Hello yet (when it connected)
+        uint32_t nextTick = 0, nextSweep = 0;
 
         void Send(ENetPeer* p, int ch, const Writer& w, bool reliable)
         {
@@ -56,9 +58,10 @@ namespace mp
             if (t == Msg::Hello)
             {
                 uint32_t ver = r.u32();
-                std::string name = r.str();
+                std::string name = SanitizeName(r.str());
                 if (!r.ok() || pl)
                     return;
+                pending.erase(peer);
                 if (ver != kProtocolVersion)
                 {
                     Writer w(Msg::Reject); w.u8(kRejectVersion);
@@ -93,6 +96,11 @@ namespace mp
             else if (t == Msg::CarState)
             {
                 CarState c = r.car();
+                // At most 120 states a second from one player (a game sends 30), and only plausible ones.
+                const uint32_t now = NowMs();
+                if (now - pl->windowStart >= 1000) { pl->windowStart = now; pl->inWindow = 0; }
+                if (++pl->inWindow > 120 || !Sane(c))
+                    return;
                 if (r.ok() && (!pl->hasCar || int32_t(c.seq - pl->car.seq) > 0))
                 {
                     pl->car = c;
@@ -103,6 +111,7 @@ namespace mp
             {
                 std::string text = r.str();
                 if (!r.ok()) return;
+                for (char& ch : text) if (ch < 32 || ch >= 127) ch = '?';
                 Writer w(Msg::Chat); w.u8(pl->id); w.str(text);
                 Broadcast(kChanEvent, w, true);
             }
@@ -170,10 +179,30 @@ namespace mp
                 m->OnReceive(ev.peer, ev.packet->data, ev.packet->dataLength);
                 enet_packet_destroy(ev.packet);
             }
+            else if (ev.type == ENET_EVENT_TYPE_CONNECT)
+                m->pending[ev.peer] = NowMs();
             else if (ev.type == ENET_EVENT_TYPE_DISCONNECT)
+            {
+                m->pending.erase(ev.peer);
                 m->OnDisconnect(ev.peer);
+            }
         }
         uint32_t now = NowMs();
+        if (int32_t(now - m->nextSweep) >= 0)
+        {
+            // A connection that has not said Hello within five seconds is dropped (it holds a slot and a socket for nothing).
+            m->nextSweep = now + 1000;
+            for (auto it = m->pending.begin(); it != m->pending.end();)
+            {
+                if (now - it->second > 5000)
+                {
+                    enet_peer_disconnect_now(it->first, 0);
+                    it = m->pending.erase(it);
+                }
+                else
+                    ++it;
+            }
+        }
         if (int32_t(now - m->nextTick) >= 0)
         {
             m->Tick();
