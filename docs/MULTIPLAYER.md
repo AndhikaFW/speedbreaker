@@ -390,3 +390,15 @@ synchronisation, laps and finish shared, a real two-machine run, lobby, modes.
 - **Not done**: car models. The opponent is whatever the race script created (`sub_82333680`, the native that creates a racing vehicle, is called per opponent with a 32-bit key in r4 that is a racer
   (Attrib collection) key, not a car preset); the car presets are hashes in the game's data (no ASCII `lexusis300` anywhere, only display names like "Lexus IS300"). To show the other player's real car the race
   has to be created with that car, i.e. the racer/preset that the script hands to `sub_82333680` has to be chosen, which needs the Attrib tables of racers and presets decoded. Probes: `NFSMW_PROBE_RACE=4`.
+
+## Race timing between machines (2026-10-20)
+Measured with the race clock (the world clock at 0x82A153B8) that every game sends in its car state (protocol version 2, `CarState::raceClock`); the log line
+`clock of player N minus mine` shows the other game's clock relative to ours.
+- **Game speed**: the old Settings > Online > Online Play (two world steps a frame, whatever the frame took) made the faster machine's world run about 1.45x real time. The multiplayer
+  races now take precedence over it (game/frame_time.cpp), so both worlds run at real time.
+- **Start**: the race appears at a different moment of loading on each machine and the slower one's game time lags for a few seconds after the release (up to about 4 s). The barrier
+  releases together, and every game then follows an agreed clock = the slowest game's clock at the release + real seconds since (`game::MpWantedClock`, applied in `GameFrameTime`: at most
+  +100% / -50% of a frame's time), so the clocks close to within about 0.2 s within 3-6 s, before GO. Checked ARM <-> x86: countdown and GO together, HUD timers equal.
+- **Vehicle table**: the count word at 0x82C745B4 grows with the traffic (29 seen about a lap in) while the table has room for 20 entries: read at most 20. A count above the room was once taken
+  for an invalid table, which made the race look over and re-armed the barrier in the middle of the race.
+- The barrier can be left with B / Back (a toast says so); the ready flag stays on 20 s after the release (a game that released at once is otherwise seen as ready for one packet only).
