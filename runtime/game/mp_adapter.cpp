@@ -164,6 +164,7 @@ namespace
         int expected = 0;
         bool barrier = false;
         bool gridLogged = false;
+        bool mismatchShown = false;   // this race: the other player was seen in a different race
         double emptySince = 0;
         int raceEpoch = 0;   // counts new races and finished races: the grid animation's vehicle list starts over with each
         double barrierSince = 0, allReadyAt = 0;
@@ -325,6 +326,7 @@ namespace
                 ++a.raceEpoch;
                 a.refClock = -1;
                 a.gridLogged = false;
+                a.mismatchShown = false;
                 a.localObj = first;
                 a.standIns.clear();
                 a.standInObj = 0;
@@ -572,6 +574,21 @@ namespace game
         for (const auto& [id, r] : a.net->Remotes())
             if (r.hasCar && (r.latest.flags & mp::kFlagReady))
                 ++ready;
+        // Race check: cars of one race on one track and direction are held within a few metres of each other (the start); a player held hundreds of metres away is in another race.
+        if (!a.mismatchShown && a.localObj)
+            if (const uint32_t pb = PhysBody(g_memory.base, a.localObj))
+            {
+                const Phys mine = ReadPhys(g_memory.base, pb);
+                for (const auto& [id, r] : a.net->Remotes())
+                    if (r.hasCar && (r.latest.flags & mp::kFlagReady) && Dist(mine.pos, r.latest.pos) > 200.f)
+                    {
+                        a.mismatchShown = true;
+                        const std::string who = r.name.empty() ? ("player " + std::to_string(id)) : r.name;
+                        ui::Toast(who + " is not in the same race as you (a different track or direction). Quit and choose the same track.", 20.0);
+                        fprintf(stderr, "[mp] race check: %s is %.0f m from our start: not the same race\n", who.c_str(), double(Dist(mine.pos, r.latest.pos)));
+                        break;
+                    }
+            }
         const bool all = a.net->Connected() && ready + 1 >= a.expected;
         // The games are not at the same point of their race world when they are held (the race appears at a different moment of loading on each machine: 1.8 s apart
         // between the ARM and x86 test machines), so releasing together would start the countdown and GO at different times. Every game's world clock stands still

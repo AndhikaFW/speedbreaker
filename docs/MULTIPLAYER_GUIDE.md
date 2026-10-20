@@ -46,4 +46,4 @@ The settings are saved (`multiplayer.txt` in the user data folder) and take effe
 - *Cannot reach the server*: the status line says so. Check the address, that `mp_server` is running, the firewall port, and (on ZeroTier) that the service is up and shows the address you typed.
 - *Waiting forever*: the other player's game is not at the start yet, or has a different `Players to wait for`, or an older build (every machine has to be on the same commit; the server and
   the games must have the same protocol version, which changes whenever the messages do: rebuild everything after a `git pull`).
-- *Two games disagree about the race*: check that both chose the same track and direction.
+- *"Is not in the same race as you"*: the message at the start says another player is held hundreds of metres from your start line, i.e. a different track or direction. Quit (pause menu) and choose the same race.
