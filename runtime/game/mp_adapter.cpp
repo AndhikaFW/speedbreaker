@@ -171,6 +171,7 @@ namespace
         std::string server, name = "player";
         double lastSend = 0, lastTry = 0, lastStatus = -10;
         // Start barrier (NFSMW_MP_PLAYERS=n, n > 1): the race is held, world frozen, from the moment it appears until n-1 other players are there and ready too.
+        std::vector<uint8_t> roster;      // the players (ids, ascending) the opponents of this race were made for
         std::string cfgCar;               // the lobby car from the settings file (by name; its key is looked up once the catalogue exists)
         int expected = 0;                 // the number of players from the settings (used when this player is not ready in the lobby)
         int barrierExpected = 0;          // players the barrier waits for in this race
@@ -465,29 +466,46 @@ namespace
                     for (const char* c = e; *c;) { v.push_back(atoi(c)); while (*c && *c != ',') ++c; if (*c) ++c; }
                 return v;
             }();
-            std::vector<uint32_t> candidates;
+            // Opponent k (the k-th vehicle after the player in the game's vehicle table) stands for the k-th player in the race. If that vehicle's body is not in the list yet
+            // it is waited for: skipping it would give the next player's car to the wrong vehicle (which then has another model).
+            std::vector<uint32_t> slots;
             if (picks.empty())
             {
-                for (uint32_t b : VehicleBodies(base))
-                    if (b && b != a.localObj)
-                        candidates.push_back(b);
+                const std::vector<uint32_t> vb = VehicleBodies(base);
+                for (size_t i = 1; i < vb.size(); ++i)
+                    slots.push_back(vb[i]);
             }
             else
             {
                 const std::vector<uint32_t> bodies = Bodies(base);
                 for (int p : picks)
-                    if (size_t(p) < bodies.size())
-                        candidates.push_back(bodies[p]);
+                    slots.push_back(size_t(p) < bodies.size() ? bodies[p] : 0);
             }
-            size_t k = 0;
+            const std::vector<uint32_t>& candidates = slots;
+            // The order the opponents were made in is the order of the roster fixed when the race was created (a.roster, by player id); players that came later follow it.
+            std::vector<uint8_t> order = a.roster;
             for (const auto& [id, r] : a.net->Remotes())
+                if (InRace(r) && std::find(order.begin(), order.end(), id) == order.end())
+                    order.push_back(id);
+            size_t k = 0;
+            for (uint8_t id : order)
             {
-                if (!InRace(r))
-                    continue;
-                if (!a.standIns.count(id) && k < candidates.size())
+                const auto rit = a.net->Remotes().find(id);
+                if (rit == a.net->Remotes().end())
                 {
-                    a.standIns[id] = candidates[k];
-                    fprintf(stderr, "[mp] remote player %u (%s) drives body %08X\n", id, r.name.c_str(), candidates[k]);
+                    ++k;   // left since: its opponent stays with the game's own driver
+                    continue;
+                }
+                const mp::Remote& r = rit->second;
+                if (!a.standIns.count(id))
+                {
+                    if (k < candidates.size() && candidates[k])
+                    {
+                        a.standIns[id] = candidates[k];
+                        fprintf(stderr, "[mp] remote player %u (%s) drives opponent %zu, body %08X\n", id, r.name.c_str(), k, candidates[k]);
+                    }
+                    else if (k < candidates.size())
+                        break;   // its vehicle is not there yet: try again next frame (and do not give the later players the earlier ones' vehicles)
                 }
                 ++k;
             }
@@ -630,6 +648,23 @@ namespace game
                             g_lobbyCar = c.key;
                 if (envReady && g_lobbyCar.load() && !g_lobbyReady.load() && !a.localObj)
                     g_lobbyReady = true;
+                {
+                    // log what the lobby says about the others, when it changes
+                    static std::string lastLobby;
+                    std::string now_;
+                    if (a.net)
+                        for (const auto& [id, r] : a.net->Remotes())
+                        {
+                            char b[96];
+                            snprintf(b, sizeof b, "%u:%s:%016llX:%d ", unsigned(id), r.name.c_str(), (unsigned long long)r.carKey, r.lobbyReady ? 1 : 0);
+                            now_ += b;
+                        }
+                    if (now_ != lastLobby)
+                    {
+                        lastLobby = now_;
+                        fprintf(stderr, "[mp] lobby: %s(you: car %016llX, ready %d)\n", now_.c_str(), (unsigned long long)g_lobbyCar.load(), g_lobbyReady.load() ? 1 : 0);
+                    }
+                }
                 std::vector<game::MpPlayer> players;
                 if (a.net && a.net->Connected())
                 {
@@ -849,11 +884,15 @@ namespace game
     {
         Adapter& a = A();
         std::vector<uint64_t> keys;
+        a.roster.clear();
         if (!a.server.empty() && a.net)
             for (const auto& [id, r] : a.net->Remotes())
-                if (r.lobbyReady && r.carKey)
+                if (InRace(r))
+                {
                     keys.push_back(r.carKey);
-        fprintf(stderr, "[mp] opponents are made as %zu car(s) chosen in the lobby\n", keys.size());
+                    a.roster.push_back(id);
+                }   // 0 where that player chose no car: that opponent keeps the game's own car, but keeps its place
+        fprintf(stderr, "[mp] opponents are made as %zu car(s) chosen in the lobby (%zu players on the server)\n", keys.size(), a.net ? a.net->Remotes().size() : size_t(0));
         game::SetOpponentCars(keys);
     }
 
