@@ -414,6 +414,11 @@ opponents those cars, in player id order (the order the stand-ins are handed out
 car is only drawn if the swap happens within about a second of the player's creation**: waiting inside `sub_82333680` (tried: announce the actual car after creation and wait for the others)
 leaves the opponent without a body (wheels only), reproduced on one machine with `NFSMW_TEST_TEMPLATE=<key> NFSMW_TEST_OPP_DELAY=<s>`: delay 0 draws the car, 4 s and more do not. So the
 choices must be known before the race loads; the connection is kept from the moment multiplayer is on. The world hold of the start barrier is armed only after the opponents are created.
+**Why wheels only, and the fix (2026-10-21)**: the opponent's parts and paint come from the preset ride the script gave it (the game's table of presets: car name at +8, preset name at +40, key
+at +80; found by `sub_824EF790`, called at 0x82333720 from `sub_82333680`, walked once by the caller 0x822CB478). A car body swapped into another car's preset is drawn as wheels and smoke
+(reproduced locally: Punto swapped into the TT's preset, also with all three opponents swapped). So for a wanted car the lookup now returns that car's own preset ride (`[cars] opponent preset is
+the game's SUPRA preset ride`), and the opponent is built whole (checked: a solid Supra with its own vinyl). Only cars that have a preset ride are offered (`CarCatalog()`): the Punto has none,
+so it is not offered; the body swap stays as a fallback for such a car and is drawn wrongly.
 The 32-bit key the creation looks up first (`sub_821E02C0`, same for the player and an opponent) is a vehicle behaviour preset, not the car.
 
 ## Earlier attempts on car models and names (2026-10-20), so they are not repeated
