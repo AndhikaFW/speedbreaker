@@ -1,5 +1,6 @@
 #include "mp_server.h"
 #include <enet/enet.h>
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <map>
@@ -32,6 +33,10 @@ namespace mp
         ENetHost* host = nullptr;
         uint16_t port = 0;
         std::map<uint8_t, Player> players;
+        // The start barrier, decided here: the players held at the start of a race (id -> world clock) and how many the race needs. When all are there the server sends Go with the
+        // slowest world clock; every game's world stands still while held, so the others wait the difference and the countdown and GO come together.
+        struct Held { float clock = 0; uint8_t need = 0; };
+        std::map<uint8_t, Held> held;
         std::map<ENetPeer*, uint32_t> pending;   // connected, no Hello yet (when it connected)
         uint32_t nextTick = 0, nextSweep = 0;
 
@@ -51,6 +56,39 @@ namespace mp
                 if (pl.peer == p)
                     return &pl;
             return nullptr;
+        }
+        void SendBarrier()
+        {
+            int need = 0;
+            for (auto& [id, h] : held)
+                need = std::max<int>(need, h.need);
+            Writer w(Msg::Barrier); w.u8(uint8_t(held.size())); w.u8(uint8_t(need));
+            for (auto& [id, h] : held)
+                if (auto it = players.find(id); it != players.end())
+                    Send(it->second.peer, kChanEvent, w, true);
+        }
+        void MaybeGo()
+        {
+            int need = 0;
+            float slowest = 1.0e30f;
+            for (auto& [id, h] : held)
+            {
+                need = std::max<int>(need, h.need);
+                slowest = std::min(slowest, h.clock);
+            }
+            if (held.empty() || need == 0 || int(held.size()) < need)
+                return;
+            for (auto& [id, h] : held)
+                if (auto it = players.find(id); it != players.end())
+                {
+                    // All games start at the same instant 300 ms from now: this one hears of it after half its round trip.
+                    const uint32_t rtt = it->second.peer->roundTripTime;
+                    const uint32_t inMs = rtt / 2 >= 300 ? 0 : 300 - rtt / 2;
+                    Writer w(Msg::Go); w.f32(slowest); w.u32(inMs);
+                    Send(it->second.peer, kChanEvent, w, true);
+                }
+            fprintf(stderr, "[mp-server] start released for %zu players (slowest world clock %.2f s)\n", held.size(), double(slowest));
+            held.clear();
         }
         void OnReceive(ENetPeer* peer, const uint8_t* data, size_t n)
         {
@@ -124,6 +162,19 @@ namespace mp
                 Writer w(Msg::PlayerInfo); w.u8(pl->id); w.u32(hi); w.u32(lo); w.u8(rdy);
                 Broadcast(kChanEvent, w, true, pl->id);
             }
+            else if (t == Msg::Hold)
+            {
+                Held h; h.need = r.u8(); h.clock = r.f32();
+                if (!r.ok() || !(h.clock == h.clock) || h.need == 0 || h.need > kMaxPlayers) return;
+                held[pl->id] = h;
+                SendBarrier();
+                MaybeGo();
+            }
+            else if (t == Msg::Unhold)
+            {
+                if (held.erase(pl->id))
+                    SendBarrier();
+            }
             else if (t == Msg::Chat)
             {
                 std::string text = r.str();
@@ -140,6 +191,8 @@ namespace mp
             uint8_t id = pl->id;
             fprintf(stderr, "[mp-server] %s (%u) left\n", pl->name.c_str(), id);
             players.erase(id);
+            if (held.erase(id))
+                SendBarrier();
             Writer w(Msg::PlayerLeave); w.u8(id);
             Broadcast(kChanEvent, w, true);
         }

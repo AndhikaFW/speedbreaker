@@ -23,6 +23,7 @@ int main(int argc, char** argv)
     if (!c.Connect(host, port, ownName)) return 1;
     std::deque<std::pair<uint32_t, mp::CarState>> hist;   // (local ms, state)
     uint32_t lastSeq = 0, lastSend = 0, lastLog = 0;
+    bool held = false;   // told the server that this stand-in is held at the start when the player it follows is
     for (;;)
     {
         c.Service();
@@ -42,6 +43,12 @@ int main(int argc, char** argv)
         {
             lastSend = now;
             mp::CarState s = hist.front().second;
+            const bool wantHold = (s.flags & mp::kFlagReady) != 0;
+            if (wantHold && !held)
+                c.SendHold(uint8_t(c.Remotes().size() + 1), s.raceClock);
+            else if (!wantHold && held)
+                c.SendUnhold();
+            held = wantHold;
             s.pos[0] += offset;
             s.pos[2] += offsetZ;
             c.SendCar(s);

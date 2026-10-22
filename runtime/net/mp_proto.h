@@ -10,7 +10,7 @@
 namespace mp
 {
     constexpr uint16_t kDefaultPort = 27960;
-    constexpr uint32_t kProtocolVersion = 4;
+    constexpr uint32_t kProtocolVersion = 5;
     constexpr int kMaxPlayers = 16;
     constexpr int kChanState = 0;   // unreliable, latest wins
     constexpr int kChanEvent = 1;   // reliable, ordered
@@ -27,6 +27,10 @@ namespace mp
         Snapshot,       // S->C unreliable: every other player's latest car, one message per server tick
         Chat,           // both ways reliable
         PlayerInfo,     // C->S reliable: the car I chose in the lobby (type key, 0: none) and whether I am ready to race; S->C reliable: id, car key, ready
+        Hold,           // C->S reliable: my game is held at the start of a race: players the race needs (u8), my world clock (f32)
+        Unhold,         // C->S reliable: I leave the start barrier without a Go (cancelled, or the race was left)
+        Barrier,        // S->C reliable: how many players are held at the start, how many the race needs (u8, u8); sent on every change to the held players
+        Go,             // S->C reliable: the server released the start: the slowest world clock (f32), and in how many ms (from receipt, round trip allowed for) that clock's game starts (u32)
     };
 
     constexpr uint16_t kFlagReady = 0x10;   // CarState::flags: this game is held at the start barrier and ready to go

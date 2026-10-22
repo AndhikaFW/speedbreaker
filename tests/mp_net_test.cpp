@@ -137,6 +137,33 @@ int main()
         assert(b.RemoteCar(a.MyId(), b.NowMs(), seen) && std::isfinite(seen.pos[0]));
     }
 
+    // The start barrier is the server's: nobody is released until the race's players are all held; then both get Go with the slowest world clock.
+    {
+        float ref = 0;
+        uint32_t at = 0;
+        a.SendHold(2, 12.5f);
+        Pump(server, a, b, 300);
+        assert(!a.TakeGo(ref, at) && !b.TakeGo(ref, at));
+        int held = 0, need = 0;
+        a.BarrierStatus(held, need);
+        assert(held == 1 && need == 2);
+        b.SendHold(2, 10.25f);
+        Pump(server, a, b, 300);
+        assert(a.TakeGo(ref, at) && ref == 10.25f);
+        assert(b.TakeGo(ref, at) && ref == 10.25f);
+        assert(!a.TakeGo(ref, at));   // once
+        // a later race: one holds, then leaves; the other is not released alone
+        a.SendHold(2, 1.f);
+        Pump(server, a, b, 200);
+        a.SendUnhold();
+        b.SendHold(2, 1.f);
+        Pump(server, a, b, 300);
+        assert(!a.TakeGo(ref, at) && !b.TakeGo(ref, at));
+        b.SendUnhold();
+        Pump(server, a, b, 100);
+        puts("barrier: the server released both players together with the slowest clock");
+    }
+
     b.Disconnect();
     Pump(server, a, b, 300);
     assert(server.PlayerCount() == 1 && a.Remotes().empty());

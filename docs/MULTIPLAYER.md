@@ -428,3 +428,10 @@ The 32-bit key the creation looks up first (`sub_821E02C0`, same for the player 
 - Opponent names in the HUD standings come from text tables (looked up by key); the player's alias is a wide string in a profile struct (about 0x82C5E19C).
 - The camera is in static data: eye at 0x82A2DAC0, forward at 0x82A2DAE0 (tracker axes), look-at point at 0x82A2DB00. Name tags over the cars would need that plus the game's field of view and the picture fit
   (letterbox, Hor+/Vert+ view scale: video/picture_fit.h) to place text at any window shape; not done.
+
+## The server owns the start of a race (protocol 5, 2026-10-22)
+The start barrier is decided by the server (`net/mp_server.cpp`, `MaybeGo`), not by each game looking at the others' ready flags: a game held at the start of a race sends `Hold` (players the race needs,
+its world clock), the server tells the held players how many are there (`Barrier`) and, when everyone is, sends `Go` with the slowest world clock and the time to start in (300 ms, less half the
+round trip of that player, so all games start at the same instant). A game whose world clock is ahead waits the difference, so countdown and GO come together, as before. `Unhold` (cancel with B,
+race left) and a disconnect take a player out of the barrier. Tested on loopback (`tests/mp_net_test.cpp`) and in the game with the bot (`[mp] start barrier released ... the server released the start`).
+Next on the server: finish order and results (needs the game's finish event), then the headless server game (see the notes on `NFSMW_HEADLESS=1` in the memory file).

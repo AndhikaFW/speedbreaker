@@ -51,6 +51,10 @@ namespace mp
         uint8_t myId = 0;
         uint64_t myCarKey = 0;
         bool myReady = false;
+        int heldNow = 0, heldNeed = 0;
+        bool go = false;
+        float goClock = 0;
+        uint32_t goAtMs = 0;
         uint32_t seq = 0;
         std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
         std::map<uint8_t, Remote> remotes;
@@ -186,6 +190,24 @@ namespace mp
                     }
                     break;
                 }
+                case Msg::Barrier:
+                {
+                    const uint8_t h = r.u8(), n = r.u8();
+                    if (r.ok()) { m->heldNow = h; m->heldNeed = n; }
+                    break;
+                }
+                case Msg::Go:
+                {
+                    const float c = r.f32();
+                    const uint32_t inMs = r.u32();
+                    if (r.ok() && c == c)
+                    {
+                        m->go = true;
+                        m->goClock = c;
+                        m->goAtMs = m->Now() + inMs;
+                    }
+                    break;
+                }
                 case Msg::Chat:
                 {
                     uint8_t id = r.u8();
@@ -225,6 +247,31 @@ namespace mp
         if (!m->welcome) return;   // sent when the welcome arrives
         Writer w(Msg::PlayerInfo); w.u32(uint32_t(key >> 32)); w.u32(uint32_t(key)); w.u8(ready ? 1 : 0);
         m->Send(kChanEvent, w, true);
+    }
+    void Client::SendHold(uint8_t need, float worldClock)
+    {
+        if (!m->welcome) return;
+        m->go = false;
+        Writer w(Msg::Hold); w.u8(need); w.f32(worldClock);
+        m->Send(kChanEvent, w, true);
+    }
+    void Client::SendUnhold()
+    {
+        m->go = false;
+        m->heldNow = m->heldNeed = 0;
+        if (!m->welcome) return;
+        Writer w(Msg::Unhold);
+        m->Send(kChanEvent, w, true);
+    }
+    void Client::BarrierStatus(int& held, int& need) const { held = m->heldNow; need = m->heldNeed; }
+    bool Client::TakeGo(float& slowestClock, uint32_t& startAtMs)
+    {
+        if (!m->go) return false;
+        m->go = false;
+        m->heldNow = m->heldNeed = 0;
+        slowestClock = m->goClock;
+        startAtMs = m->goAtMs;
+        return true;
     }
     uint64_t Client::MyCarKey() const { return m->myCarKey; }
 

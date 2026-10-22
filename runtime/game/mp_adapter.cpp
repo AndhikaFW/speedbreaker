@@ -197,7 +197,11 @@ namespace
         int raceEpoch = 0;   // counts new races and finished races: the grid animation's vehicle list starts over with each
         bool barrierPending = false;      // a new race: the barrier is armed when the opponents exist
         double barrierPendingSince = 0;
-        double barrierSince = 0, allReadyAt = 0;
+        double barrierSince = 0;
+        bool holdSent = false;            // the server has been told this game is held (Hold), and is deciding the release
+        bool goPending = false;           // the server released the start: this game starts at goStart (plus the clock difference to the slowest game)
+        double goStart = 0;
+        float goRef = 0;
         // The agreed race clock after the start: every game aims at refClock + real seconds since refTime (game/frame_time.cpp nudges the world's speed to follow it),
         // so the clocks stay together whatever each machine's loading did to its game time. refClock < 0: not in a synchronised race.
         double refClock = -1, refTime = 0;
@@ -351,6 +355,9 @@ namespace
                 if (a.barrier)
                 {
                     a.barrier = false;
+                    if (a.net)
+                        a.net->SendUnhold();
+                    a.holdSent = a.goPending = false;
                     game::SetWorldHold(false);
                     ui::WithdrawToast(kWaitToast);
                 }
@@ -386,7 +393,7 @@ namespace
                 a.barrier = true;
                 a.barrierExpected = a.Expected();
                 a.barrierSince = now;
-                a.allReadyAt = 0;
+                a.holdSent = a.goPending = false;
                 a.readyUntil = now + 20.0;
                 game::SetWorldHold(true);
                 fprintf(stderr, "[mp] start barrier: race held until %d players are ready (%d opponents made)\n", a.barrierExpected, made);
@@ -621,13 +628,11 @@ namespace game
                     text = "Connecting to " + a.server + "...";
                 else
                 {
-                    int ready = 0;
-                    for (const auto& [id, r] : a.net->Remotes())
-                        if (r.hasCar && (r.latest.flags & mp::kFlagReady))
-                            ++ready;
+                    int held = 0, need = 0;
+                    a.net->BarrierStatus(held, need);
                     char b[160];
                     if (a.barrier)
-                        snprintf(b, sizeof b, "Connected. Holding the start: %d of %d players ready.", ready + 1, a.barrierExpected);
+                        snprintf(b, sizeof b, "Connected. Holding the start: %d of %d players ready.", std::max(held, 1), std::max(need, a.barrierExpected));
                     else
                     {
                         int inRace = 0;
@@ -705,10 +710,6 @@ namespace game
         if (!a.barrier || !a.net)
             return;
         const double now = a.Now();
-        int ready = 0;
-        for (const auto& [id, r] : a.net->Remotes())
-            if (r.hasCar && (r.latest.flags & mp::kFlagReady))
-                ++ready;
         // Race check: cars of one race on one track and direction are held within a few metres of each other (the start); a player held hundreds of metres away is in another race.
         if (!a.mismatchShown && a.localObj)
             if (const uint32_t pb = PhysBody(g_memory.base, a.localObj))
@@ -724,35 +725,46 @@ namespace game
                         break;
                     }
             }
-        const bool all = a.net->Connected() && ready + 1 >= a.barrierExpected;
-        // The games are not at the same point of their race world when they are held (the race appears at a different moment of loading on each machine: 1.8 s apart
-        // between the ARM and x86 test machines), so releasing together would start the countdown and GO at different times. Every game's world clock stands still
-        // while held and is in the ready flags: the game that is ahead waits the difference after everyone is ready, so the others catch up in real time.
-        float slowest = LoadF(g_memory.base, 0x82A153B8);
-        const float mine = slowest;
-        for (const auto& [id, r] : a.net->Remotes())
-            if (r.hasCar && (r.latest.flags & mp::kFlagReady) && std::isfinite(r.latest.raceClock))
-                slowest = std::min(slowest, r.latest.raceClock);
-        const double extra = std::clamp(double(mine - slowest), 0.0, 20.0);
-        if (all && a.allReadyAt == 0)
-            a.allReadyAt = now;
-        const bool aligned = all && now - a.allReadyAt >= extra;
+        // The release is the server's decision (net/mp_server.cpp, MaybeGo): this game says it is held and how many players the race needs, and waits for Go. The games are not
+        // at the same point of their race world when they are held (the race appears at a different moment of loading on each machine: 1.8 s apart between the ARM and x86 test
+        // machines), so the server sends the slowest world clock and one start time: the game that is ahead waits the difference, so the others catch up in real time and the
+        // countdown and GO come together.
+        if (!a.net->Connected())
+            a.holdSent = false;
+        else if (!a.holdSent)
+        {
+            a.net->SendHold(uint8_t(std::clamp(a.barrierExpected, 1, 16)), LoadF(g_memory.base, 0x82A153B8));
+            a.holdSent = true;
+        }
+        float ref = 0;
+        uint32_t startAtMs = 0;
+        if (a.net->TakeGo(ref, startAtMs))
+        {
+            a.goPending = true;
+            a.goRef = ref;
+            a.goStart = now + std::max(0.0, double(int32_t(startAtMs - a.net->NowMs())) / 1000.0);
+        }
+        const float mine = LoadF(g_memory.base, 0x82A153B8);
+        const double extra = a.goPending ? std::clamp(double(mine - a.goRef), 0.0, 20.0) : 0.0;
+        const bool released = a.goPending && now >= a.goStart + extra;
         const bool timeout = now - a.barrierSince > 300.0 || (a.net->Failed() && now - a.barrierSince > 10.0);
         // B (or Back) leaves the wait: start without the others.
         const bool cancel = (hid::GameButtons() & (0x2000 | 0x0020)) != 0 && now - a.barrierSince > 1.0;
-        if (aligned || timeout || cancel)
+        if (released || timeout || cancel)
         {
             a.barrier = false;
-            if (aligned && std::isfinite(slowest) && slowest >= 0)
+            if (released && std::isfinite(a.goRef) && a.goRef >= 0)
             {
-                // The slowest game's world starts when everyone is ready; one that waited `extra` s starts later with a clock that is `extra` s ahead, so the same line fits both.
-                a.refClock = double(slowest);
-                a.refTime = a.allReadyAt;
+                // The slowest game's world starts at goStart; one that waited `extra` s starts later with a clock that is `extra` s ahead, so the same line fits both.
+                a.refClock = double(a.goRef);
+                a.refTime = a.goStart;
             }
-            a.allReadyAt = 0;
+            else
+                a.net->SendUnhold();
+            a.holdSent = a.goPending = false;
             game::SetWorldHold(false);
             ui::WithdrawToast(kWaitToast);
-            fprintf(stderr, "[mp] start barrier released after %.1f s (%s; waited %.2f s for the others' race clocks to catch up)\n", now - a.barrierSince, aligned ? "everyone is ready" : cancel ? "cancelled with B" : "timeout", extra);
+            fprintf(stderr, "[mp] start barrier released after %.1f s (%s; waited %.2f s for the others' race clocks to catch up)\n", now - a.barrierSince, released ? "the server released the start" : cancel ? "cancelled with B" : "timeout", extra);
         }
     }
 }
