@@ -93,8 +93,21 @@ namespace vfs
         }
     }
 
+    namespace
+    {
+        std::string g_overrideGuest;
+        std::filesystem::path g_overrideHost;
+    }
+    void SetOverride(std::string_view guestPath, std::filesystem::path hostPath)
+    {
+        g_overrideGuest = std::string(guestPath);
+        g_overrideHost = std::move(hostPath);
+    }
+
     std::optional<Resolved> Resolve(std::string_view guestPath, bool mustExist)
     {
+        if (!g_overrideGuest.empty() && IEquals(guestPath, g_overrideGuest))
+            return Resolved{ g_overrideHost, true };
         auto root = Root(guestPath);
         if (!root)
         {

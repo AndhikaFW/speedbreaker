@@ -26,6 +26,9 @@ namespace vfs
     // component as given (for creating files).
     std::optional<Resolved> Resolve(std::string_view guestPath, bool mustExist);
 
+    // A guest file the game finds at `hostPath` instead of where its path would lead (the dev start's online.cfg, game/online_cfg.cpp). Case-insensitive; one at a time.
+    void SetOverride(std::string_view guestPath, std::filesystem::path hostPath);
+
     // Case-insensitive wildcard match (* and ?), as used by NtQueryDirectoryFile.
     bool WildcardMatch(std::string_view pattern, std::string_view name);
 }

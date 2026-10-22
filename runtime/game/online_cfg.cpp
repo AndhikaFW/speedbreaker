@@ -11,6 +11,9 @@
 #include <stdafx.h>
 
 #include <kernel/function.h>
+#include <kernel/vfs.h>
+#include <user/paths.h>
+#include <filesystem>
 
 extern "C" PPC_FUNC(__imp__sub_823AF408);  // create the game (called by the main loop at 0x823B0028)
 extern "C" PPC_FUNC(__imp__sub_82538950);  // the online.cfg loader (r3: a path, or 0 for "online.cfg")
@@ -20,10 +23,38 @@ PPC_FUNC(sub_823AF408)
     const uint32_t returnTo = uint32_t(ctx.lr);
     __imp__sub_823AF408(ctx, base);
     static bool done = false;
-    if (!done && returnTo == 0x823B002C && std::getenv("NFSMW_ONLINE_CFG"))
+    if (!done && returnTo == 0x823B002C && (std::getenv("NFSMW_ONLINE_CFG") || std::getenv("NFSMW_DEVSTART")))
     {
         done = true;
         fprintf(stderr, "[online.cfg] the game is created: calling its online.cfg loader (sub_82538950)\n");
+        // NFSMW_DEVSTART="car=is300,track=2000,ai=3,laps=2": the game's own developer start, without the front end and without a file in the game's folder: the settings
+        // are written to a file of ours and the game's loader is pointed at it. The car is a car's folder name in lower case (the game looks its Attrib collection up by the hash of
+        // the name), the track a number of the game's track table (2000 is the open world, "Most Wanted World"; the others are test tracks), ONLINEENABLED=0 keeps the start from
+        // waiting for the network. The result is the player's car in the open world, no race.
+        if (const char* spec = std::getenv("NFSMW_DEVSTART"))
+        {
+            std::string car = "is300", track = "2000", ai = "3", laps = "2";
+            for (size_t pos = 0; pos < strlen(spec);)
+            {
+                const char* end = strchr(spec + pos, ',');
+                const std::string item = end ? std::string(spec + pos, end) : std::string(spec + pos);
+                pos += item.size() + 1;
+                const size_t eq = item.find('=');
+                if (eq == std::string::npos) continue;
+                const std::string k = item.substr(0, eq), v = item.substr(eq + 1);
+                if (k == "car") car = v; else if (k == "track") track = v; else if (k == "ai") ai = v; else if (k == "laps") laps = v;
+            }
+            const std::filesystem::path dir = GetUserPath() / "devstart";
+            std::error_code ec;
+            std::filesystem::create_directories(dir, ec);
+            const std::filesystem::path file = dir / "online.cfg";
+            if (FILE* f = fopen(file.string().c_str(), "wb"))
+            {
+                fprintf(f, "SKIPFE=1\r\nSKIPFEPLAYERCAR=%s\r\nSKIPFENUMAICARS=%s\r\nSKIPFENUMLAPS=%s\r\nSKIPFETRACKNUMBER=%s\r\nSKIPMOVIES=1\r\nONLINEENABLED=0\r\n", car.c_str(), ai.c_str(), laps.c_str(), track.c_str());
+                fclose(f);
+                vfs::SetOverride("D:\\online.cfg", file);
+            }
+        }
         PPCContext saved = ctx;
         ctx.r3.u64 = 0;
         ctx.lr = 0x823B002C;

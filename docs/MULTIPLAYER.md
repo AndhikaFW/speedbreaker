@@ -443,3 +443,15 @@ which `sub_822A0B80` refreshes every frame in position order) read the name thro
 order of the players in the race, id order, as their cars are made) the pointer is set to the player's name (capitals, digits, space, `-`, `_`, ten characters) in a block of the game's own heap.
 Checked locally with a bot: the standings list the bot's name. Dead ends on the way: the ascii copy of the names at 0xA8FAC198 (the HUD's list, rewritten each frame from these pointers), and the UTF-16 copies
 (built when the screen opens; writing them or the list after the race starts is too late).
+
+## The game's own dev start works (2026-10-22): NFSMW_DEVSTART
+`NFSMW_DEVSTART="car=is300,track=2000,ai=3,laps=2"` starts the game without the front end (game/online_cfg.cpp): the settings are written to `<user data>/devstart/online.cfg` and the VFS
+(`vfs::SetOverride`) gives that file to the game's own `online.cfg` loader when it asks for `D:\online.cfg`, so nothing is put in the game's folder. Why the first attempts hung or crashed
+(2026-10-18 and today), each found by logging the game's own routines:
+1. `sub_822BE238` (the dev start) calls the network race setup `sub_822BE418` unless `ONLINEENABLED=0` (the default is on): it waited for a network that is not there. `ONLINEENABLED=0` skips it.
+2. The track number must be in the game's track table (count at 0x82A2D350, array pointer at 0x82A2D34C, 288 bytes an entry, the id as a 16-bit number at +138, the folder name at +64): the
+   table has 2000 ("Most Wanted World", folder L2RA: the open world), 2200, 2400, 2401, 27xx (test tracks), 2801, 2901, 2902 and 5400 (Carbon). With an unknown number (the sample file had 1000)
+   `sub_823B2CE8` stores a null track object in the global at 0x82A2D358 and the next step formats its name at address 0x40: SIGSEGV at 1.5 s.
+3. The car is looked up as an Attrib collection by the hash of its name, which is case-sensitive: `is300` works, `IS300` makes `sub_8212BFB8` return 0 and `sub_824729E0` crash at 4.8 s.
+Result: the player's car (checked: the Lexus) in the open world, a free drive with no race and no menu, 60 s after launch, also with `NFSMW_HEADLESS=1` (no window, a null GPU: 30 fps,
+about 80 % of a core, 500 MB; the vehicle table has the one car). Next: start a race from there (the race event the front end's Custom Race would pick) so a server or a host can choose it.
