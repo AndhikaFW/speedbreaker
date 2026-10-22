@@ -25,8 +25,7 @@ extern "C" PPC_FUNC(__imp__sub_82144CA0);   // the string key
 extern "C" PPC_FUNC(__imp__sub_82333680);   // the script native that creates a racing opponent
 extern "C" PPC_FUNC(__imp__sub_82147BF8);   // instantiates a car from its template
 extern "C" PPC_FUNC(__imp__sub_824729E0);
-extern "C" PPC_FUNC(__imp__sub_82468148);
-extern "C" PPC_FUNC(__imp__sub_824EF790);   // finds a preset ride record   // creates the first vehicle of a race: the player's
+extern "C" PPC_FUNC(__imp__sub_82468148);   // creates the first vehicle of a race: the player's
 
 namespace
 {
@@ -41,7 +40,39 @@ namespace
     std::chrono::steady_clock::time_point g_lastOpponent = std::chrono::steady_clock::now() - std::chrono::hours(1);
     uint64_t g_playerKey = 0;
     thread_local uint64_t t_wantedKey = 0;
-    std::map<std::string, uint32_t> g_presets;   // car name -> the first preset ride record of that car
+
+    // The game's 32-bit name hash (Bob Jenkins' lookup2, seed 0xABCDEF00) of the lower-case text: the key of an Attrib collection. The racer collections the script hands to
+    // sub_82333680 are named after the car (checked: "tt" 193A8BC8, "cobaltss" 5A784095, "punto" A6EE7A11 are the keys of the three opponents of the Ironwood circuit race).
+    uint32_t RacerKey(const std::string& name)
+    {
+        std::string k;
+        for (char c : name)
+            k += char(c >= 'A' && c <= 'Z' ? c + 32 : c);
+        auto mix = [](uint32_t& a, uint32_t& b, uint32_t& c) {
+            a -= b; a -= c; a ^= c >> 13; b -= c; b -= a; b ^= a << 8; c -= a; c -= b; c ^= b >> 13;
+            a -= b; a -= c; a ^= c >> 12; b -= c; b -= a; b ^= a << 16; c -= a; c -= b; c ^= b >> 5;
+            a -= b; a -= c; a ^= c >> 3; b -= c; b -= a; b ^= a << 10; c -= a; c -= b; c ^= b >> 15;
+        };
+        uint32_t a = 0x9E3779B9, b = 0x9E3779B9, c = 0xABCDEF00;
+        size_t i = 0, n = k.size();
+        auto w = [&](size_t o) { return uint32_t(uint8_t(k[o])) | uint32_t(uint8_t(k[o + 1])) << 8 | uint32_t(uint8_t(k[o + 2])) << 16 | uint32_t(uint8_t(k[o + 3])) << 24; };
+        for (; n - i >= 12; i += 12)
+        {
+            a += w(i); b += w(i + 4); c += w(i + 8);
+            mix(a, b, c);
+        }
+        c += uint32_t(k.size());
+        const size_t r = n - i;
+        for (size_t j = r; j-- > 0;)
+        {
+            const uint32_t v = uint8_t(k[i + j]);
+            if (j >= 8) c += v << (8 * (j - 7));
+            else if (j >= 4) b += v << (8 * (j - 4));
+            else a += v << (8 * j);
+        }
+        mix(a, b, c);
+        return c;
+    }
 
     uint32_t FindTemplate(uint8_t* base, uint64_t key)
     {
@@ -155,15 +186,7 @@ namespace game
     std::vector<CarEntry> CarCatalog()
     {
         std::lock_guard<std::mutex> g(g_mutex);
-        // Only the cars the game has a preset ride for are offered: an opponent made from that preset is built whole (parts, paint, model), where another car's body swapped
-        // into a preset gets drawn as wheels and smoke.
-        if (g_presets.empty())
-            return g_catalog;
-        std::vector<CarEntry> out;
-        for (const CarEntry& e : g_catalog)
-            if (g_presets.count(e.name))
-                out.push_back(e);
-        return out;
+        return g_catalog;
     }
     void SetOpponentCars(const std::vector<uint64_t>& keys)
     {
@@ -244,6 +267,19 @@ PPC_FUNC(sub_82333680)
     if (want)
         fprintf(stderr, "[cars] opponent %d is made a car with key %016llX\n", g_opponentIndex - 1, (unsigned long long)want);
     t_wantedKey = want;
+    if (want)
+    {
+        // The opponent is made by the game's own generic racer path: the racer collection named after the car (checked for the A3, Clio, Monaro, 911 Turbo, A4, Carrera GT, CTS,
+        // Cobalt SS, TT, Punto, ...), so it comes with its own parts and paint. Another car's body swapped into some other racer is drawn as wheels and smoke.
+        std::lock_guard<std::mutex> g(g_mutex);
+        for (const auto& e : g_catalog)
+            if (e.key == want)
+                ctx.r4.u64 = RacerKey(e.name);
+    }
+    if (const char* rk = std::getenv("NFSMW_TEST_RACERKEY"))   // a test: every opponent is made with this racer key
+        ctx.r4.u64 = strtoull(rk, nullptr, 16);
+    if (std::getenv("NFSMW_LOG_CARS"))
+        fprintf(stderr, "[cars] opponent script call: racer key (r4) = %016llX\n", (unsigned long long)ctx.r4.u64);
     __imp__sub_82333680(ctx, base);
     t_wantedKey = 0;
     {
@@ -309,41 +345,4 @@ PPC_FUNC(sub_824729E0)
     t_wantedKey = was;
     if (PPC_LOAD_U32(0x82C745B4) == 1)
         game::MpPlayerCreated(base);   // the player's vehicle is the only one: tell the others which car it is
-}
-
-// The game keeps a table of preset rides (a car name, "PUNTO", then the preset's own name, "BL10", "CE_Elise", ... and the preset key at +80): the script gives the preset to a racing
-// opponent by name and sub_824EF790 finds it (the call at 0x82333720 in sub_82333680). The table is walked once when the game builds it (the caller 0x822CB478 hands over each
-// record). For an opponent that must be a chosen car, the record returned is the preset ride of that car, so the car comes with its own parts and paint as the game builds it, not as
-// another car's preset on a swapped body.
-PPC_FUNC(sub_824EF790)
-{
-    __imp__sub_824EF790(ctx, base);
-    const uint32_t o = ctx.r3.u32;
-    const bool plausible = o > 0x10000 && o < 0xD0000000 && (o & 3) == 0;
-    if (plausible && uint32_t(ctx.lr) == 0x822CB478)
-    {
-        char name[16] = {};
-        for (int i = 0; i < 15; ++i)
-            name[i] = char(PPC_LOAD_U8(o + 8 + i));
-        std::lock_guard<std::mutex> g(g_mutex);
-        g_presets.emplace(name, o);   // the first preset of each car stays
-        return;
-    }
-    if (t_wantedKey && uint32_t(ctx.lr) == 0x82333724)
-    {
-        std::lock_guard<std::mutex> g(g_mutex);
-        for (const auto& e : g_catalog)
-            if (e.key == t_wantedKey)
-            {
-                auto it = g_presets.find(e.name);
-                if (it != g_presets.end())
-                {
-                    ctx.r3.u64 = it->second;
-                    fprintf(stderr, "[cars] opponent preset is the game's %s preset ride\n", e.name.c_str());
-                }
-                else
-                    fprintf(stderr, "[cars] %s has no preset ride, so its body is swapped in\n", e.name.c_str());
-                break;
-            }
-    }
 }
