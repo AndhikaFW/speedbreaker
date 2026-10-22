@@ -28,4 +28,13 @@ namespace game
         bool self = false;
     };
     std::vector<MpPlayer> MpPlayers();
+
+    // Open-world mode (game/world_mode.cpp): the other players' cars are made in the game's open world. True when the mode is on (NFSMW_MP_WORLD=1).
+    bool MpWorldMode();
+    // The next remote player that needs a vehicle in the world: its id and the car's folder name (lower case; a default when it chose none). False if there is none now.
+    bool MpWorldNextSpawn(uint8_t& id, std::string& car);
+    // That player's vehicle was made: its owner object, which the multiplayer layer then drives (the same body hook as a race's stand-ins).
+    void MpWorldSpawned(uint8_t id, uint32_t owner);
+    // The owners of the game's vehicles (the vehicle table), the player first.
+    std::vector<uint32_t> MpWorldVehicles(uint8_t* base);
 }

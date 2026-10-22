@@ -28,6 +28,7 @@
 #include <array>
 #include <deque>
 #include <map>
+#include <set>
 #include <memory>
 #include <atomic>
 #include <mutex>
@@ -188,6 +189,8 @@ namespace
         std::string server, name = "player";
         double lastSend = 0, lastTry = 0, lastStatus = -10;
         // Start barrier (NFSMW_MP_PLAYERS=n, n > 1): the race is held, world frozen, from the moment it appears until n-1 other players are there and ready too.
+        bool world = std::getenv("NFSMW_MP_WORLD") != nullptr;   // open-world mode: the others are vehicles made in the world, no race start barrier
+        std::set<uint8_t> worldPending;   // players whose vehicle is being made
         size_t nameCalls = 0;             // racer names picked so far in this race (sub_82335248)
         std::vector<uint8_t> roster;      // the players (ids, ascending) the opponents of this race were made for
         std::string cfgCar;               // the lobby car from the settings file (by name; its key is looked up once the catalogue exists)
@@ -395,7 +398,7 @@ namespace
                 a.history.clear();
                 // The start barrier (a held world) is armed once the race script has created its opponents (see below): a world held before that would create them after the
                 // loading phase, and their models would never appear.
-                a.barrierPending = a.Expected() > 1 && !a.server.empty();
+                a.barrierPending = !a.world && a.Expected() > 1 && !a.server.empty();
                 a.barrierPendingSince = now;
                 a.localSince = now;
             }
@@ -483,7 +486,7 @@ namespace
         for (const auto& [id, r] : a.net->Remotes())
             if (InRace(r))
                 ++inRaceCount;
-        if (a.net->Connected() && a.standIns.size() < inRaceCount)
+        if (!a.world && a.net->Connected() && a.standIns.size() < inRaceCount)
         {
             static const std::vector<int> picks = [] {
                 std::vector<int> v;
@@ -972,4 +975,46 @@ PPC_FUNC(sub_82335248)
     memcpy(text, t.data(), t.size());   // the heap's host memory is the guest's: plain bytes, one char each
     PPC_STORE_U32(racer + 8, uint32_t(text - base));
     fprintf(stderr, "[mp] opponent %zu (record %08X) is listed as %s\n", index, racer, t.c_str());
+}
+
+namespace game
+{
+    bool MpWorldMode() { return A().world; }
+
+    bool MpWorldNextSpawn(uint8_t& id, std::string& car)
+    {
+        Adapter& a = A();
+        if (!a.world || !a.net || !a.net->Connected() || !a.localObj)
+            return false;
+        for (const auto& [rid, r] : a.net->Remotes())
+        {
+            // A player that is on the server (with the car it announced) gets its vehicle at once, not when its car state arrives: a vehicle made later than a few seconds after the
+            // player's own gets no model (the game asks for a car's files only while the world is still loading, docs/MULTIPLAYER.md).
+            if ((!r.hasCar && !r.carKey) || a.standIns.count(rid) || a.worldPending.count(rid))
+                continue;
+            id = rid;
+            car = "is300";
+            for (const auto& c : game::CarCatalog())
+                if (c.key == r.carKey)
+                    car = c.name;
+            for (char& ch : car)
+                if (ch >= 'A' && ch <= 'Z') ch = char(ch + 32);
+            a.worldPending.insert(rid);
+            return true;
+        }
+        return false;
+    }
+
+    void MpWorldSpawned(uint8_t id, uint32_t owner)
+    {
+        Adapter& a = A();
+        a.worldPending.erase(id);
+        if (owner)
+        {
+            a.standIns[id] = owner;
+            fprintf(stderr, "[mp] remote player %u is a vehicle in the world, owner %08X\n", unsigned(id), owner);
+        }
+    }
+
+    std::vector<uint32_t> MpWorldVehicles(uint8_t* base) { return VehicleBodies(base); }
 }

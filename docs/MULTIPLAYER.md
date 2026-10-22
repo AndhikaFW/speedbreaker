@@ -455,3 +455,18 @@ Checked locally with a bot: the standings list the bot's name. Dead ends on the 
 3. The car is looked up as an Attrib collection by the hash of its name, which is case-sensitive: `is300` works, `IS300` makes `sub_8212BFB8` return 0 and `sub_824729E0` crash at 4.8 s.
 Result: the player's car (checked: the Lexus) in the open world, a free drive with no race and no menu, 60 s after launch, also with `NFSMW_HEADLESS=1` (no window, a null GPU: 30 fps,
 about 80 % of a core, 500 MB; the vehicle table has the one car). Next: start a race from there (the race event the front end's Custom Race would pick) so a server or a host can choose it.
+
+## Open world mode (started 2026-10-22; NFSMW_MP_WORLD=1 with NFSMW_DEVSTART)
+The design the user asked for: players share the game's open world (the dev start boots into it), a custom marker starts a race that happens in that world, other players can see and
+influence it, and more than one player can start it. First piece, working on one machine with a bot (game/world_mode.cpp, mp_adapter.cpp):
+- **A vehicle for a remote player, made in the world.** The game's own opponent creation (`sub_82333680`, the script native a race script calls) is called from the game's frame
+  hook with a hand-made call object (+0 receives the object, +4 points at an empty parameter block) and the racer key of the player's car (hash of the lower-case folder name). It adds a
+  vehicle to the vehicle table, found as the owner that was not in the table before, and that owner is registered as the player's stand-in, so the body hook that drives a race's
+  stand-ins (`ApplyRemote`) writes the player's state into it every step. Checked: a Supra driven by the bot's state, solid, 9 m ahead of the Lexus in the open world.
+- **The limit found: the car's files are only requested for a vehicle made soon after the player's own.** The same call made 5 or 40 frames after the player's creation opens
+  `CARS\SUPRA\GEOMETRY/TEXTURES/VINYLS.BIN` (and the car is drawn); made 120, 300 or 900 frames after (about 4 s on), the game asks for no file and the car has no model. So a
+  vehicle must be made while the world is still loading: for every player already on the server when this game's world is created (`MpWorldNextSpawn`: a player with an announced car
+  gets its vehicle at once, without waiting for its car state). A player that joins later is not drawn by the others yet: the open question is what the game does in those first seconds
+  (a loading state that stops accepting car requests); static-memory diffs of the first seconds found only per-frame tables, not a flag.
+- **Not done yet:** the marker and the race itself (server-owned: checkpoints, laps, order and results computed on the server from the reported positions, a screen overlay for the marker
+  and the HUD), vehicles for late joiners and removing a vehicle when a player leaves, a settings switch instead of the environment variable.

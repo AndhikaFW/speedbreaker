@@ -183,6 +183,7 @@ namespace
 
 namespace game
 {
+    uint32_t RacerKeyOf(const std::string& carName) { return RacerKey(carName); }
     std::vector<CarEntry> CarCatalog()
     {
         std::lock_guard<std::mutex> g(g_mutex);
@@ -221,6 +222,8 @@ namespace game
     }
 }
 
+namespace game { void WorldModeFrame(PPCContext& ctx, uint8_t* base); }
+
 PPC_FUNC(sub_823AFE20)
 {
     static std::chrono::steady_clock::time_point last;
@@ -238,6 +241,7 @@ PPC_FUNC(sub_823AFE20)
         }
     }
 run:
+    game::WorldModeFrame(ctx, base);
     __imp__sub_823AFE20(ctx, base);
 }
 
