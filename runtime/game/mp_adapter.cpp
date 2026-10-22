@@ -12,8 +12,11 @@
 #include <stdafx.h>
 
 #include <kernel/function.h>
+#include <kernel/heap.h>
 #include "frame_time.h"
 #include "mp_adapter.h"
+#include <algorithm>
+#include <cstring>
 #include <hid/input.h>
 #include <ui/ui.h>
 #include "car_select.h"
@@ -157,6 +160,20 @@ namespace
         return std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
     }
 
+    // A player's name as the game lists its racers: capital letters, digits, space, '-' and '_', ten characters at most (the racer records keep 11 bytes).
+    std::string RacerText(const std::string& name)
+    {
+        std::string t;
+        for (char ch : name)
+        {
+            if (ch >= 'a' && ch <= 'z') ch = char(ch - 32);
+            if ((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == ' ' || ch == '-' || ch == '_')
+                t += ch;
+            if (t.size() == 10) break;
+        }
+        return t;
+    }
+
     struct Adapter
     {
         bool ghost = false;
@@ -171,6 +188,7 @@ namespace
         std::string server, name = "player";
         double lastSend = 0, lastTry = 0, lastStatus = -10;
         // Start barrier (NFSMW_MP_PLAYERS=n, n > 1): the race is held, world frozen, from the moment it appears until n-1 other players are there and ready too.
+        size_t nameCalls = 0;             // racer names picked so far in this race (sub_82335248)
         std::vector<uint8_t> roster;      // the players (ids, ascending) the opponents of this race were made for
         std::string cfgCar;               // the lobby car from the settings file (by name; its key is looked up once the catalogue exists)
         int expected = 0;                 // the number of players from the settings (used when this player is not ready in the lobby)
@@ -897,6 +915,7 @@ namespace game
         Adapter& a = A();
         std::vector<uint64_t> keys;
         a.roster.clear();
+        a.nameCalls = 0;
         if (!a.server.empty() && a.net)
             for (const auto& [id, r] : a.net->Remotes())
                 if (InRace(r))
@@ -923,4 +942,34 @@ namespace game
         std::lock_guard<std::mutex> g(g_statusMutex);
         return g_players;
     }
+}
+
+// A racer (the standings and the results show its name) is a record of 0x1A0 bytes whose +8 is a pointer to its name; sub_82335248(record) picks that name, a random driver name from
+// the game's table, as the race script creates each opponent. The opponents that are other players get their own name here instead, in the order the opponents are made (the
+// players in the race, in id order: the same roster the opponents' cars are made for). The text goes in a block of the game's own heap, kept for the whole session.
+extern "C" PPC_FUNC(__imp__sub_82335248);
+PPC_FUNC(sub_82335248)
+{
+    Adapter& a = A();
+    const uint32_t racer = ctx.r3.u32;
+    __imp__sub_82335248(ctx, base);
+    if (a.server.empty() || !a.net)
+        return;
+    std::vector<uint8_t> players;
+    for (const auto& [id, r] : a.net->Remotes())
+        if (InRace(r))
+            players.push_back(id);
+    const size_t index = a.nameCalls++;
+    if (index >= players.size() || racer < 0x10000)
+        return;
+    const auto it = a.net->Remotes().find(players[index]);
+    const std::string t = it == a.net->Remotes().end() ? std::string() : RacerText(it->second.name);
+    if (t.empty())
+        return;
+    static uint8_t* block = static_cast<uint8_t*>(g_userHeap.Alloc(16 * mp::kMaxPlayers));
+    uint8_t* text = block + 16 * (it->first % mp::kMaxPlayers);
+    memset(text, 0, 16);
+    memcpy(text, t.data(), t.size());   // the heap's host memory is the guest's: plain bytes, one char each
+    PPC_STORE_U32(racer + 8, uint32_t(text - base));
+    fprintf(stderr, "[mp] opponent %zu (record %08X) is listed as %s\n", index, racer, t.c_str());
 }

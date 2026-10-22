@@ -435,3 +435,11 @@ its world clock), the server tells the held players how many are there (`Barrier
 round trip of that player, so all games start at the same instant). A game whose world clock is ahead waits the difference, so countdown and GO come together, as before. `Unhold` (cancel with B,
 race left) and a disconnect take a player out of the barrier. Tested on loopback (`tests/mp_net_test.cpp`) and in the game with the bot (`[mp] start barrier released ... the server released the start`).
 Next on the server: finish order and results (needs the game's finish event), then the headless server game (see the notes on `NFSMW_HEADLESS=1` in the memory file).
+
+## Player names in the standings (2026-10-22)
+A race's racers are records of 0x1A0 bytes (the first is the player, number 1, then the opponents in creation order); the record's +8 points to the racer's name, which
+`sub_82335248(record)` picks (a random driver name from the table of names at about 0xBABCA4xx) as the race script creates each opponent. The standings screen (and the HUD's racer list,
+which `sub_822A0B80` refreshes every frame in position order) read the name through that pointer. game/mp_adapter.cpp hooks `sub_82335248`: for the opponents that are other players (in the
+order of the players in the race, id order, as their cars are made) the pointer is set to the player's name (capitals, digits, space, `-`, `_`, ten characters) in a block of the game's own heap.
+Checked locally with a bot: the standings list the bot's name. Dead ends on the way: the ascii copy of the names at 0xA8FAC198 (the HUD's list, rewritten each frame from these pointers), and the UTF-16 copies
+(built when the screen opens; writing them or the list after the race starts is too late).
