@@ -39,14 +39,16 @@ more after each race. The number of players the start waits for is the number of
    opponents). Choose it in Quick Race > Custom Race; Quick Play picks a random track.
 2. When your race has loaded, your game connects to the server and **holds the start** (the screen stays on the loading bar, with a message at the bottom) until all the players are there.
    Press **B** (or Back) to stop waiting and start without the others. The wait ends by itself after five minutes.
-3. Everybody is released together; the games line their race clocks up in the first seconds, so the countdown and GO happen at the same time. Players start in the grid slots in the order they
-   joined.
+3. The **server** decides when to start: when everyone the race needs is held at the start it releases them together, with one start time and the slowest game's world clock, so the
+   countdown and GO happen at the same time on every machine. Players start in the grid slots in the order they joined.
 4. Race. When the race is over (quit to the menu, or finish), your game leaves the server; start the next race the same way.
 
 ## Limits
-- Other players have no name tags or minimap marks (the settings page lists the players and their cars). Your own car has to be chosen twice, in the lobby and in the car selection.
-- Laps and finishing places are the game's own (computed on each machine from where the cars are); there is no shared results screen yet.
-- No lobby: the players agree the race outside the game.
+- Other players are listed by name in the standings (during and after the race: up to ten capital letters, digits, space, `-` and `_`); there are no name tags over the cars. They show on the
+  minimap like the game's own opponents (checked with a stand-in player on one machine). Your own car has to be chosen twice, in the lobby and in the car selection.
+- Opponent cars look the same model on every machine, but paint, wheels, spoilers and vinyls are the game's random ones for that car, not the owner's own.
+- Laps and finishing places are the game's own (computed on each machine from where the cars are); the times in the standings can differ between machines.
+- The lobby sets cars and who is ready, not the race: the players agree the track and mode outside the game.
 - Basic protection only: the server and every game drop car states that are not finite or are far outside what a car can do, limit one player to 120 states a second, clean player names, and
   disconnect a connection that does not say hello within five seconds. A modified client can still cheat with its own car (each game is trusted with it); there are no accounts or passwords.
 
