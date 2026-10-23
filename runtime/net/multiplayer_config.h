@@ -14,6 +14,7 @@ namespace mpcfg
         std::string server = "127.0.0.1:27960";
         std::string name = "Player";
         int players = 2;   // start barrier: wait for this many players when this player is not ready in the lobby (1 or 0: don't wait)
+        bool world = false;   // open world mode: the game starts in the open world (no menus), the others are cars in it and races are the server's (applies from the next start of the game)
         std::string car;   // the car chosen in the lobby: the game's name for it (IS300, RX8, ...); empty: none yet
     };
 

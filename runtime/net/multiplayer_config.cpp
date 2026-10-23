@@ -30,10 +30,12 @@ namespace mpcfg
             else if (k == "name" && !v.empty()) c.name = v;
             else if (k == "players") c.players = std::clamp(std::atoi(v.c_str()), 0, 16);
             else if (k == "car") c.car = v;
+            else if (k == "world") c.world = v == "1" || v == "true";
         }
         if (const char* e = std::getenv("NFSMW_MP_SERVER")) { c.server = e; c.enabled = true; }
         if (const char* e = std::getenv("NFSMW_MP_NAME")) c.name = e;
         if (const char* e = std::getenv("NFSMW_MP_PLAYERS")) c.players = std::clamp(std::atoi(e), 0, 16);
+        if (std::getenv("NFSMW_MP_WORLD")) c.world = true;
         return c;
     }
 
@@ -42,6 +44,6 @@ namespace mpcfg
         std::error_code ec;
         std::filesystem::create_directories(FilePath().parent_path(), ec);
         std::ofstream out(FilePath(), std::ios::trunc);
-        out << "enabled=" << (c.enabled ? 1 : 0) << "\nserver=" << c.server << "\nname=" << c.name << "\nplayers=" << c.players << "\ncar=" << c.car << "\n";
+        out << "enabled=" << (c.enabled ? 1 : 0) << "\nserver=" << c.server << "\nname=" << c.name << "\nplayers=" << c.players << "\ncar=" << c.car << "\nworld=" << (c.world ? 1 : 0) << "\n";
     }
 }

@@ -12,8 +12,11 @@
 
 #include <kernel/function.h>
 #include <kernel/vfs.h>
+#include <net/multiplayer_config.h>
 #include <user/paths.h>
 #include <filesystem>
+
+static bool WorldModeOn() { const mpcfg::Config c = mpcfg::Load(); return c.enabled && c.world; }
 
 extern "C" PPC_FUNC(__imp__sub_823AF408);  // create the game (called by the main loop at 0x823B0028)
 extern "C" PPC_FUNC(__imp__sub_82538950);  // the online.cfg loader (r3: a path, or 0 for "online.cfg")
@@ -23,7 +26,7 @@ PPC_FUNC(sub_823AF408)
     const uint32_t returnTo = uint32_t(ctx.lr);
     __imp__sub_823AF408(ctx, base);
     static bool done = false;
-    if (!done && returnTo == 0x823B002C && (std::getenv("NFSMW_ONLINE_CFG") || std::getenv("NFSMW_DEVSTART")))
+    if (!done && returnTo == 0x823B002C && (std::getenv("NFSMW_ONLINE_CFG") || std::getenv("NFSMW_DEVSTART") || WorldModeOn()))
     {
         done = true;
         fprintf(stderr, "[online.cfg] the game is created: calling its online.cfg loader (sub_82538950)\n");
@@ -31,7 +34,17 @@ PPC_FUNC(sub_823AF408)
         // are written to a file of ours and the game's loader is pointed at it. The car is a car's folder name in lower case (the game looks its Attrib collection up by the hash of
         // the name), the track a number of the game's track table (2000 is the open world, "Most Wanted World"; the others are test tracks), ONLINEENABLED=0 keeps the start from
         // waiting for the network. The result is the player's car in the open world, no race.
-        if (const char* spec = std::getenv("NFSMW_DEVSTART"))
+        // Open world mode (Settings > Online > Multiplayer): the same start, with the car chosen there.
+        std::string worldSpec;
+        const char* spec = std::getenv("NFSMW_DEVSTART");
+        if (!spec && WorldModeOn())
+        {
+            std::string car = mpcfg::Load().car.empty() ? std::string("is300") : mpcfg::Load().car;
+            for (char& ch : car) if (ch >= 'A' && ch <= 'Z') ch = char(ch + 32);
+            worldSpec = "car=" + car;
+            spec = worldSpec.c_str();
+        }
+        if (spec)
         {
             std::string car = "is300", track = "2000", ai = "3", laps = "2";
             for (size_t pos = 0; pos < strlen(spec);)

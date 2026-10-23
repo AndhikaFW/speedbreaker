@@ -191,7 +191,7 @@ namespace
         double lastSend = 0, lastTry = 0, lastStatus = -10;
         // Start barrier (NFSMW_MP_PLAYERS=n, n > 1): the race is held, world frozen, from the moment it appears until n-1 other players are there and ready too.
         double lastHud = 0;
-        bool world = std::getenv("NFSMW_MP_WORLD") != nullptr;   // open-world mode: the others are vehicles made in the world, no race start barrier
+        bool world = mpcfg::Load().world;   // open-world mode: the others are vehicles made in the world, no race start barrier
         std::set<uint8_t> worldPending;   // players whose vehicle is being made
         size_t nameCalls = 0;             // racer names picked so far in this race (sub_82335248)
         std::vector<uint8_t> roster;      // the players (ids, ascending) the opponents of this race were made for
@@ -258,6 +258,7 @@ namespace
                 standIns.clear();
             }
             name = c.name;
+            world = c.world;
             expected = c.players;
             cfgCar = c.car;
         }

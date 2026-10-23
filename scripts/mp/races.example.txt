@@ -28,10 +28,3 @@ point -4346.6 213.5 795.6
 point -4459.9 204.8 837.1
 point -4528.4 210.8 752.2
 point -4553.5 220.8 633.5
-
-# A short test race next to the dev-start world's spawn point (the road runs along +z): useful with a stand-in racer (build/main/runtime/mp_racebot).
-race spawnloop laps=2 radius=25
-point -2150 153 984
-point -2145 152 1100
-point -2125 151 1203
-point -2145 152 1100

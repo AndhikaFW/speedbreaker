@@ -129,6 +129,9 @@ namespace ui
             ImGui::TextUnformatted("Players to wait for at the start when not ready in the lobby (1 = don't wait)");
             ImGui::SetNextItemWidth(-1);
             changed |= ImGui::SliderInt("##mpplayers", &cfg.players, 1, 8);
+            changed |= ImGui::Checkbox("Open world mode (applies the next time the game starts)", &cfg.world);
+            ImGui::TextWrapped("The game starts in the open world with the car chosen above, with no menus; the other players are cars in it, and the server's races start from markers "
+                "you stop in. Players on the server when your world loads are drawn; join before the others start their game.");
             if (changed)
             {
                 cfg.server = server;

@@ -57,3 +57,14 @@ more after each race. The number of players the start waits for is the number of
 - *Waiting forever*: the other player's game is not at the start yet, or has a different `Players to wait for`, or an older build (every machine has to be on the same commit; the server and
   the games must have the same protocol version, which changes whenever the messages do: rebuild everything after a `git pull`).
 - *"Is not in the same race as you"*: the message at the start says another player is held hundreds of metres from your start line, i.e. a different track or direction. Quit (pause menu) and choose the same race.
+
+## Open world mode (new, 2026-10-23)
+Instead of everyone starting the same race from the menus, the game starts straight in the open world and the server runs races from markers.
+- **Server**: `build/main/runtime/mp_server 27960 scripts/mp/races.example.txt` (the second argument is the races file: `race <name> laps=N radius=M`, then `point x y z` lines, the first is the start marker; the
+  example is a lap of the Ironwood circuit recorded from an AI driver; `scripts/mp/races.test.txt` is a short loop at the world's spawn point for testing).
+- **Game**: in Settings > Online > Multiplayer races tick **Open world mode**, choose **your car**, and restart the game. It boots into the open world with your car (no menus), connects to the server and
+  shows the race markers (a beam and a ring with the distance) and a panel.
+- **A race**: drive to a start marker and **stop in it** for a second and a half. The race opens for 15 s: other players join the same way. Then a 5 s countdown (3.. 2.. 1.. GO!), checkpoints in order (the next
+  two are marked), laps, then the places and times. All of this is decided by the server from the positions the games report. Players who are not in the race drive in the same world and can get in the way.
+- **Limits**: a player who joins the server after your world has loaded is not drawn on your screen (the game asks for a car's files only in the first seconds of a world); join before the others start their game.
+  Names above cars, the game's own HUD for the race, and a different car after the world has started are not there yet. The marker's size on screen uses an assumed field of view (`NFSMW_MP_FOV` to adjust).
