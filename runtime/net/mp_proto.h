@@ -10,7 +10,7 @@
 namespace mp
 {
     constexpr uint16_t kDefaultPort = 27960;
-    constexpr uint32_t kProtocolVersion = 5;
+    constexpr uint32_t kProtocolVersion = 6;
     constexpr int kMaxPlayers = 16;
     constexpr int kChanState = 0;   // unreliable, latest wins
     constexpr int kChanEvent = 1;   // reliable, ordered
@@ -30,6 +30,8 @@ namespace mp
         Hold,           // C->S reliable: my game is held at the start of a race: players the race needs (u8), my world clock (f32)
         Unhold,         // C->S reliable: I leave the start barrier without a Go (cancelled, or the race was left)
         Barrier,        // S->C reliable: how many players are held at the start, how many the race needs (u8, u8); sent on every change to the held players
+        RaceList,       // S->C reliable: the races the server runs: count, then per race name, laps, radius, points (the first is the start marker)
+        RaceState,      // S->C reliable, at most 5 a second: the race in progress: race index (255 none), phase, time (ms), racers (id, lap, next point, place, finish time)
         Go,             // S->C reliable: the server released the start: the slowest world clock (f32), and in how many ms (from receipt, round trip allowed for) that clock's game starts (u32)
     };
 

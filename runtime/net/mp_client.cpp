@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cmath>
 #include <deque>
+#include <mutex>
 
 namespace mp
 {
@@ -59,6 +60,10 @@ namespace mp
         std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
         std::map<uint8_t, Remote> remotes;
         std::map<uint8_t, std::deque<Stamped>> hist;
+        mutable std::mutex raceMutex;       // the overlay reads the race from the render thread
+        std::vector<RaceDef> races;
+        RaceView raceView;
+        uint32_t raceViewAt = 0;
 
         uint32_t Now() const
         {
@@ -208,6 +213,52 @@ namespace mp
                     }
                     break;
                 }
+                case Msg::RaceList:
+                {
+                    std::vector<RaceDef> rs;
+                    const uint8_t n = r.u8();
+                    for (uint8_t i = 0; i < n && r.ok(); ++i)
+                    {
+                        RaceDef d;
+                        d.name = r.str(); d.laps = r.u8(); d.radius = r.f32();
+                        const uint8_t np = r.u8();
+                        for (uint8_t k = 0; k < np && r.ok(); ++k)
+                        {
+                            Vec3 v; v.x = r.f32(); v.y = r.f32(); v.z = r.f32();
+                            d.points.push_back(v);
+                        }
+                        rs.push_back(std::move(d));
+                    }
+                    if (r.ok())
+                    {
+                        std::lock_guard<std::mutex> g(m->raceMutex);
+                        m->races = std::move(rs);
+                    }
+                    break;
+                }
+                case Msg::RaceState:
+                {
+                    RaceView v;
+                    const uint8_t race = r.u8();
+                    v.race = race == 255 ? -1 : race;
+                    v.phase = RacePhase(r.u8());
+                    v.timeMs = r.u32();
+                    const uint8_t n = r.u8();
+                    for (uint8_t i = 0; i < n && r.ok(); ++i)
+                    {
+                        RacerView rv;
+                        rv.id = r.u8(); rv.lap = r.u8(); rv.next = r.u8(); rv.place = r.u8(); rv.finishMs = r.u32();
+                        rv.finished = rv.finishMs != 0;
+                        v.racers.push_back(rv);
+                    }
+                    if (r.ok())
+                    {
+                        std::lock_guard<std::mutex> g(m->raceMutex);
+                        m->raceView = std::move(v);
+                        m->raceViewAt = m->Now();
+                    }
+                    break;
+                }
                 case Msg::Chat:
                 {
                     uint8_t id = r.u8();
@@ -225,6 +276,22 @@ namespace mp
     bool Client::Connected() const { return m->welcome; }
     bool Client::Failed() const { return m->failed; }
     uint8_t Client::MyId() const { return m->myId; }
+    std::vector<RaceDef> Client::Races() const
+    {
+        std::lock_guard<std::mutex> g(m->raceMutex);
+        return m->races;
+    }
+    RaceView Client::CurrentRace() const
+    {
+        std::lock_guard<std::mutex> g(m->raceMutex);
+        RaceView v = m->raceView;
+        const uint32_t dt = m->Now() - m->raceViewAt;
+        if (v.phase == RacePhase::Gathering || v.phase == RacePhase::Countdown)
+            v.timeMs = v.timeMs > dt ? v.timeMs - dt : 0;
+        else if (v.phase == RacePhase::Running)
+            v.timeMs += dt;
+        return v;
+    }
     uint32_t Client::NowMs() const { return m->Now(); }
     uint32_t Client::RttMs() const { return m->peer ? m->peer->roundTripTime : 0; }
     const std::map<uint8_t, Remote>& Client::Remotes() const { return m->remotes; }

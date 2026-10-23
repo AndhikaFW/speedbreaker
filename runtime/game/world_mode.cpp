@@ -24,6 +24,36 @@ namespace game
     // opponent creation for the car's racer collection; it is found as the vehicle that was not in the vehicle table before.
     void WorldModeFrame(PPCContext& ctx, uint8_t* base)
     {
+        // NFSMW_RECORD_PATH=<file>: the position of the first opponent (a race's AI driver, which follows the road) is appended to the file as "point x y z" lines, a point every
+        // 30 m or more, to make the races of a server from a real lap (docs/MULTIPLAYER.md).
+        static const char* record = std::getenv("NFSMW_RECORD_PATH");
+        if (record)
+        {
+            static uint32_t lastOwner = 0;
+            static float lx = 1e9f, ly = 0, lz = 0;
+            const std::vector<uint32_t> vs = MpWorldVehicles(base);
+            if (vs.size() >= 2)
+            {
+                auto ok = [](uint32_t a) { return a > 0x10000 && a < 0xD0000000u; };
+                const uint32_t body = MpWorldPhysBody(base, vs[1]);
+                if (ok(body))
+                {
+                    auto f32 = [&](uint32_t a) { const uint32_t v = PPC_LOAD_U32(a); float f; memcpy(&f, &v, 4); return f; };
+                    const float x = f32(body + 0x10), y = f32(body + 0x14), z = f32(body + 0x18);
+                    const float d2 = (x - lx) * (x - lx) + (z - lz) * (z - lz);
+                    if (vs[1] != lastOwner || d2 > 30.f * 30.f)
+                    {
+                        lastOwner = vs[1];
+                        if (FILE* fp = fopen(record, "a"))
+                        {
+                            fprintf(fp, "point %.1f %.1f %.1f\n", x, y, z);
+                            fclose(fp);
+                        }
+                        lx = x; ly = y; lz = z;
+                    }
+                }
+            }
+        }
         static const char* spawn = std::getenv("NFSMW_WORLD_SPAWN");   // an experiment: one racer made in the world, by car name (lower case), without the server
         static int frames = 0, stage = 0;
         uint8_t id = 0;

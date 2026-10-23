@@ -3,6 +3,7 @@
 // reckoned when packets are late). No game code in here; game/mp_adapter ties it to the game's vehicles.
 #pragma once
 #include "mp_proto.h"
+#include "mp_race.h"
 #include <functional>
 #include <map>
 #include <memory>
@@ -47,6 +48,9 @@ namespace mp
         // The pose of a remote car for the local clock `nowMs` (ms since the client started, see NowMs()), delayed by
         // the interpolation delay and extrapolated by velocity if the data is late. False if nothing was received.
         bool RemoteCar(uint8_t id, uint32_t nowMs, CarState& out) const;
+        // The open world's races (from the server) and the race in progress as the server last said, with its time carried forward to now. Any thread.
+        std::vector<RaceDef> Races() const;
+        RaceView CurrentRace() const;
         uint32_t NowMs() const;
         uint32_t RttMs() const;
         std::function<void(uint8_t, const std::string&)> onChat;

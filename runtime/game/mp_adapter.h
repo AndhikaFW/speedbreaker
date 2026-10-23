@@ -37,4 +37,6 @@ namespace game
     void MpWorldSpawned(uint8_t id, uint32_t owner);
     // The owners of the game's vehicles (the vehicle table), the player first.
     std::vector<uint32_t> MpWorldVehicles(uint8_t* base);
+    // The physics body of one of those vehicles (0 if it has none): position at +0x10, velocity at +0x20 (floats).
+    uint32_t MpWorldPhysBody(uint8_t* base, uint32_t vehicle);
 }

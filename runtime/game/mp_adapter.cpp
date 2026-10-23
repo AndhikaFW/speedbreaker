@@ -15,6 +15,7 @@
 #include <kernel/heap.h>
 #include "frame_time.h"
 #include "mp_adapter.h"
+#include "mp_hud.h"
 #include <algorithm>
 #include <cstring>
 #include <hid/input.h>
@@ -189,6 +190,7 @@ namespace
         std::string server, name = "player";
         double lastSend = 0, lastTry = 0, lastStatus = -10;
         // Start barrier (NFSMW_MP_PLAYERS=n, n > 1): the race is held, world frozen, from the moment it appears until n-1 other players are there and ready too.
+        double lastHud = 0;
         bool world = std::getenv("NFSMW_MP_WORLD") != nullptr;   // open-world mode: the others are vehicles made in the world, no race start barrier
         std::set<uint8_t> worldPending;   // players whose vehicle is being made
         size_t nameCalls = 0;             // racer names picked so far in this race (sub_82335248)
@@ -311,6 +313,23 @@ namespace
     // from the pose it starts the step with, so the remote car is where its player is when it is hit, and the step's own drift is undone afterwards.
     void ApplyRemote(Adapter& a, uint8_t* base, uint32_t obj)
     {
+        // NFSMW_MP_TELEPORT="x,y,z": the local car is put there once, five seconds into the world (a test: to the start of a race marker without driving there).
+        static const char* tp = std::getenv("NFSMW_MP_TELEPORT");
+        static bool tpDone = false;
+        if (tp && !tpDone && a.localObj && obj == a.localObj && a.Now() - a.localSince > 5.0)
+            if (const uint32_t pb = PhysBody(base, obj))
+            {
+                float x, y, z;
+                if (sscanf(tp, "%f,%f,%f", &x, &y, &z) == 3)
+                {
+                    Phys ph = ReadPhys(base, pb);
+                    ph.pos[0] = x; ph.pos[1] = y; ph.pos[2] = z;
+                    ph.vel[0] = ph.vel[1] = ph.vel[2] = 0;
+                    WritePhys(base, pb, ph);
+                    fprintf(stderr, "[mp] teleported the local car to %.1f %.1f %.1f\n", double(x), double(y), double(z));
+                }
+                tpDone = true;
+            }
         if (!a.net || !a.net->Connected())
             return;
         for (const auto& [id, body] : a.standIns)
@@ -344,6 +363,144 @@ namespace
     // The multiplayer layer's once-a-frame work, from MpFramePump (so it also runs while the world is held, when no body is stepped): follow the races
     // (the local player's body, new race / race over, the start barrier), keep the connection (only while a race is on), send the local car, and hand the
     // remote players their opponent bodies.
+    std::string RaceClock(uint32_t ms)
+    {
+        char b[32];
+        snprintf(b, sizeof b, "%u:%02u.%u", ms / 60000, (ms / 1000) % 60, (ms / 100) % 10);
+        return b;
+    }
+
+    // The open world race for the overlay (ui/mp_overlay.cpp): what the server says about the race, with this player's place in it and the markers to drive to.
+    void BuildHud(Adapter& a, uint8_t* base, double now)
+    {
+        if (now - a.lastHud < 0.05)
+            return;
+        a.lastHud = now;
+        mp::Client* net = a.net.get();
+        if (!net || !net->Connected() || !a.localObj)
+        {
+            game::MpHudPublish({});
+            return;
+        }
+        const std::vector<mp::RaceDef> races = net->Races();
+        if (races.empty())
+        {
+            game::MpHudPublish({});
+            return;
+        }
+        const mp::RaceView v = net->CurrentRace();
+        const uint8_t me = net->MyId();
+        auto nameOf = [&](uint8_t id) -> std::string {
+            if (id == me)
+                return a.name;
+            const auto it = net->Remotes().find(id);
+            return it == net->Remotes().end() || it->second.name.empty() ? "player " + std::to_string(id) : it->second.name;
+        };
+        float mine[3] = {};
+        if (const uint32_t pb = PhysBody(base, a.localObj))
+        {
+            const Phys ph = ReadPhys(base, pb);
+            for (int i = 0; i < 3; ++i) mine[i] = ph.pos[i];
+        }
+        auto distTo = [&](const mp::Vec3& p) { const float dx = p.x - mine[0], dz = p.z - mine[2]; return std::sqrt(dx * dx + dz * dz); };
+
+        game::MpHud h;
+        h.camValid = true;
+        for (int i = 0; i < 3; ++i) { h.eye[i] = LoadF(base, 0x82A2DAC0 + 4 * i); h.fwd[i] = LoadF(base, 0x82A2DAE0 + 4 * i); }
+
+        const mp::RacerView* my = nullptr;
+        for (const mp::RacerView& r : v.racers)
+            if (r.id == me) my = &r;
+
+        if (v.phase == mp::RacePhase::Idle || v.race < 0 || size_t(v.race) >= races.size())
+        {
+            // No race: the start markers and how far the nearest is.
+            float best = 1e9f;
+            std::string bestName;
+            for (const mp::RaceDef& d : races)
+            {
+                game::MpHudMarker m;
+                m.p[0] = d.points[0].x; m.p[1] = d.points[0].y; m.p[2] = d.points[0].z;
+                m.label = "START " + d.name;
+                m.kind = 0;
+                h.markers.push_back(m);
+                const float dd = distTo(d.points[0]);
+                if (dd < best) { best = dd; bestName = d.name; }
+            }
+            char b[160];
+            snprintf(b, sizeof b, "Race %s: start marker %.0f m away. Stop inside it to start a race.", bestName.c_str(), double(best));
+            h.lines.push_back(b);
+        }
+        else
+        {
+            const mp::RaceDef& d = races[size_t(v.race)];
+            auto addStart = [&] {
+                game::MpHudMarker m;
+                m.p[0] = d.points[0].x; m.p[1] = d.points[0].y; m.p[2] = d.points[0].z;
+                m.label = "START " + d.name;
+                m.kind = 0;
+                h.markers.push_back(m);
+            };
+            switch (v.phase)
+            {
+            case mp::RacePhase::Gathering:
+            {
+                addStart();
+                char b[160];
+                snprintf(b, sizeof b, "Race %s opens in %u s: stop in the marker to join (%zu in).", d.name.c_str(), (v.timeMs + 999) / 1000, v.racers.size());
+                h.lines.push_back(b);
+                if (!my) h.banner = "";
+                break;
+            }
+            case mp::RacePhase::Countdown:
+                addStart();
+                h.banner = my ? std::to_string((v.timeMs + 999) / 1000) : std::string();
+                h.lines.push_back(my ? "Get ready. The race starts at 0." : "A race is about to start.");
+                break;
+            default:
+            {
+                if (v.phase == mp::RacePhase::Running && v.timeMs < 1500 && my) h.banner = "GO!";
+                if (v.phase == mp::RacePhase::Finished) h.banner = my && my->finished ? "FINISHED" : "";
+                char b[160];
+                if (my && v.phase == mp::RacePhase::Running && !my->finished)
+                {
+                    snprintf(b, sizeof b, "%s  lap %d/%d  place %d/%zu  %s", d.name.c_str(), std::min<int>(my->lap + 1, d.laps), d.laps, my->place, v.racers.size(), RaceClock(v.timeMs).c_str());
+                    h.lines.push_back(b);
+                    const int n = int(d.points.size());
+                    for (int k = 0; k < 2; ++k)
+                    {
+                        const int idx = (my->next + k) % n;
+                        game::MpHudMarker m;
+                        m.p[0] = d.points[size_t(idx)].x; m.p[1] = d.points[size_t(idx)].y; m.p[2] = d.points[size_t(idx)].z;
+                        m.label = idx == 0 ? "FINISH" : "CP " + std::to_string(idx);
+                        m.kind = k == 0 ? 1 : 2;
+                        h.markers.push_back(m);
+                    }
+                }
+                else
+                    h.lines.push_back(v.phase == mp::RacePhase::Finished ? "Race over. Results:" : "A race is in progress. Racers:");
+                for (const mp::RacerView& r : v.racers)
+                {
+                    if (r.finished)
+                        snprintf(b, sizeof b, "%d. %s  %s", r.place, nameOf(r.id).c_str(), RaceClock(r.finishMs).c_str());
+                    else
+                        snprintf(b, sizeof b, "%d. %s  lap %d/%d", r.place, nameOf(r.id).c_str(), std::min<int>(r.lap + 1, d.laps), d.laps);
+                    h.lines.push_back(b);
+                }
+                break;
+            }
+            }
+        }
+        if (std::getenv("NFSMW_MP_HUD_LOG"))
+        {
+            static std::string last;
+            std::string now2 = h.banner;
+            for (const auto& l : h.lines) now2 += "|" + l;
+            if (now2 != last) { last = now2; fprintf(stderr, "[hud] banner \"%s\", %zu lines, %zu markers: %s\n", h.banner.c_str(), h.lines.size(), h.markers.size(), now2.c_str()); for (const auto& rv : v.racers) fprintf(stderr, "[hud]   racer %u lap %u next %u place %u finish %u\n", unsigned(rv.id), unsigned(rv.lap), unsigned(rv.next), unsigned(rv.place), rv.finishMs); }
+        }
+        game::MpHudPublish(std::move(h));
+    }
+
     void Tick(Adapter& a, uint8_t* base, double now)
     {
         if (a.server.empty() && !a.ghost)
@@ -728,6 +885,7 @@ namespace game
             first = false;
         }
         Tick(a, g_memory.base, a.Now());
+        BuildHud(a, g_memory.base, a.Now());
         if (!a.barrier || !a.net)
             return;
         const double now = a.Now();
@@ -1017,4 +1175,5 @@ namespace game
     }
 
     std::vector<uint32_t> MpWorldVehicles(uint8_t* base) { return VehicleBodies(base); }
+    uint32_t MpWorldPhysBody(uint8_t* base, uint32_t vehicle) { return vehicle > 0x10000 ? PhysBody(base, vehicle) : 0; }
 }

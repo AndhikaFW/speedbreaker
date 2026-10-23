@@ -1,7 +1,9 @@
 #include "mp_server.h"
+#include "mp_race.h"
 #include <enet/enet.h>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <map>
 
@@ -37,6 +39,8 @@ namespace mp
         // slowest world clock; every game's world stands still while held, so the others wait the difference and the countdown and GO come together.
         struct Held { float clock = 0; uint8_t need = 0; };
         std::map<uint8_t, Held> held;
+        RaceManager race;                 // the open world's races: rules in net/mp_race.cpp
+        uint32_t raceVersionSent = 0, raceSentAt = 0;
         std::map<ENetPeer*, uint32_t> pending;   // connected, no Hello yet (when it connected)
         uint32_t nextTick = 0, nextSweep = 0;
 
@@ -56,6 +60,32 @@ namespace mp
                 if (pl.peer == p)
                     return &pl;
             return nullptr;
+        }
+        void SendRaceList(ENetPeer* p)
+        {
+            const auto& rs = race.Races();
+            Writer w(Msg::RaceList);
+            w.u8(uint8_t(rs.size()));
+            for (const RaceDef& d : rs)
+            {
+                w.str(d.name); w.u8(uint8_t(d.laps)); w.f32(d.radius); w.u8(uint8_t(d.points.size()));
+                for (const Vec3& v : d.points) { w.f32(v.x); w.f32(v.y); w.f32(v.z); }
+            }
+            Send(p, kChanEvent, w, true);
+        }
+        void BroadcastRaceState(uint32_t now)
+        {
+            const RaceView v = race.View(now);
+            Writer w(Msg::RaceState);
+            w.u8(v.race < 0 ? 255 : uint8_t(v.race)); w.u8(uint8_t(v.phase)); w.u32(v.timeMs); w.u8(uint8_t(std::min<size_t>(v.racers.size(), 16)));
+            for (size_t i = 0; i < v.racers.size() && i < 16; ++i)
+            {
+                const RacerView& r = v.racers[i];
+                w.u8(r.id); w.u8(r.lap); w.u8(r.next); w.u8(r.place); w.u32(r.finishMs);
+            }
+            Broadcast(kChanEvent, w, true);
+            raceVersionSent = race.Version();
+            raceSentAt = now;
         }
         void SendBarrier()
         {
@@ -134,6 +164,8 @@ namespace mp
                 Writer j(Msg::PlayerJoin); j.u8(id); j.str(name);
                 Broadcast(kChanEvent, j, true);
                 players[id] = np;
+                if (!race.Races().empty())
+                    SendRaceList(peer);
                 fprintf(stderr, "[mp-server] %s joined as %u (%zu players)\n", name.c_str(), id, players.size());
             }
             else if (!pl)
@@ -150,6 +182,8 @@ namespace mp
                 {
                     pl->car = c;
                     pl->hasCar = true;
+                    const float speed = std::sqrt(c.vel[0] * c.vel[0] + c.vel[1] * c.vel[1] + c.vel[2] * c.vel[2]);
+                    race.Report(pl->id, { c.pos[0], c.pos[1], c.pos[2] }, speed, now);
                 }
             }
             else if (t == Msg::PlayerInfo)
@@ -193,11 +227,16 @@ namespace mp
             players.erase(id);
             if (held.erase(id))
                 SendBarrier();
+            race.Remove(id);
             Writer w(Msg::PlayerLeave); w.u8(id);
             Broadcast(kChanEvent, w, true);
         }
         void Tick()
         {
+            const uint32_t now = NowMs();
+            race.Tick(now);
+            if (!race.Races().empty() && (race.Version() != raceVersionSent || now - raceSentAt >= 200))
+                BroadcastRaceState(now);
             for (auto& [id, pl] : players)
             {
                 Writer w(Msg::Snapshot);
@@ -279,6 +318,15 @@ namespace mp
             m->nextTick = now + kTickMs;
         }
     }
+    bool Server::LoadRaces(const std::string& path)
+    {
+        std::vector<RaceDef> rs;
+        if (!mp::LoadRaces(path, rs)) return false;
+        m->race.SetRaces(std::move(rs));
+        fprintf(stderr, "[mp-server] %zu race(s) loaded from %s\n", m->race.Races().size(), path.c_str());
+        return true;
+    }
+    int Server::RaceCount() const { return int(m->race.Races().size()); }
     int Server::PlayerCount() const { return int(m->players.size()); }
     uint16_t Server::Port() const { return m->port; }
 }

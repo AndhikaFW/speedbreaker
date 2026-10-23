@@ -133,6 +133,8 @@ namespace ui
     void DrawOnlinePage();
     void ResetSettingsMenu();  // on opening: focus the first row, no dialog left open
     void DrawPerfOverlay();
+    // The open world race over the game (mp_overlay.cpp, game/mp_hud.h): lines, a banner and markers; nothing when there is no race.
+    void DrawMpOverlay();
 
     // Settings > Advanced > Check for Updates (update_dialog.cpp, the check
     // itself is update/updater.h): the row's value and help lines, and its
