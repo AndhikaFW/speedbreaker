@@ -66,5 +66,5 @@ Instead of everyone starting the same race from the menus, the game starts strai
   shows the race markers (a beam and a ring with the distance) and a panel.
 - **A race**: drive to a start marker and **stop in it** for a second and a half. The race opens for 15 s: other players join the same way. Then a 5 s countdown (3.. 2.. 1.. GO!), checkpoints in order (the next
   two are marked), laps, then the places and times. All of this is decided by the server from the positions the games report. Players who are not in the race drive in the same world and can get in the way.
-- **Limits**: a player who joins the server after your world has loaded is not drawn on your screen (the game asks for a car's files only in the first seconds of a world); join before the others start their game.
+- **Limits**: at most six other cars in the world at once. A player who joins after your world has loaded is drawn with a car of the pool (their own car if it is one of the cars the players on the server had when your world loaded, else another model).
   Names above cars, the game's own HUD for the race, and a different car after the world has started are not there yet. The marker's size on screen uses an assumed field of view (`NFSMW_MP_FOV` to adjust).

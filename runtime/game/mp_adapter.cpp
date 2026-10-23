@@ -16,6 +16,7 @@
 #include "frame_time.h"
 #include "mp_adapter.h"
 #include "mp_hud.h"
+#include "world_mode.h"
 #include <algorithm>
 #include <cstring>
 #include <hid/input.h>
@@ -192,6 +193,7 @@ namespace
         // Start barrier (NFSMW_MP_PLAYERS=n, n > 1): the race is held, world frozen, from the moment it appears until n-1 other players are there and ready too.
         double lastHud = 0;
         bool world = mpcfg::Load().world;   // open-world mode: the others are vehicles made in the world, no race start barrier
+        std::set<uint32_t> parked;        // pool vehicles held out of the way (world mode)
         std::set<uint8_t> worldPending;   // players whose vehicle is being made
         size_t nameCalls = 0;             // racer names picked so far in this race (sub_82335248)
         std::vector<uint8_t> roster;      // the players (ids, ascending) the opponents of this race were made for
@@ -331,6 +333,18 @@ namespace
                 }
                 tpDone = true;
             }
+        if (a.parked.count(obj))
+        {
+            if (const uint32_t pb = PhysBody(base, obj))
+            {
+                Phys ph = ReadPhys(base, pb);
+                ph.pos[0] = 0; ph.pos[1] = -600.f; ph.pos[2] = 0;
+                ph.vel[0] = ph.vel[1] = ph.vel[2] = 0;
+                ph.ang[0] = ph.ang[1] = ph.ang[2] = 0;
+                WritePhys(base, pb, ph);
+            }
+            return;
+        }
         if (!a.net || !a.net->Connected())
             return;
         for (const auto& [id, body] : a.standIns)
@@ -1145,6 +1159,17 @@ namespace game
         Adapter& a = A();
         if (!a.world || !a.net || !a.net->Connected() || !a.localObj)
             return false;
+        // A player that left gives its vehicle back to the pool.
+        for (auto it = a.standIns.begin(); it != a.standIns.end();)
+            if (!a.net->Remotes().count(it->first))
+            {
+                game::WorldPoolRelease(it->second);
+                a.parked.insert(it->second);
+                fprintf(stderr, "[mp] player %u left: its vehicle %08X goes back to the pool\n", unsigned(it->first), it->second);
+                it = a.standIns.erase(it);
+            }
+            else
+                ++it;
         for (const auto& [rid, r] : a.net->Remotes())
         {
             // A player that is on the server (with the car it announced) gets its vehicle at once, not when its car state arrives: a vehicle made later than a few seconds after the
@@ -1170,11 +1195,29 @@ namespace game
         a.worldPending.erase(id);
         if (owner)
         {
+            a.parked.erase(owner);
             a.standIns[id] = owner;
             fprintf(stderr, "[mp] remote player %u is a vehicle in the world, owner %08X\n", unsigned(id), owner);
         }
     }
 
+    std::vector<std::string> MpWorldWantedCars()
+    {
+        Adapter& a = A();
+        std::vector<std::string> out;
+        if (a.net && a.net->Connected())
+            for (const auto& [rid, r] : a.net->Remotes())
+                if (r.carKey)
+                    for (const auto& c : game::CarCatalog())
+                        if (c.key == r.carKey)
+                        {
+                            std::string n = c.name;
+                            for (char& ch : n) if (ch >= 'A' && ch <= 'Z') ch = char(ch + 32);
+                            out.push_back(n);
+                        }
+        return out;
+    }
+    void MpWorldPark(uint32_t vehicle) { A().parked.insert(vehicle); }
     std::vector<uint32_t> MpWorldVehicles(uint8_t* base) { return VehicleBodies(base); }
     uint32_t MpWorldPhysBody(uint8_t* base, uint32_t vehicle) { return vehicle > 0x10000 ? PhysBody(base, vehicle) : 0; }
 }

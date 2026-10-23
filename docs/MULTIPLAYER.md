@@ -470,3 +470,12 @@ influence it, and more than one player can start it. First piece, working on one
   (a loading state that stops accepting car requests); static-memory diffs of the first seconds found only per-frame tables, not a flag.
 - **Not done yet:** the marker and the race itself (server-owned: checkpoints, laps, order and results computed on the server from the reported positions, a screen overlay for the marker
   and the HUD), vehicles for late joiners and removing a vehicle when a player leaves, a settings switch instead of the environment variable.
+
+### The car pool: late joiners and AI racers are drawn (2026-10-23)
+What blocks a car made late (traced with gdb breakpoints over the game's functions in the two cases, early and late): the vehicle is registered and its file paths are built, but the car's files are
+only fetched for a vehicle made soon after the player's own (the loader's job state differs: `0x82C5C4F0+20` is 1 early and 0 late, and a request node is in another state in the streaming code
+`sub_823BBD20`); setting state words, growing the job pool and servicing the loader's job list by hand did not reopen it. So nothing is made late: right after the player's car exists, while the
+world still loads, game/world_mode.cpp makes a pool of six vehicles (the game's opponent creation makes at most the player plus six: the vehicle table stops at 7): first the cars of the players
+already on the server, then BMW M3 GTR, Lancer Evo VIII, RX-8, Supra, Mustang GT, Cobalt SS. A pool vehicle that nobody drives is held far below the world (its body is written every step in the same
+hook that drives a stand-in); a player or an AI racer that appears later takes a free one of its car, or any free one (a different model) if its car is not in the pool; a player who leaves gives it back.
+Checked: a bot joining 25 s after the world loaded is a solid car; a bot that was on the server first gets its exact car (a green Supra with its own livery).

@@ -7,6 +7,7 @@
 
 #include "car_select.h"
 #include "mp_adapter.h"
+#include "world_mode.h"
 #include <algorithm>
 #include <kernel/function.h>
 #include <kernel/heap.h>
@@ -18,10 +19,62 @@ namespace
     constexpr uint32_t kVehicleTable = 0x82C745A8;
 }
 
+namespace
+{
+    // The cars of the pool: common ones, made right after the player's own car (each is the game's own racer for that car). Other cars show as the nearest free one.
+    // The game makes at most seven vehicles this way (the player's and six more): the pool is the cars of the players on the server first, then these, for the players and AI
+    // racers that come later (a car that is not in the pool is shown as one that is).
+    const char* const kDefaults[] = { "bmwm3gtre46", "lancerevo8", "rx8", "supra", "mustanggt", "cobaltss" };
+    constexpr size_t kPoolSize = 6;
+    std::vector<std::string> g_plan;
+    struct PoolCar { std::string name; uint32_t owner = 0; bool free = true; };
+    std::vector<PoolCar> g_pool;
+    size_t g_made = 0;
+    int g_frames = 0;
+
+    // The game's opponent creation (the script native a race script calls), called with a hand-made call object; the new vehicle is the owner that was not in the vehicle table.
+    uint32_t MakeVehicle(PPCContext& ctx, uint8_t* base, const std::string& car)
+    {
+        const std::vector<uint32_t> before = game::MpWorldVehicles(base);
+        uint8_t* callBlock = static_cast<uint8_t*>(g_userHeap.Alloc(512));
+        memset(callBlock, 0, 512);
+        const uint32_t call = uint32_t(callBlock - base);
+        PPC_STORE_U32(call + 4, call + 256);   // the parameter block: empty, the racer key is the fallback
+        PPCContext saved = ctx;
+        ctx.r3.u64 = call;
+        ctx.r4.u64 = game::RacerKeyOf(car);
+        __imp__sub_82333680(ctx, base);
+        ctx = saved;
+        uint32_t owner = 0;
+        for (uint32_t v : game::MpWorldVehicles(base))
+            if (std::find(before.begin(), before.end(), v) == before.end())
+                owner = v;
+        g_userHeap.Free(callBlock);
+        return owner;
+    }
+}
+
 namespace game
 {
-    // Called once a game frame from the game's own thread (car_select.cpp's frame hook): each remote player that has no vehicle in the world yet gets one, made with the game's own
-    // opponent creation for the car's racer collection; it is found as the vehicle that was not in the vehicle table before.
+    uint32_t WorldPoolAcquire(const std::string& car)
+    {
+        PoolCar* any = nullptr;
+        for (PoolCar& p : g_pool)
+        {
+            if (!p.free || !p.owner) continue;
+            if (p.name == car) { p.free = false; return p.owner; }
+            if (!any) any = &p;
+        }
+        if (any) { any->free = false; return any->owner; }
+        return 0;
+    }
+    void WorldPoolRelease(uint32_t owner)
+    {
+        for (PoolCar& p : g_pool)
+            if (p.owner == owner) p.free = true;
+    }
+
+    // Called once a game frame from the game's own thread (car_select.cpp's frame hook).
     void WorldModeFrame(PPCContext& ctx, uint8_t* base)
     {
         // NFSMW_RECORD_PATH=<file>: the position of the first opponent (a race's AI driver, which follows the road) is appended to the file as "point x y z" lines, a point every
@@ -30,64 +83,57 @@ namespace game
         if (record)
         {
             static uint32_t lastOwner = 0;
-            static float lx = 1e9f, ly = 0, lz = 0;
+            static float lx = 1e9f, lz = 0;
             const std::vector<uint32_t> vs = MpWorldVehicles(base);
             if (vs.size() >= 2)
-            {
-                auto ok = [](uint32_t a) { return a > 0x10000 && a < 0xD0000000u; };
-                const uint32_t body = MpWorldPhysBody(base, vs[1]);
-                if (ok(body))
+                if (const uint32_t body = MpWorldPhysBody(base, vs[1]); body > 0x10000)
                 {
                     auto f32 = [&](uint32_t a) { const uint32_t v = PPC_LOAD_U32(a); float f; memcpy(&f, &v, 4); return f; };
                     const float x = f32(body + 0x10), y = f32(body + 0x14), z = f32(body + 0x18);
-                    const float d2 = (x - lx) * (x - lx) + (z - lz) * (z - lz);
-                    if (vs[1] != lastOwner || d2 > 30.f * 30.f)
+                    if (vs[1] != lastOwner || (x - lx) * (x - lx) + (z - lz) * (z - lz) > 30.f * 30.f)
                     {
                         lastOwner = vs[1];
-                        if (FILE* fp = fopen(record, "a"))
-                        {
-                            fprintf(fp, "point %.1f %.1f %.1f\n", x, y, z);
-                            fclose(fp);
-                        }
-                        lx = x; ly = y; lz = z;
+                        if (FILE* fp = fopen(record, "a")) { fprintf(fp, "point %.1f %.1f %.1f\n", x, y, z); fclose(fp); }
+                        lx = x; lz = z;
                     }
                 }
-            }
         }
-        static const char* spawn = std::getenv("NFSMW_WORLD_SPAWN");   // an experiment: one racer made in the world, by car name (lower case), without the server
-        static int frames = 0, stage = 0;
+
+        if (!MpWorldMode())
+            return;
+        // The pool: one vehicle every other frame from the frame after the player's own car exists, while the world is still loading.
+        if (PPC_LOAD_U32(kVehicleTable + 12) == 0)
+            return;
+        if (g_plan.empty())
+        {
+            g_plan = MpWorldWantedCars();
+            for (const char* d : kDefaults)
+                if (g_plan.size() < kPoolSize)
+                    g_plan.push_back(d);
+            g_plan.resize(std::min(g_plan.size(), kPoolSize));
+        }
+        if (g_made < g_plan.size())
+        {
+            if (++g_frames % 2 == 0)
+            {
+                PoolCar p;
+                p.name = g_plan[g_made++];
+                p.owner = MakeVehicle(ctx, base, p.name);
+                fprintf(stderr, "[world] pool car %s -> vehicle %08X (table count %u)\n", p.name.c_str(), p.owner, PPC_LOAD_U32(kVehicleTable + 12));
+                if (p.owner)
+                    MpWorldPark(p.owner);
+                g_pool.push_back(p);
+            }
+            return;
+        }
+        // Players that need a car now take one from the pool.
         uint8_t id = 0;
         std::string car;
-        if (spawn)
+        while (MpWorldNextSpawn(id, car))
         {
-            static const int delayFrames = std::getenv("NFSMW_WORLD_SPAWN_FRAMES") ? atoi(std::getenv("NFSMW_WORLD_SPAWN_FRAMES")) : 900;
-            if (PPC_LOAD_U32(kVehicleTable + 12) == 0 || ++frames < delayFrames || stage)
-                return;
-            stage = 1;
-            car = spawn;
-        }
-        else if (!MpWorldMode() || !MpWorldNextSpawn(id, car))
-            return;
-        const std::vector<uint32_t> before = MpWorldVehicles(base);
-        // The script native's call object: +0 receives the made object, +4 points at the parameter block (nothing in it: the racer key is the fallback).
-        uint8_t* callBlock = static_cast<uint8_t*>(g_userHeap.Alloc(512));
-        memset(callBlock, 0, 512);
-        const uint32_t call = uint32_t(callBlock - base), params = call + 256;
-        PPC_STORE_U32(call + 4, params);
-        const uint32_t key = RacerKeyOf(car);
-        fprintf(stderr, "[world] making a vehicle for player %u in the world: car %s, racer key %08X\n", unsigned(id), car.c_str(), key);
-        PPCContext saved = ctx;
-        ctx.r3.u64 = call;
-        ctx.r4.u64 = key;
-        __imp__sub_82333680(ctx, base);
-        ctx = saved;
-        uint32_t owner = 0;
-        for (uint32_t v : MpWorldVehicles(base))
-            if (std::find(before.begin(), before.end(), v) == before.end())
-                owner = v;
-        fprintf(stderr, "[world] vehicles now %zu, the new one is %08X\n", MpWorldVehicles(base).size(), owner);
-        if (!spawn)
+            const uint32_t owner = WorldPoolAcquire(car);
+            fprintf(stderr, "[world] player %u (%s) gets pool vehicle %08X\n", unsigned(id), car.c_str(), owner);
             MpWorldSpawned(id, owner);
-        g_userHeap.Free(callBlock);
+        }
     }
 }
