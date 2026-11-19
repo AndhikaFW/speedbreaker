@@ -479,3 +479,18 @@ world still loads, game/world_mode.cpp makes a pool of six vehicles (the game's 
 already on the server, then BMW M3 GTR, Lancer Evo VIII, RX-8, Supra, Mustang GT, Cobalt SS. A pool vehicle that nobody drives is held far below the world (its body is written every step in the same
 hook that drives a stand-in); a player or an AI racer that appears later takes a free one of its car, or any free one (a different model) if its car is not in the pool; a player who leaves gives it back.
 Checked: a bot joining 25 s after the world loaded is a solid car; a bot that was on the server first gets its exact car (a green Supra with its own livery).
+
+## Events: what is known (2026-11-19)
+- **Headless career world**: `NFSMW_HEADLESS=1` plus the input pump thread (main.cpp) and the menu macro START, START, A, A, A, LEFT, A (pad commands through `NFSMW_INPUT_CMD`) reach the career
+  free-roam world with the user's profile (20 vehicles with traffic, ~90 % of a core, 570 MB). The dev start has no events; the career does.
+- **The script natives**: the game's script VM binds about 140 natives in `sub_8235E8A8` (`scripts/mp/script_natives.py` prints name and function address from the guest image: InitRacers, StartRace,
+  AddRacer, AddCheckpoint, SetPlayerStartPosition, EnterEngagableTrigger, NotifyRaceFinished, SpawnCop, UnlockRace, ...). Many are empty stubs in this build (AddRacer, AddAvailableEventToMap, KnockoutRacer
+  share two-instruction functions). `NFSMW_PROBE_NATIVES=1` (game/native_trace.cpp) logs each call with its call object. At world load only SkipCareerIntro, SetCopsEnabled, ShowGPS, SetRoaming, Print and
+  NotifyActivityFinsihed run; teleporting the player to a trigger position calls AllowEngageEvents and IsRaceCompleted.
+- **Where the events are**: the event objects are the game's GManager "gameplay" objects, named like `race_bin_15/engage/engagetrigger_circuit_15_1_2`, `speedtraps/bin_07/speedtrap1`,
+  `milestones/bin_04/...`, `menu_gate_customshop/zone_customshop_3/respawn` (the dev start's spawn point). A table of 20-byte records (x, y, z in the camera's tracker axes, a pointer to the name, 0) in the heap
+  block around 0xA997A000-0xA99A8800 lists them with positions (`scripts/mp/world_triggers.py` dumps it from a running game: about 190 named points, among them engage triggers, speed traps, tagged car
+  markers, safehouse and custom shop respawn points). Body axes (x, y up, z) are (-Y, Z, X) of those.
+- **Not found yet**: the routes (checkpoints), opponents and rules of each event (attribute blocks of the objects, hash-keyed), and how an engage starts: putting the car on `engagetrigger_circuit_15_1_2`
+  showed no prompt and A did nothing (the trigger may be a volume, or need the car to stop, or the world's event gate has to allow it). Next: watch a real engage (drive in) with the natives probe, or read
+  the stategraph scripts' conditions.
