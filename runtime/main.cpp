@@ -543,7 +543,19 @@ int main(int argc, char** argv)
 
     if (!windowed)
     {
+        // Headless (NFSMW_HEADLESS=1): nobody runs the window's loop, which is what feeds the game its controller input, so the input command file and the scripted taps
+        // (NFSMW_INPUT_CMD, NFSMW_INPUT_SCRIPT) are polled from here, 125 times a second, to drive the menus of a server game.
+        std::atomic<bool> gameDone{ false };
+        std::thread inputPump([&gameDone] {
+            while (!gameDone.load())
+            {
+                hid::Update();
+                std::this_thread::sleep_for(std::chrono::milliseconds(8));
+            }
+        });
         pthread_join(thread, nullptr);
+        gameDone = true;
+        inputPump.join();
         report::FlushLog();
         return 0;
     }
