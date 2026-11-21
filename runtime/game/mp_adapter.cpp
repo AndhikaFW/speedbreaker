@@ -316,22 +316,35 @@ namespace
     // from the pose it starts the step with, so the remote car is where its player is when it is hit, and the step's own drift is undone afterwards.
     void ApplyRemote(Adapter& a, uint8_t* base, uint32_t obj)
     {
-        // NFSMW_MP_TELEPORT="x,y,z": the local car is put there once, five seconds into the world (a test: to the start of a race marker without driving there).
+        // NFSMW_MP_TELEPORT="x,y,z;x,y,z;...": the local car is put at the first point five seconds into the world, and at each next one 25 s after the one before (a test: onto
+        // the triggers of the game's events without driving there; body axes).
         static const char* tp = std::getenv("NFSMW_MP_TELEPORT");
-        static bool tpDone = false;
-        if (tp && !tpDone && a.localObj && obj == a.localObj && a.Now() - a.localSince > 5.0)
+        static size_t tpIndex = 0;
+        static double tpNext = 0;
+        if (tp && a.localObj && obj == a.localObj && a.Now() - a.localSince > 5.0 && a.Now() >= tpNext)
             if (const uint32_t pb = PhysBody(base, obj))
             {
-                float x, y, z;
-                if (sscanf(tp, "%f,%f,%f", &x, &y, &z) == 3)
+                std::vector<std::string> pts;
+                for (const char* c = tp; *c;)
                 {
-                    Phys ph = ReadPhys(base, pb);
-                    ph.pos[0] = x; ph.pos[1] = y; ph.pos[2] = z;
-                    ph.vel[0] = ph.vel[1] = ph.vel[2] = 0;
-                    WritePhys(base, pb, ph);
-                    fprintf(stderr, "[mp] teleported the local car to %.1f %.1f %.1f\n", double(x), double(y), double(z));
+                    const char* e = strchr(c, ';');
+                    pts.emplace_back(c, e ? size_t(e - c) : strlen(c));
+                    c += pts.back().size() + (e ? 1 : 0);
                 }
-                tpDone = true;
+                if (tpIndex < pts.size())
+                {
+                    float x, y, z;
+                    if (sscanf(pts[tpIndex].c_str(), "%f,%f,%f", &x, &y, &z) == 3)
+                    {
+                        Phys ph = ReadPhys(base, pb);
+                        ph.pos[0] = x; ph.pos[1] = y; ph.pos[2] = z;
+                        ph.vel[0] = ph.vel[1] = ph.vel[2] = 0;
+                        WritePhys(base, pb, ph);
+                        fprintf(stderr, "[mp] %.1f s teleported the local car to %.1f %.1f %.1f (point %zu)\n", a.Now(), double(x), double(y), double(z), tpIndex);
+                    }
+                    ++tpIndex;
+                    tpNext = a.Now() + 25.0;
+                }
             }
         if (a.parked.count(obj))
         {

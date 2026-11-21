@@ -494,3 +494,12 @@ Checked: a bot joining 25 s after the world loaded is a solid car; a bot that wa
 - **Not found yet**: the routes (checkpoints), opponents and rules of each event (attribute blocks of the objects, hash-keyed), and how an engage starts: putting the car on `engagetrigger_circuit_15_1_2`
   showed no prompt and A did nothing (the trigger may be a volume, or need the car to stop, or the world's event gate has to allow it). Next: watch a real engage (drive in) with the natives probe, or read
   the stategraph scripts' conditions.
+
+### Engaging an event (2026-11-22)
+- With the car on `race_bin_15/engage/engagetrigger_circuit_15_1_2` (body axes -2318.0 150.9 1632.5; `NFSMW_MP_TELEPORT="x,y,z;x,y,z"` puts the local car at points 5 s into the world and 25 s apart), the trigger's
+  script calls `AllowEngageEvents`, `IsRaceCompleted(event)` and stops there: this career's save counts the event as done (or it is locked). `NFSMW_EVENTS_OPEN=1` (game/native_trace.cpp) makes `IsRaceCompleted`
+  answer 0 and `IsRaceUnlocked` 1 (the answer is in r3; the argument is the event's object, +8 -> +32 the key), and then the script goes on: `IsRaceUnlocked`, `EnterEngagableTrigger`, and an event icon (a
+  circled S for a sprint) with a turning ring appears at the top left of the picture. A, X, Y, B, LB and RB do nothing, and nothing more is called for 90 s. Driving out calls `ExitEngagableTrigger`.
+- So the next condition is not found: the natives `GetSimableSpeedKmh`, `SimableDistance` and `SimableAngle` (speed, distance and heading of the car against the trigger) were never called, so the wait is
+  before them. Candidates: the car has to arrive by driving (speed, a heading along the start direction), the stategraph's `bin_race_engage_wait` waits for a message from the HUD, or world state
+  (`AllowEngageEvents`' argument, heat, cops). The stategraph scripts are compiled bytecode in the game's data; reading them is the route to the exact condition.

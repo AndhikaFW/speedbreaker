@@ -243,8 +243,21 @@ PPC_FUNC(sub_82364E60) { NativeTrace("GetNumRacers", ctx, base); __imp__sub_8236
 PPC_FUNC(sub_82364ED8) { NativeTrace("GetSimableSpeedKmh", ctx, base); __imp__sub_82364ED8(ctx, base); }
 PPC_FUNC(sub_82364D30) { NativeTrace("RacerIsHuman", ctx, base); __imp__sub_82364D30(ctx, base); }
 PPC_FUNC(sub_82364DB0) { NativeTrace("PlayerIsLocal", ctx, base); __imp__sub_82364DB0(ctx, base); }
-PPC_FUNC(sub_82366810) { NativeTrace("IsRaceCompleted", ctx, base); __imp__sub_82366810(ctx, base); }
-PPC_FUNC(sub_82366788) { NativeTrace("IsRaceUnlocked", ctx, base); __imp__sub_82366788(ctx, base); }
+PPC_FUNC(sub_82366810)   // IsRaceCompleted(event object): the answer is in r3
+{
+    NativeTrace("IsRaceCompleted", ctx, base);
+    __imp__sub_82366810(ctx, base);
+    // NFSMW_EVENTS_OPEN=1: no event counts as won, so every event can be engaged again (a server hosts them without a career's progress).
+    if (std::getenv("NFSMW_EVENTS_OPEN"))
+        ctx.r3.u64 = 0;
+}
+PPC_FUNC(sub_82366788)   // IsRaceUnlocked(event object)
+{
+    NativeTrace("IsRaceUnlocked", ctx, base);
+    __imp__sub_82366788(ctx, base);
+    if (std::getenv("NFSMW_EVENTS_OPEN"))
+        ctx.r3.u64 = 1;
+}
 PPC_FUNC(sub_82367560) { NativeTrace("IsOnlineGame", ctx, base); __imp__sub_82367560(ctx, base); }
 PPC_FUNC(sub_82367588) { NativeTrace("IsLANGame", ctx, base); __imp__sub_82367588(ctx, base); }
 PPC_FUNC(sub_82366898) { NativeTrace("AllRacersDone", ctx, base); __imp__sub_82366898(ctx, base); }
