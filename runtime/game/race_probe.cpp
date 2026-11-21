@@ -81,7 +81,37 @@ namespace
 PROBE(8236C180)
 PROBE(8233DC58)
 PROBE(8232D7D8)
-PROBE(8235DA08)
+// sub_8235DA08(script manager, key): the script engine's message to the stategraphs; NFSMW_PROBE_MSG=1 logs the key's words and any text they point at.
+PPC_FUNC(sub_8235DA08)
+{
+    static const bool msg = std::getenv("NFSMW_PROBE_MSG") != nullptr;
+    if (msg)
+    {
+        const uint32_t k = ctx.r4.u32;
+        fprintf(stderr, "[msg] key %08X lr %08X:", k, uint32_t(ctx.lr));
+        for (int i = 0; i < 8 && k > 0x10000 && k < 0xD0000000u; ++i)
+            fprintf(stderr, " %08X", PPC_LOAD_U32(k + 4 * i));
+        for (int i = 0; i < 8 && k > 0x10000 && k < 0xD0000000u; ++i)
+        {
+            const uint32_t q = PPC_LOAD_U32(k + 4 * i);
+            std::string t;
+            if (q > 0x10000 && q < 0xD0000000u)
+                for (int j = 0; j < 48; ++j) { const uint8_t c = PPC_LOAD_U8(q + j); if (c < 32 || c > 126) break; t += char(c); }
+            if (t.size() >= 3) fprintf(stderr, " [%d]=\"%s\"", i, t.c_str());
+        }
+        fprintf(stderr, "\n");
+    }
+    // NFSMW_ENGAGE_ACCEPT=1 (a test): the "decline the event" message (id 8870DE98, which Back sends) is sent as "accept" (id AF4C4648, the ids in the stategraph's handler table).
+    static const bool accept = std::getenv("NFSMW_ENGAGE_ACCEPT") != nullptr;
+    if (accept && ctx.r4.u32 > 0x10000 && PPC_LOAD_U32(ctx.r4.u32 + 24) == 0x8870DE98)
+    {
+        PPC_STORE_U32(ctx.r4.u32 + 24, 0xAF4C4648);
+        fprintf(stderr, "[msg] decline turned into accept\n");
+    }
+    if (Enabled())
+        LogCall("sub_8235DA08", ctx, base);
+    __imp__sub_8235DA08(ctx, base);
+}
 // The event dispatcher: every distinct event id (r5) is logged once, with the time, so the events around the countdown can be read off (NFSMW_PROBE_RACE=3).
 #include <mutex>
 #include <set>

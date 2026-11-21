@@ -503,3 +503,13 @@ Checked: a bot joining 25 s after the world loaded is a solid car; a bot that wa
 - So the next condition is not found: the natives `GetSimableSpeedKmh`, `SimableDistance` and `SimableAngle` (speed, distance and heading of the car against the trigger) were never called, so the wait is
   before them. Candidates: the car has to arrive by driving (speed, a heading along the start direction), the stategraph's `bin_race_engage_wait` waits for a message from the HUD, or world state
   (`AllowEngageEvents`' argument, heat, cops). The stategraph scripts are compiled bytecode in the game's data; reading them is the route to the exact condition.
+
+### The career world has no car-loading window, and what the engage ring waits for (2026-11-22)
+- **A vehicle made 80 s after the first one in the career world loads its files and is drawn** (`NFSMW_LATE_SPAWN="lancerevo8,2400"`: three `CARS\LANCEREVO8\...` opens). The window that stops a late car in
+  the dev start's world (docs above) is an artifact of that start, not of the game: a game that runs the career world, or a headless host that does, needs no car pool for late vehicles.
+- **The script engine's messages**: `sub_8235DA08(script manager, message)` delivers every stategraph message (`NFSMW_PROBE_MSG=1` logs them: words 0 vtable 82081BE4, 2 the message, 6 a type id, 7 the
+  sender). The stategraph's handler table (heap, e.g. 0xA9996AA8) pairs each handler name with a message id: `stategraph_cell_engage_ring_handler_acceptentercareerevent` AF4C4648,
+  `..._declineentercareerevent` 8870DE98, `stategraph_bin_race_engage_wait_handler_triggerenter` 459EABF5, `..._delay_handler_notifysimtick` 2F80BB9F. With the car on an engage trigger (events open) the
+  state machine goes init -> delay -> `ring` and waits for accept or decline; **Back sends decline (type id 8870DE98, from `sub_82398E78`)**, the other buttons send nothing. `NFSMW_ENGAGE_ACCEPT=1` rewrites
+  that decline into accept (AF4C4648) for a test; in two runs the car had already been moved to the custom shop's gate zone (about 140 m away, EnterGateZone) before Back, so the test is not conclusive yet.
+- The sender functions (about 60, `sub_823980A8`..`sub_8239BF30`, each building one message type with `sub_8232A450` and sending it with `sub_8235DA08`) are the way to post any event message from the host.

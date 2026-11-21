@@ -99,6 +99,19 @@ namespace game
                 }
         }
 
+        // NFSMW_LATE_SPAWN="car,frames": one vehicle made that many frames after the first vehicle exists (a test of the car-loading window in other worlds, such as the career's).
+        if (const char* ls = std::getenv("NFSMW_LATE_SPAWN"))
+        {
+            static int lateFrames = 0, lateDone = 0;
+            char car[40] = {};
+            int at = 0;
+            if (sscanf(ls, "%39[^,],%d", car, &at) == 2 && !lateDone && PPC_LOAD_U32(kVehicleTable + 12) > 0 && ++lateFrames >= at)
+            {
+                lateDone = 1;
+                const uint32_t o = MakeVehicle(ctx, base, car);
+                fprintf(stderr, "[world] late spawn of %s -> vehicle %08X\n", car, o);
+            }
+        }
         if (!MpWorldMode())
             return;
         // The pool: one vehicle every other frame from the frame after the player's own car exists, while the world is still loading.
