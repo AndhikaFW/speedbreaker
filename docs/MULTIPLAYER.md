@@ -523,3 +523,12 @@ DoSpecialSetup, RaceStatus, SetRaceActivity, **InitRacers**, ClearRacers, GetNum
 (four racers), AddCheckpoint, AddSpeedTrapToMap, ClearCheckpoints, RestoreStartPositions, EnableBinBarriers, SetAllStaging, NotifyCountdownDone, **StartRaceTimers**. The vehicle table went from 20 (traffic) to
 4: the player and three AI opponents on the start grid. The next steps are the host's side of the protocol (send those four vehicles to the clients), the participants' cars standing in for opponents, and the
 event list (the named trigger positions) as the markers.
+
+### The host's event is seen by another game (2026-11-22, protocol 7)
+`NFSMW_MP_HOST=1` makes a game the **host**: while the game's event runs (`InitRacers` sets it, `EnterPostRaceFlow` clears it) it sends the AI racers to the server 30 times a second as `NpcSnapshot` (car
+type key and physics state; only cars of the game's catalogue, so traffic, cops and trucks stay home; an NPC keeps its id while its car exists). The server relays them to everyone else, where they are
+remotes with ids from `kNpcIdBase` (100) and the name `NPC n`, and the open-world mode gives each a vehicle (a pool car of its model) and drives it like a player. `scripts/mp/host_client_test.sh` runs the
+whole thing on one machine: a headless host in the career world (events open, on the Sprint trigger, `echo accept >> /tmp/ao/host.cmd`) and a windowed client in the career world next to the trigger
+(`NFSMW_MP_WORLD_LOGIC=1`: the world logic without the dev start). Checked: after the accept the client sees the host's racers (Cobalt, Punto, RX-8 in the pool) driving off down the road. Two details: a
+car teleported to a point the road does not reach is sent by the game to the nearest respawn point (the custom shop gate) a few seconds later, so the test client stands 8 m from the trigger on the road;
+`NFSMW_MP_TELEPORT` now starts over whenever the local car object changes (a new world).

@@ -4,6 +4,7 @@
 // object and parameter words (docs/MULTIPLAYER.md, "Events"). One hook per native function that nothing else hooks.
 #include <stdafx.h>
 #include <kernel/function.h>
+#include "mp_adapter.h"
 
 extern "C" PPC_FUNC(__imp__sub_82361D70);
 extern "C" PPC_FUNC(__imp__sub_82361D78);
@@ -187,7 +188,6 @@ PPC_FUNC(sub_82363D28) { NativeTrace("DetachCameraFromRacer", ctx, base); __imp_
 PPC_FUNC(sub_823670A0) { NativeTrace("ChallengeComplete", ctx, base); __imp__sub_823670A0(ctx, base); }
 PPC_FUNC(sub_823671E8) { NativeTrace("ClearAIControl", ctx, base); __imp__sub_823671E8(ctx, base); }
 PPC_FUNC(sub_82367150) { NativeTrace("ForceAIControl", ctx, base); __imp__sub_82367150(ctx, base); }
-PPC_FUNC(sub_823633D8) { NativeTrace("InitRacers", ctx, base); __imp__sub_823633D8(ctx, base); }
 PPC_FUNC(sub_82363D68) { NativeTrace("WarpPlayerToTrigger", ctx, base); __imp__sub_82363D68(ctx, base); }
 PPC_FUNC(sub_82363FF0) { NativeTrace("ResetTrigger", ctx, base); __imp__sub_82363FF0(ctx, base); }
 PPC_FUNC(sub_82363EE8) { NativeTrace("SetPlayerStartPosition", ctx, base); __imp__sub_82363EE8(ctx, base); }
@@ -203,7 +203,6 @@ PPC_FUNC(sub_82365730) { NativeTrace("SetRaceActivity", ctx, base); __imp__sub_8
 PPC_FUNC(sub_82365B20) { NativeTrace("StartRaceTimers", ctx, base); __imp__sub_82365B20(ctx, base); }
 PPC_FUNC(sub_82365650) { NativeTrace("SaveStartPositions", ctx, base); __imp__sub_82365650(ctx, base); }
 PPC_FUNC(sub_823656A8) { NativeTrace("RestoreStartPositions", ctx, base); __imp__sub_823656A8(ctx, base); }
-PPC_FUNC(sub_82365D08) { NativeTrace("EnterPostRaceFlow", ctx, base); __imp__sub_82365D08(ctx, base); }
 PPC_FUNC(sub_82367D70) { NativeTrace("ShowOnlinePostRaceScreen", ctx, base); __imp__sub_82367D70(ctx, base); }
 PPC_FUNC(sub_82365E08) { NativeTrace("SetCopsEnabled", ctx, base); __imp__sub_82365E08(ctx, base); }
 PPC_FUNC(sub_82365E60) { NativeTrace("NoNewPursuitsOrCops", ctx, base); __imp__sub_82365E60(ctx, base); }
@@ -243,6 +242,18 @@ PPC_FUNC(sub_82364E60) { NativeTrace("GetNumRacers", ctx, base); __imp__sub_8236
 PPC_FUNC(sub_82364ED8) { NativeTrace("GetSimableSpeedKmh", ctx, base); __imp__sub_82364ED8(ctx, base); }
 PPC_FUNC(sub_82364D30) { NativeTrace("RacerIsHuman", ctx, base); __imp__sub_82364D30(ctx, base); }
 PPC_FUNC(sub_82364DB0) { NativeTrace("PlayerIsLocal", ctx, base); __imp__sub_82364DB0(ctx, base); }
+PPC_FUNC(sub_823633D8)   // InitRacers: the script sets an event's racers up
+{
+    NativeTrace("InitRacers", ctx, base);
+    game::HostEventSet(true);
+    __imp__sub_823633D8(ctx, base);
+}
+PPC_FUNC(sub_82365D08)   // EnterPostRaceFlow: the event is over
+{
+    NativeTrace("EnterPostRaceFlow", ctx, base);
+    game::HostEventSet(false);
+    __imp__sub_82365D08(ctx, base);
+}
 PPC_FUNC(sub_82366810)   // IsRaceCompleted(event object): the answer is in r3
 {
     NativeTrace("IsRaceCompleted", ctx, base);

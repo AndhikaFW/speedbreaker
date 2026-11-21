@@ -20,6 +20,14 @@ namespace mp
         bool lobbyReady = false;   // it is ready to race (its game makes cars for the ones who are)
     };
 
+    // One car of the event the host game runs (not a player): its id among the host's cars, the car it is and its state.
+    struct Npc
+    {
+        uint8_t id = 0;
+        uint64_t carKey = 0;
+        CarState state;
+    };
+
     class Client
     {
     public:
@@ -34,6 +42,8 @@ namespace mp
         uint8_t MyId() const;
         void SendCar(const CarState& c);   // unreliable; call at the send rate (about 30 Hz)
         void SendChat(const std::string& text);
+        // The host game: the cars of the event it runs (unreliable; call at the send rate). Other clients see them as remotes with ids from kNpcIdBase.
+        void SendNpcs(const std::vector<Npc>& npcs);
         // Tell everyone which car this player chose in the lobby (the game's car type key, 0: none) and whether it is ready to race.
         void SetLobby(uint64_t carKey, bool ready);
         uint64_t MyCarKey() const;

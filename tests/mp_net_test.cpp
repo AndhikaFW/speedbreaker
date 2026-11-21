@@ -164,6 +164,26 @@ int main()
         puts("barrier: the server released both players together with the slowest clock");
     }
 
+    // The host game's event cars reach the others as remotes with ids from kNpcIdBase, and leave when they stop coming.
+    {
+        std::vector<mp::Npc> npcs(2);
+        for (int i = 0; i < 2; ++i)
+        {
+            npcs[size_t(i)].id = uint8_t(i);
+            npcs[size_t(i)].carKey = 0x0145D39E6027E317ull + uint64_t(i);
+            npcs[size_t(i)].state.pos[0] = 10.f * float(i + 1);
+        }
+        for (int k = 0; k < 20; ++k) { b.SendNpcs(npcs); Pump(server, a, b, 20); }
+        const auto it = a.Remotes().find(uint8_t(mp::kNpcIdBase + 1));
+        assert(it != a.Remotes().end() && it->second.hasCar && it->second.carKey == 0x0145D39E6027E318ull && it->second.name == "NPC 1");
+        mp::CarState seen;
+        assert(a.RemoteCar(uint8_t(mp::kNpcIdBase + 1), a.NowMs(), seen) && seen.pos[0] > 19.f && seen.pos[0] < 21.f);
+        assert(b.Remotes().find(uint8_t(mp::kNpcIdBase)) == b.Remotes().end());   // not echoed to the host
+        Pump(server, a, b, 3300);
+        assert(a.Remotes().find(uint8_t(mp::kNpcIdBase + 1)) == a.Remotes().end());
+        puts("npc cars: relayed to the others, not back, and gone after 3 s");
+    }
+
     b.Disconnect();
     Pump(server, a, b, 300);
     assert(server.PlayerCount() == 1 && a.Remotes().empty());

@@ -31,6 +31,7 @@ namespace mp
             uint32_t windowStart = 0, inWindow = 0;
             uint64_t carKey = 0;
             bool ready = false;
+            uint32_t npcWindow = 0, npcCount = 0;
         };
         ENetHost* host = nullptr;
         uint16_t port = 0;
@@ -195,6 +196,29 @@ namespace mp
                 pl->ready = rdy != 0;
                 Writer w(Msg::PlayerInfo); w.u8(pl->id); w.u32(hi); w.u32(lo); w.u8(rdy);
                 Broadcast(kChanEvent, w, true, pl->id);
+            }
+            else if (t == Msg::NpcSnapshot)
+            {
+                // The host game's event cars: relayed to every other player as they come (checked: plausible states, at most 120 messages a second).
+                const uint32_t now = NowMs();
+                if (now - pl->npcWindow >= 1000) { pl->npcWindow = now; pl->npcCount = 0; }
+                if (++pl->npcCount > 120 || n > 4096) return;
+                Writer w(Msg::NpcSnapshot);
+                const uint8_t cnt = r.u8();
+                if (cnt > 16) return;
+                std::vector<uint8_t> body;
+                w.u8(cnt);
+                for (uint8_t i = 0; i < cnt; ++i)
+                {
+                    const uint8_t nid = r.u8();
+                    const uint32_t hi = r.u32(), lo = r.u32();
+                    CarState c = r.car();
+                    if (!r.ok()) return;
+                    if (!Sane(c)) { w.b.resize(2); w.b[1] = 0; break; }
+                    w.u8(nid); w.u32(hi); w.u32(lo); w.car(c);
+                }
+                if (w.b.size() > 2)
+                    Broadcast(kChanState, w, false, pl->id);
             }
             else if (t == Msg::Hold)
             {

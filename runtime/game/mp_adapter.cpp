@@ -192,7 +192,9 @@ namespace
         double lastSend = 0, lastTry = 0, lastStatus = -10;
         // Start barrier (NFSMW_MP_PLAYERS=n, n > 1): the race is held, world frozen, from the moment it appears until n-1 other players are there and ready too.
         double lastHud = 0;
-        bool world = mpcfg::Load().world;   // open-world mode: the others are vehicles made in the world, no race start barrier
+        bool world = mpcfg::Load().world || std::getenv("NFSMW_MP_WORLD_LOGIC") != nullptr;
+        bool host = std::getenv("NFSMW_MP_HOST") != nullptr;   // the host game: sends the AI racers of the event it runs
+        double lastNpc = 0;   // open-world mode: the others are vehicles made in the world, no race start barrier
         std::set<uint32_t> parked;        // pool vehicles held out of the way (world mode)
         std::set<uint8_t> worldPending;   // players whose vehicle is being made
         size_t nameCalls = 0;             // racer names picked so far in this race (sub_82335248)
@@ -260,7 +262,7 @@ namespace
                 standIns.clear();
             }
             name = c.name;
-            world = c.world;
+            world = c.world || std::getenv("NFSMW_MP_WORLD_LOGIC") != nullptr;   // (the logic without the dev start: the career world, whose cars can be made late)
             expected = c.players;
             cfgCar = c.car;
         }
@@ -321,6 +323,8 @@ namespace
         static const char* tp = std::getenv("NFSMW_MP_TELEPORT");
         static size_t tpIndex = 0;
         static double tpNext = 0;
+        static uint32_t tpObj = 0;
+        if (a.localObj != tpObj) { tpObj = a.localObj; tpIndex = 0; tpNext = 0; }   // a new local car (a new world): the points start over
         if (tp && a.localObj && obj == a.localObj && a.Now() - a.localSince > 5.0 && a.Now() >= tpNext)
             if (const uint32_t pb = PhysBody(base, obj))
             {
@@ -527,6 +531,56 @@ namespace
             if (now2 != last) { last = now2; fprintf(stderr, "[hud] banner \"%s\", %zu lines, %zu markers: %s\n", h.banner.c_str(), h.lines.size(), h.markers.size(), now2.c_str()); for (const auto& rv : v.racers) fprintf(stderr, "[hud]   racer %u lap %u next %u place %u finish %u\n", unsigned(rv.id), unsigned(rv.lap), unsigned(rv.next), unsigned(rv.place), rv.finishMs); }
         }
         game::MpHudPublish(std::move(h));
+    }
+
+    std::atomic<bool> g_hostEvent{ false };
+
+    // The host game's event cars: every vehicle of the table but the first (the host's own car) and the ones that stand in for players, 30 times a second while an event runs.
+    void SendNpcs(Adapter& a, uint8_t* base, double now)
+    {
+        if (!a.host || !a.net || !a.net->Connected() || !g_hostEvent.load() || now - a.lastNpc < 1.0 / 30.0)
+            return;
+        a.lastNpc = now;
+        const std::vector<uint32_t> vb = VehicleBodies(base);
+        const uint32_t data = PPC_LOAD_U32(kVehicleTable + 4);
+        if (data != kVehicleTable + 16 || vb.size() < 2)
+            return;
+        std::vector<mp::Npc> out;
+        // A car keeps its NPC id while it exists (the ids are handed out from 0 and taken back two seconds after the car is gone), so the others keep one vehicle for it.
+        static std::map<uint32_t, std::pair<uint8_t, double>> ids;   // owner -> id, last seen
+        std::vector<game::CarEntry> cat = game::CarCatalog();
+        for (size_t i = 1; i < vb.size() && out.size() < 8; ++i)
+        {
+            bool stand = false;
+            for (const auto& [id, o] : a.standIns) stand |= o == vb[i];
+            if (!vb[i] || stand || a.parked.count(vb[i])) continue;
+            const uint32_t pb = PhysBody(base, vb[i]);
+            if (!pb) continue;
+            const Phys ph = ReadPhys(base, pb);
+            mp::Npc n;
+            const uint32_t owner = PPC_LOAD_U32(data + 8 * uint32_t(i));
+            n.carKey = owner > 0x10000 ? game::CarKeyOfRecord(base, PPC_LOAD_U32(owner + 0x74)) : 0;
+            // Only the event's racers: a car of the game's catalogue (the catalogue has no traffic, cops or trucks).
+            bool known = false;
+            for (const auto& c : cat) known |= c.key == n.carKey;
+            if (!n.carKey || !known) continue;
+            auto it = ids.find(owner);
+            if (it == ids.end())
+            {
+                uint8_t id = 0;
+                for (;; ++id) { bool used = false; for (const auto& [o, v] : ids) used |= v.first == id; if (!used) break; }
+                it = ids.emplace(owner, std::make_pair(id, now)).first;
+            }
+            it->second.second = now;
+            n.id = it->second.first;
+            for (int k = 0; k < 4; ++k) n.state.rot[k] = ph.q[k];
+            for (int k = 0; k < 3; ++k) { n.state.pos[k] = ph.pos[k]; n.state.vel[k] = ph.vel[k]; n.state.angVel[k] = ph.ang[k]; }
+            n.state.raceClock = LoadF(base, 0x82A153B8);
+            out.push_back(n);
+        }
+        for (auto it = ids.begin(); it != ids.end();)
+            it = now - it->second.second > 2.0 ? ids.erase(it) : std::next(it);
+        a.net->SendNpcs(out);
     }
 
     void Tick(Adapter& a, uint8_t* base, double now)
@@ -914,6 +968,7 @@ namespace game
         }
         Tick(a, g_memory.base, a.Now());
         BuildHud(a, g_memory.base, a.Now());
+        SendNpcs(a, g_memory.base, a.Now());
         if (!a.barrier || !a.net)
             return;
         const double now = a.Now();
@@ -1234,3 +1289,4 @@ namespace game
     std::vector<uint32_t> MpWorldVehicles(uint8_t* base) { return VehicleBodies(base); }
     uint32_t MpWorldPhysBody(uint8_t* base, uint32_t vehicle) { return vehicle > 0x10000 ? PhysBody(base, vehicle) : 0; }
 }
+namespace game { void HostEventSet(bool active) { g_hostEvent = active; fprintf(stderr, "[host] event %s\n", active ? "running" : "over"); } bool HostEventActive() { return g_hostEvent.load(); } }

@@ -43,4 +43,9 @@ namespace game
     void MpWorldPark(uint32_t vehicle);
     // The physics body of one of those vehicles (0 if it has none): position at +0x10, velocity at +0x20 (floats).
     uint32_t MpWorldPhysBody(uint8_t* base, uint32_t vehicle);
+
+    // The host game (NFSMW_MP_HOST=1, the headless server game): an event of the game is running (set by the script natives InitRacers and EnterPostRaceFlow); its AI racers are sent to
+    // the players as NPC cars.
+    void HostEventSet(bool active);
+    bool HostEventActive();
 }

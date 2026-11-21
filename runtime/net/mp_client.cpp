@@ -1,5 +1,6 @@
 #include "mp_client.h"
 #include <enet/enet.h>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <deque>
@@ -60,6 +61,7 @@ namespace mp
         std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
         std::map<uint8_t, Remote> remotes;
         std::map<uint8_t, std::deque<Stamped>> hist;
+        std::map<uint8_t, uint32_t> npcSeen;   // NPC remote id -> local ms of its last state
         mutable std::mutex raceMutex;       // the overlay reads the race from the render thread
         std::vector<RaceDef> races;
         RaceView raceView;
@@ -107,6 +109,7 @@ namespace mp
         m->welcome = false;
         m->remotes.clear();
         m->hist.clear();
+        m->npcSeen.clear();
     }
 
     void Client::Service()
@@ -213,6 +216,33 @@ namespace mp
                     }
                     break;
                 }
+                case Msg::NpcSnapshot:
+                {
+                    const uint8_t n = r.u8();
+                    const uint32_t now = m->Now();
+                    for (uint8_t i = 0; i < n && r.ok(); ++i)
+                    {
+                        const uint8_t nid = r.u8();
+                        const uint32_t hi = r.u32(), lo = r.u32();
+                        CarState c = r.car();
+                        if (!r.ok()) break;
+                        if (!Sane(c) || nid >= 100) continue;
+                        const uint8_t id = uint8_t(kNpcIdBase + nid);
+                        Remote& rm = m->remotes[id];
+                        rm.id = id;
+                        rm.name = "NPC " + std::to_string(nid);
+                        rm.carKey = (uint64_t(hi) << 32) | lo;
+                        auto& h = m->hist[id];
+                        if (!h.empty() && int32_t(c.seq - h.back().s.seq) <= 0)
+                            continue;
+                        rm.latest = c;
+                        rm.hasCar = true;
+                        h.push_back({ now, c });
+                        if (h.size() > kHistory) h.pop_front();
+                        m->npcSeen[id] = now;
+                    }
+                    break;
+                }
                 case Msg::RaceList:
                 {
                     std::vector<RaceDef> rs;
@@ -271,6 +301,17 @@ namespace mp
                 enet_packet_destroy(ev.packet);
             }
         }
+        // The NPCs of an event that is over stop arriving: they leave after three seconds, the way a player does.
+        const uint32_t nowMs = m->Now();
+        for (auto it = m->npcSeen.begin(); it != m->npcSeen.end();)
+            if (nowMs - it->second > 3000)
+            {
+                m->remotes.erase(it->first);
+                m->hist.erase(it->first);
+                it = m->npcSeen.erase(it);
+            }
+            else
+                ++it;
     }
 
     bool Client::Connected() const { return m->welcome; }
@@ -304,6 +345,22 @@ namespace mp
         s.ownerTimeMs = m->Now();
         Writer w(Msg::CarState);
         w.car(s);
+        m->Send(kChanState, w, false);
+    }
+
+    void Client::SendNpcs(const std::vector<Npc>& npcs)
+    {
+        if (!m->welcome || npcs.empty()) return;
+        Writer w(Msg::NpcSnapshot);
+        w.u8(uint8_t(std::min<size_t>(npcs.size(), 16)));
+        for (size_t i = 0; i < npcs.size() && i < 16; ++i)
+        {
+            CarState c = npcs[i].state;
+            c.seq = ++m->seq;
+            c.ownerTimeMs = m->Now();
+            w.u8(npcs[i].id); w.u32(uint32_t(npcs[i].carKey >> 32)); w.u32(uint32_t(npcs[i].carKey));
+            w.car(c);
+        }
         m->Send(kChanState, w, false);
     }
 
