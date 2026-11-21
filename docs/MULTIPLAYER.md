@@ -532,3 +532,13 @@ whole thing on one machine: a headless host in the career world (events open, on
 (`NFSMW_MP_WORLD_LOGIC=1`: the world logic without the dev start). Checked: after the accept the client sees the host's racers (Cobalt, Punto, RX-8 in the pool) driving off down the road. Two details: a
 car teleported to a point the road does not reach is sent by the game to the nearest respawn point (the custom shop gate) a few seconds later, so the test client stands 8 m from the trigger on the road;
 `NFSMW_MP_TELEPORT` now starts over whenever the local car object changes (a new world).
+
+### The server starts the game's events with the players in them (protocol 8, 2026-11-22)
+A race of the races file with `host=1` is an event of the game itself (`scripts/mp/events.example.txt`: the first point is the engage trigger in body axes, from `world_triggers.py`). Players open it as
+before (stop in the marker, 15 s to join). Then the server does not count a countdown or checkpoints: it sends `EventStart` (event index, player ids) to the **host game**, the one that sent `HostHello`.
+The host teleports its own car onto the trigger, makes the players the event's human racers (their states drive opponent vehicles through the same stand-in hook as before, their cars chosen in the
+lobby; `InRace` on the host is only the event's players), posts the accept message 3 s later, and while the event runs sends its AI racers as NPC cars. When the event ends (`EnterPostRaceFlow`) it sends
+`EventOver` and the marker is free again. The host does not send its own car (clients would draw it). Checked with `scripts/mp/host_client_test.sh` (races file `events.example.txt`): a client stopped
+8 m from the trigger, 15 s later the host log said "event 0 (sprint_ironwood) with 1 player(s): the car goes to the trigger", "accept posted", "event running", "remote player 2 (client) drives opponent 0",
+and the client's panel listed the event with its own name and its screen had the host's AI racers driving around it.
+Still missing: the event's results (the game's own standings and finish commands) in the panel, and authentication of the host.

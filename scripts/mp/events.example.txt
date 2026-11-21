@@ -1,0 +1,5 @@
+# Events of the game itself, run by the host game (host=1): the first point is the engage trigger of the event in body axes (x, y up, z; the game's tracker axes (X, Y, Z) are body (-Y, Z, X)),
+# the radius is the marker players stop in to open it. The second point is only there because every race needs two points. The trigger positions come from scripts/mp/world_triggers.py.
+race sprint_ironwood laps=1 radius=15 host=1
+point -2318.0 148.9 1632.5
+point -2318.0 148.9 1650.0

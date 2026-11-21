@@ -42,7 +42,19 @@ extern "C" PPC_FUNC(__imp__sub_82420FC0);
 namespace
 {
     // A remote player is in the race when it is ready in the lobby (its car is made for it) or is sending car states (the test bots, a player who joined late).
-    bool InRace(const mp::Remote& r) { return r.lobbyReady || r.hasCar; }
+    std::atomic<bool> g_hostMode{ std::getenv("NFSMW_MP_HOST") != nullptr };
+    std::mutex g_eventMutex;
+    std::set<uint8_t> g_eventPlayers;   // host game: the players taking part in the event it runs
+    bool InRace(const mp::Remote& r)
+    {
+        if (g_hostMode.load())   // the host game's opponents are made for the players of its event, and for nobody else
+        {
+            std::lock_guard<std::mutex> g(g_eventMutex);
+            return g_eventPlayers.count(r.id) != 0;
+        }
+        return r.lobbyReady || r.hasCar;
+    }
+    std::atomic<bool> g_acceptPending{ false };   // host game: post the accept message on the next frame (world_mode.cpp)
 
     // The lobby choice of this player (set from the settings page, any thread): the car's type key and whether it is ready to race.
     std::atomic<uint64_t> g_lobbyCar{ 0 };
@@ -194,7 +206,10 @@ namespace
         double lastHud = 0;
         bool world = mpcfg::Load().world || std::getenv("NFSMW_MP_WORLD_LOGIC") != nullptr;
         bool host = std::getenv("NFSMW_MP_HOST") != nullptr;   // the host game: sends the AI racers of the event it runs
-        double lastNpc = 0;   // open-world mode: the others are vehicles made in the world, no race start barrier
+        double lastNpc = 0;
+        bool helloSent = false, accepting = false, tpPending = false, eventOverPending = false;
+        double acceptAt = 0;
+        float tpPos[3] = {};   // open-world mode: the others are vehicles made in the world, no race start barrier
         std::set<uint32_t> parked;        // pool vehicles held out of the way (world mode)
         std::set<uint8_t> worldPending;   // players whose vehicle is being made
         size_t nameCalls = 0;             // racer names picked so far in this race (sub_82335248)
@@ -318,6 +333,15 @@ namespace
     // from the pose it starts the step with, so the remote car is where its player is when it is hit, and the step's own drift is undone afterwards.
     void ApplyRemote(Adapter& a, uint8_t* base, uint32_t obj)
     {
+        if (a.tpPending && a.localObj && obj == a.localObj)
+            if (const uint32_t pb = PhysBody(base, obj))
+            {
+                Phys ph = ReadPhys(base, pb);
+                for (int i = 0; i < 3; ++i) { ph.pos[i] = a.tpPos[i]; ph.vel[i] = 0; ph.ang[i] = 0; }
+                WritePhys(base, pb, ph);
+                a.tpPending = false;
+                fprintf(stderr, "[host] the host's car is at the event's trigger (%.1f %.1f %.1f)\n", double(a.tpPos[0]), double(a.tpPos[1]), double(a.tpPos[2]));
+            }
         // NFSMW_MP_TELEPORT="x,y,z;x,y,z;...": the local car is put at the first point five seconds into the world, and at each next one 25 s after the one before (a test: onto
         // the triggers of the game's events without driving there; body axes).
         static const char* tp = std::getenv("NFSMW_MP_TELEPORT");
@@ -583,6 +607,54 @@ namespace
         a.net->SendNpcs(out);
     }
 
+    // The host game's side of the server's events: it tells the server it is the host; when the server starts an event (the players are gathered in its marker) the host's car goes to the
+    // trigger, the players become the event's human racers (their states drive opponent vehicles, as in a race), and the game's accept message is posted; when the event is over the
+    // server is told.
+    void HostTick(Adapter& a, double now)
+    {
+        if (!a.host || !a.net || !a.net->Connected())
+        {
+            a.helloSent = false;
+            return;
+        }
+        if (!a.helloSent) { a.net->SendHostHello(); a.helloSent = true; }
+        uint8_t idx = 0;
+        std::vector<uint8_t> ids;
+        if (a.net->TakeEventStart(idx, ids))
+        {
+            const std::vector<mp::RaceDef> races = a.net->Races();
+            if (idx < races.size() && !races[idx].points.empty())
+            {
+                const mp::Vec3 p = races[idx].points[0];
+                a.tpPos[0] = p.x; a.tpPos[1] = p.y + 1.0f; a.tpPos[2] = p.z;
+                a.tpPending = true;
+                a.accepting = true;
+                a.acceptAt = now + 3.0;
+                a.standIns.clear();
+                a.roster.clear();
+                game::ResetOpponentCount();
+                game::SetOpponentCars({});
+                { std::lock_guard<std::mutex> g(g_eventMutex); g_eventPlayers = std::set<uint8_t>(ids.begin(), ids.end()); }
+                fprintf(stderr, "[host] event %u (%s) with %zu player(s): the car goes to the trigger, accept in 3 s\n", unsigned(idx), races[idx].name.c_str(), ids.size());
+            }
+        }
+        if (a.accepting && now >= a.acceptAt && !a.tpPending)
+        {
+            a.accepting = false;
+            g_acceptPending = true;
+        }
+        if (a.eventOverPending)
+        {
+            a.eventOverPending = false;
+            a.net->SendEventOver();
+            { std::lock_guard<std::mutex> g(g_eventMutex); g_eventPlayers.clear(); }
+            a.standIns.clear();
+            a.roster.clear();
+            game::ResetOpponentCount();
+            game::SetOpponentCars({});
+        }
+    }
+
     void Tick(Adapter& a, uint8_t* base, double now)
     {
         if (a.server.empty() && !a.ghost)
@@ -637,7 +709,7 @@ namespace
                 a.history.clear();
                 // The start barrier (a held world) is armed once the race script has created its opponents (see below): a world held before that would create them after the
                 // loading phase, and their models would never appear.
-                a.barrierPending = !a.world && a.Expected() > 1 && !a.server.empty();
+                a.barrierPending = !a.world && !a.host && a.Expected() > 1 && !a.server.empty();
                 a.barrierPendingSince = now;
                 a.localSince = now;
             }
@@ -704,7 +776,7 @@ namespace
             return;
 
         // The local car, 30 times a second, with the ready flag while the start is held.
-        if (a.net->Connected() && now - a.lastSend >= 1.0 / 30.0)
+        if (!a.host && a.net->Connected() && now - a.lastSend >= 1.0 / 30.0)
         {
             if (const uint32_t pb = PhysBody(base, a.localObj))
             {
@@ -969,6 +1041,7 @@ namespace game
         Tick(a, g_memory.base, a.Now());
         BuildHud(a, g_memory.base, a.Now());
         SendNpcs(a, g_memory.base, a.Now());
+        HostTick(a, a.Now());
         if (!a.barrier || !a.net)
             return;
         const double now = a.Now();
@@ -1289,4 +1362,4 @@ namespace game
     std::vector<uint32_t> MpWorldVehicles(uint8_t* base) { return VehicleBodies(base); }
     uint32_t MpWorldPhysBody(uint8_t* base, uint32_t vehicle) { return vehicle > 0x10000 ? PhysBody(base, vehicle) : 0; }
 }
-namespace game { void HostEventSet(bool active) { g_hostEvent = active; fprintf(stderr, "[host] event %s\n", active ? "running" : "over"); } bool HostEventActive() { return g_hostEvent.load(); } }
+namespace game { void HostEventSet(bool active) { if (!active && g_hostEvent.load()) A().eventOverPending = true; g_hostEvent = active; fprintf(stderr, "[host] event %s\n", active ? "running" : "over"); } bool HostEventActive() { return g_hostEvent.load(); } bool HostAcceptPending() { return g_acceptPending.exchange(false); } }

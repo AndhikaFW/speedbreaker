@@ -40,6 +40,7 @@ namespace mp
         // slowest world clock; every game's world stands still while held, so the others wait the difference and the countdown and GO come together.
         struct Held { float clock = 0; uint8_t need = 0; };
         std::map<uint8_t, Held> held;
+        uint8_t hostId = 0;               // the host game's player id (0: none)
         RaceManager race;                 // the open world's races: rules in net/mp_race.cpp
         uint32_t raceVersionSent = 0, raceSentAt = 0;
         std::map<ENetPeer*, uint32_t> pending;   // connected, no Hello yet (when it connected)
@@ -69,7 +70,7 @@ namespace mp
             w.u8(uint8_t(rs.size()));
             for (const RaceDef& d : rs)
             {
-                w.str(d.name); w.u8(uint8_t(d.laps)); w.f32(d.radius); w.u8(uint8_t(d.points.size()));
+                w.str(d.name); w.u8(uint8_t(d.laps | (d.hostEvent ? 0x80 : 0))); w.f32(d.radius); w.u8(uint8_t(d.points.size()));
                 for (const Vec3& v : d.points) { w.f32(v.x); w.f32(v.y); w.f32(v.z); }
             }
             Send(p, kChanEvent, w, true);
@@ -220,6 +221,19 @@ namespace mp
                 if (w.b.size() > 2)
                     Broadcast(kChanState, w, false, pl->id);
             }
+            else if (t == Msg::HostHello)
+            {
+                hostId = pl->id;
+                fprintf(stderr, "[mp-server] %s (%u) is the host game\n", pl->name.c_str(), pl->id);
+            }
+            else if (t == Msg::EventOver)
+            {
+                if (pl->id == hostId)
+                {
+                    race.HostEventOver(NowMs());
+                    fprintf(stderr, "[mp-server] the host's event is over\n");
+                }
+            }
             else if (t == Msg::Hold)
             {
                 Held h; h.need = r.u8(); h.clock = r.f32();
@@ -252,11 +266,27 @@ namespace mp
             if (held.erase(id))
                 SendBarrier();
             race.Remove(id);
+            if (id == hostId) hostId = 0;
             Writer w(Msg::PlayerLeave); w.u8(id);
             Broadcast(kChanEvent, w, true);
         }
         void Tick()
         {
+            if (!race.onHostStart)
+                race.onHostStart = [this](int idx, const std::vector<uint8_t>& ids) {
+                    const auto it = players.find(hostId);
+                    if (hostId == 0 || it == players.end())
+                    {
+                        fprintf(stderr, "[mp-server] event %d: no host game, the event is dropped\n", idx);
+                        race.HostEventOver(NowMs());
+                        return;
+                    }
+                    Writer w(Msg::EventStart);
+                    w.u8(uint8_t(idx)); w.u8(uint8_t(ids.size()));
+                    for (uint8_t id : ids) w.u8(id);
+                    Send(it->second.peer, kChanEvent, w, true);
+                    fprintf(stderr, "[mp-server] event %d starts on the host with %zu player(s)\n", idx, ids.size());
+                };
             const uint32_t now = NowMs();
             race.Tick(now);
             if (!race.Races().empty() && (race.Version() != raceVersionSent || now - raceSentAt >= 200))

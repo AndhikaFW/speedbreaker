@@ -44,6 +44,11 @@ namespace mp
         void SendChat(const std::string& text);
         // The host game: the cars of the event it runs (unreliable; call at the send rate). Other clients see them as remotes with ids from kNpcIdBase.
         void SendNpcs(const std::vector<Npc>& npcs);
+        // The host game announces itself (the server tells it when an event of the game should start), and says when the event is over.
+        void SendHostHello();
+        void SendEventOver();
+        // The server's EventStart for the host game, once: the index of the event in the race list and the players that take part.
+        bool TakeEventStart(uint8_t& race, std::vector<uint8_t>& players);
         // Tell everyone which car this player chose in the lobby (the game's car type key, 0: none) and whether it is ready to race.
         void SetLobby(uint64_t carKey, bool ready);
         uint64_t MyCarKey() const;

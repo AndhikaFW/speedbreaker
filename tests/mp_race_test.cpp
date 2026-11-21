@@ -91,13 +91,33 @@ int main()
     t2 += 66; rm2.Tick(t2);
     assert(rm2.View(t2).racers.size() == 1 && rm2.View(t2).racers[0].next == 1);
 
+    // A host event (the game's own event): the players are gathered as for a race, then the host is told and the server runs nothing until the host says it is over.
+    {
+        RaceManager hm;
+        RaceDef he = d;
+        he.hostEvent = true;
+        hm.SetRaces({ he });
+        hm.gatherMs = 1000; hm.holdStillMs = 200;
+        int calls = 0;
+        std::vector<uint8_t> got;
+        hm.onHostStart = [&](int idx, const std::vector<uint8_t>& ids) { ++calls; got = ids; assert(idx == 0); };
+        uint32_t t3 = 0;
+        for (int i = 0; i < 60; ++i) { hm.Report(1, { 5, 0, 5 }, 0.f, t3); hm.Report(2, { -5, 0, 3 }, 0.f, t3); t3 += 33; hm.Tick(t3); }
+        assert(calls == 1 && got.size() == 2 && hm.Phase() == RacePhase::HostEvent);
+        for (int i = 0; i < 60; ++i) { hm.Report(1, { 5, 0, 5 }, 0.f, t3); t3 += 33; hm.Tick(t3); }
+        assert(calls == 1 && hm.Phase() == RacePhase::HostEvent);   // nothing else happens while the host runs it
+        hm.HostEventOver(t3);
+        assert(hm.Phase() == RacePhase::Finished);
+        puts("host event: gathered, handed to the host, over when it says so");
+    }
+
     // The file format.
     FILE* f = fopen("/tmp/mp_race_test_races.txt", "w");
-    fputs("# a test\nrace loop laps=3 radius=30\npoint 0 0 0\npoint 100 0 0 # a comment\npoint 100 0 100\nrace broken\npoint 1 2 3\n", f);
+    fputs("# a test\nrace loop laps=3 radius=30\npoint 0 0 0\npoint 100 0 0 # a comment\npoint 100 0 100\nrace hosted laps=1 host=1\npoint 1 2 3\npoint 4 5 6\nrace broken\npoint 1 2 3\n", f);
     fclose(f);
     std::vector<RaceDef> loaded;
     assert(LoadRaces("/tmp/mp_race_test_races.txt", loaded));
-    assert(loaded.size() == 1 && loaded[0].name == "loop" && loaded[0].laps == 3 && loaded[0].radius == 30.f && loaded[0].points.size() == 3);
+    assert(loaded.size() == 2 && loaded[1].hostEvent && loaded[0].name == "loop" && loaded[0].laps == 3 && loaded[0].radius == 30.f && loaded[0].points.size() == 3);
     puts("mp race test ok");
     return 0;
 }

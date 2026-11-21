@@ -48,4 +48,6 @@ namespace game
     // the players as NPC cars.
     void HostEventSet(bool active);
     bool HostEventActive();
+    // Host game: the server started an event and the car is at its trigger: post the accept message now (once true per event; any thread).
+    bool HostAcceptPending();
 }

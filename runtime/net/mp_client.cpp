@@ -64,6 +64,8 @@ namespace mp
         std::map<uint8_t, uint32_t> npcSeen;   // NPC remote id -> local ms of its last state
         mutable std::mutex raceMutex;       // the overlay reads the race from the render thread
         std::vector<RaceDef> races;
+        std::pair<uint8_t, std::vector<uint8_t>> eventStart;
+        bool eventStartPending = false;
         RaceView raceView;
         uint32_t raceViewAt = 0;
 
@@ -216,6 +218,19 @@ namespace mp
                     }
                     break;
                 }
+                case Msg::EventStart:
+                {
+                    const uint8_t idx = r.u8(), n = r.u8();
+                    std::vector<uint8_t> ids;
+                    for (uint8_t i = 0; i < n && r.ok(); ++i) ids.push_back(r.u8());
+                    if (r.ok())
+                    {
+                        std::lock_guard<std::mutex> g(m->raceMutex);
+                        m->eventStart = { idx, ids };
+                        m->eventStartPending = true;
+                    }
+                    break;
+                }
                 case Msg::NpcSnapshot:
                 {
                     const uint8_t n = r.u8();
@@ -250,7 +265,7 @@ namespace mp
                     for (uint8_t i = 0; i < n && r.ok(); ++i)
                     {
                         RaceDef d;
-                        d.name = r.str(); d.laps = r.u8(); d.radius = r.f32();
+                        d.name = r.str(); { const uint8_t lh = r.u8(); d.laps = lh & 0x7F; d.hostEvent = (lh & 0x80) != 0; } d.radius = r.f32();
                         const uint8_t np = r.u8();
                         for (uint8_t k = 0; k < np && r.ok(); ++k)
                         {
@@ -321,6 +336,27 @@ namespace mp
     {
         std::lock_guard<std::mutex> g(m->raceMutex);
         return m->races;
+    }
+    bool Client::TakeEventStart(uint8_t& race, std::vector<uint8_t>& players)
+    {
+        std::lock_guard<std::mutex> g(m->raceMutex);
+        if (!m->eventStartPending) return false;
+        m->eventStartPending = false;
+        race = m->eventStart.first;
+        players = m->eventStart.second;
+        return true;
+    }
+    void Client::SendHostHello()
+    {
+        if (!m->welcome) return;
+        Writer w(Msg::HostHello);
+        m->Send(kChanEvent, w, true);
+    }
+    void Client::SendEventOver()
+    {
+        if (!m->welcome) return;
+        Writer w(Msg::EventOver);
+        m->Send(kChanEvent, w, true);
     }
     RaceView Client::CurrentRace() const
     {

@@ -149,13 +149,27 @@ namespace mp
         switch (phase_)
         {
         case RacePhase::Gathering:
-            if (nowMs - phaseStart_ >= gatherMs)
+            if (nowMs - phaseStart_ >= gatherMs && race_ >= 0 && races_[size_t(race_)].hostEvent)
+            {
+                // The game's own event: no countdown or rules here; the host game starts it with these players and runs it.
+                std::vector<uint8_t> ids;
+                for (const auto& [id, r] : players_) if (r.joined) ids.push_back(id);
+                phase_ = RacePhase::HostEvent;
+                phaseStart_ = nowMs;
+                goAt_ = nowMs;
+                ++version_;
+                if (onHostStart) onHostStart(race_, ids);
+            }
+            else if (nowMs - phaseStart_ >= gatherMs)
             {
                 phase_ = RacePhase::Countdown;
                 phaseStart_ = nowMs;
                 goAt_ = nowMs + countdownMs;
                 ++version_;
             }
+            break;
+        case RacePhase::HostEvent:
+            if (nowMs - phaseStart_ > 20u * 60u * 1000u) HostEventOver(nowMs);   // a host that never answers does not hold the marker for ever
             break;
         case RacePhase::Countdown:
             if (int32_t(nowMs - goAt_) >= 0)
@@ -201,6 +215,14 @@ namespace mp
         }
     }
 
+    void RaceManager::HostEventOver(uint32_t nowMs)
+    {
+        if (phase_ != RacePhase::HostEvent) return;
+        phase_ = RacePhase::Finished;
+        phaseStart_ = nowMs;
+        ++version_;
+    }
+
     RaceView RaceManager::View(uint32_t nowMs) const
     {
         RaceView v;
@@ -210,7 +232,7 @@ namespace mp
         {
         case RacePhase::Gathering: v.timeMs = nowMs - phaseStart_ >= gatherMs ? 0 : gatherMs - (nowMs - phaseStart_); break;
         case RacePhase::Countdown: v.timeMs = int32_t(goAt_ - nowMs) > 0 ? goAt_ - nowMs : 0; break;
-        case RacePhase::Running: v.timeMs = nowMs - goAt_; break;
+        case RacePhase::Running: case RacePhase::HostEvent: v.timeMs = nowMs - goAt_; break;
         case RacePhase::Finished: v.timeMs = 0; break;
         default: break;
         }
@@ -220,7 +242,7 @@ namespace mp
             if (!r.joined) continue;
             RacerView rv;
             rv.id = id; rv.lap = uint8_t(r.lap); rv.next = uint8_t(r.next); rv.finished = r.finished; rv.finishMs = r.finishMs;
-            float key = r.finished ? 1.0e6f - float(r.place) : (race_ >= 0 && phase_ >= RacePhase::Running ? Progress(r) : 0.f);
+            float key = r.finished ? 1.0e6f - float(r.place) : (race_ >= 0 && (phase_ == RacePhase::Running || phase_ == RacePhase::Finished) ? Progress(r) : 0.f);
             order.push_back({ key, rv });
         }
         std::stable_sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
@@ -247,6 +269,7 @@ namespace mp
                 d.name = name;
                 if (const char* l = strstr(line, "laps=")) d.laps = std::clamp(atoi(l + 5), 1, 50);
                 if (const char* r = strstr(line, "radius=")) d.radius = std::clamp(float(atof(r + 7)), 5.f, 200.f);
+                if (const char* h = strstr(line, "host=")) d.hostEvent = atoi(h + 5) != 0;
                 out.push_back(d);
             }
             else if (strncmp(line, "point ", 6) == 0 && !out.empty() && sscanf(line + 6, "%f %f %f", &x, &y, &z) == 3 && out.back().points.size() < 64)

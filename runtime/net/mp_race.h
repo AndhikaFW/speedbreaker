@@ -4,6 +4,7 @@
 // are not part of it; they drive in the same world and can get in the way.
 #pragma once
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -17,10 +18,11 @@ namespace mp
         std::string name = "race";
         int laps = 1;
         float radius = 25.f;           // metres: how close a car must come to a checkpoint or the start marker
+        bool hostEvent = false;        // an event of the game itself, run by the host game: the first point is its trigger; the server only gathers the players and tells the host
         std::vector<Vec3> points;      // [0] the start marker (and the line the laps end on), then the checkpoints in order
     };
 
-    enum class RacePhase : uint8_t { Idle = 0, Gathering = 1, Countdown = 2, Running = 3, Finished = 4 };
+    enum class RacePhase : uint8_t { Idle = 0, Gathering = 1, Countdown = 2, Running = 3, Finished = 4, HostEvent = 5 };
 
     struct RacerView
     {
@@ -49,6 +51,11 @@ namespace mp
         // Timings (ms).
         uint32_t gatherMs = 15000, countdownMs = 5000, finishedHoldMs = 20000, holdStillMs = 1500;
         float stillSpeed = 3.0f;       // m/s: "stopped" in the start marker
+
+        // Called when the players of a host event are gathered: the race index and the participants. The host game starts the event.
+        std::function<void(int, const std::vector<uint8_t>&)> onHostStart;
+        // The host game says its event is over (or the server gives up on it).
+        void HostEventOver(uint32_t nowMs);
 
         void SetRaces(std::vector<RaceDef> races) { races_ = std::move(races); }
         const std::vector<RaceDef>& Races() const { return races_; }

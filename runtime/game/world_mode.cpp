@@ -139,6 +139,14 @@ namespace game
                     ctx = saved;
                 }
             }
+        if (game::HostAcceptPending())
+        {
+            PPCContext saved = ctx;
+            ctx.r3.u64 = 0x82303198;
+            fprintf(stderr, "[host] accept posted\n");
+            __imp__sub_82398BB0(ctx, base);
+            ctx = saved;
+        }
         if (!MpWorldMode())
             return;
         // The pool: one vehicle every other frame from the frame after the player's own car exists, while the world is still loading.
