@@ -513,3 +513,13 @@ Checked: a bot joining 25 s after the world loaded is a solid car; a bot that wa
   state machine goes init -> delay -> `ring` and waits for accept or decline; **Back sends decline (type id 8870DE98, from `sub_82398E78`)**, the other buttons send nothing. `NFSMW_ENGAGE_ACCEPT=1` rewrites
   that decline into accept (AF4C4648) for a test; in two runs the car had already been moved to the custom shop's gate zone (about 140 m away, EnterGateZone) before Back, so the test is not conclusive yet.
 - The sender functions (about 60, `sub_823980A8`..`sub_8239BF30`, each building one message type with `sub_8232A450` and sending it with `sub_8235DA08`) are the way to post any event message from the host.
+
+### An event started from a host command (2026-11-22) — the game's own sprint race runs on the headless host
+`sub_82398BB0` is the sender of the script message AcceptEnterCareerEvent (found through the message-name table: `MAcceptEnterCareerEvent` at 0x8207CBC8 is read by the key getter `sub_822BAE78`, whose
+caller is the sender; the decline's getter is `sub_822BAF50`, its sender `sub_82398E78`). Its payload is the one the real Back key's decline carried (0x82303198). `NFSMW_HOST_CMD=<file>`
+(game/world_mode.cpp) reads commands from a file twice a second: `accept [payload]` and `decline [payload]`. Headless career world + `NFSMW_EVENTS_OPEN=1` + the local car teleported onto
+`race_bin_15/engage/engagetrigger_circuit_15_1_2` (`NFSMW_MP_TELEPORT`), then `echo accept >> file`: the engage ring state accepts and the game runs the event's own script: IsCareerMode, SetCurrentTimeOfDay,
+DoSpecialSetup, RaceStatus, SetRaceActivity, **InitRacers**, ClearRacers, GetNumRacers, NotifyScriptWhenLoaded, SetPlayerStartPosition, SaveStartPositions, GetRacerCharacter/GetRacerElement/**SetRacerGoal**
+(four racers), AddCheckpoint, AddSpeedTrapToMap, ClearCheckpoints, RestoreStartPositions, EnableBinBarriers, SetAllStaging, NotifyCountdownDone, **StartRaceTimers**. The vehicle table went from 20 (traffic) to
+4: the player and three AI opponents on the start grid. The next steps are the host's side of the protocol (send those four vehicles to the clients), the participants' cars standing in for opponents, and the
+event list (the named trigger positions) as the markers.

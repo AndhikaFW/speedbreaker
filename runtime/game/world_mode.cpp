@@ -13,6 +13,8 @@
 #include <kernel/heap.h>
 
 extern "C" PPC_FUNC(__imp__sub_82333680);
+extern "C" PPC_FUNC(__imp__sub_82398BB0);   // sends the script message AcceptEnterCareerEvent (payload in r3)
+extern "C" PPC_FUNC(__imp__sub_82398E78);   // sends DeclineEnterCareerEvent
 
 namespace
 {
@@ -112,6 +114,31 @@ namespace game
                 fprintf(stderr, "[world] late spawn of %s -> vehicle %08X\n", car, o);
             }
         }
+        // NFSMW_HOST_CMD=<file>: commands for the game that hosts events, one a line, read and emptied about twice a second: "accept [payload hex]" and "decline [payload hex]" post the
+        // script engine's AcceptEnterCareerEvent / DeclineEnterCareerEvent message (the payload the decline of the real Back key carried: 82303198).
+        static const char* hostCmd = std::getenv("NFSMW_HOST_CMD");
+        static int cmdFrames = 0;
+        if (hostCmd && ++cmdFrames % 15 == 0)
+            if (FILE* f = fopen(hostCmd, "r+"))
+            {
+                char line[160];
+                std::vector<std::string> lines;
+                while (fgets(line, sizeof line, f)) lines.push_back(line);
+                if (!lines.empty()) { freopen(hostCmd, "w", f); }
+                fclose(f);
+                for (const std::string& l : lines)
+                {
+                    char cmd[32] = {};
+                    unsigned payload = 0x82303198;
+                    if (sscanf(l.c_str(), "%31s %x", cmd, &payload) < 1) continue;
+                    PPCContext saved = ctx;
+                    ctx.r3.u64 = payload;
+                    fprintf(stderr, "[host] %s (payload %08X)\n", cmd, payload);
+                    if (!strcmp(cmd, "accept")) __imp__sub_82398BB0(ctx, base);
+                    else if (!strcmp(cmd, "decline")) __imp__sub_82398E78(ctx, base);
+                    ctx = saved;
+                }
+            }
         if (!MpWorldMode())
             return;
         // The pool: one vehicle every other frame from the frame after the player's own car exists, while the world is still loading.
