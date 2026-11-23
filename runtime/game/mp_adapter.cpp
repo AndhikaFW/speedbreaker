@@ -208,7 +208,9 @@ namespace
         bool host = std::getenv("NFSMW_MP_HOST") != nullptr;   // the host game: sends the AI racers of the event it runs
         double lastNpc = 0;
         bool helloSent = false, accepting = false, tpPending = false, eventOverPending = false;
-        double acceptAt = 0;
+        double acceptAt = 0, verifyAt = 0, backAt = 0;
+        int retryLeft = 0;
+        float awayPos[3] = {}, savedTp[3] = {};
         // The start grid: when a race (or the game's event) starts, the local car is put behind the start line facing the course. Which body axis is "forward" and the quaternion's
         // component order are learned from the car's own driving (its velocity in its own frame is one axis, in the right order only).
         bool gridPending = false;
@@ -398,7 +400,13 @@ namespace
         const float Ry[3][3] = { { c, 0, sn }, { 0, 1, 0 }, { -sn, 0, c } };
         float N[3][3];
         for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) N[i][j] = Ry[i][0] * R[0][j] + Ry[i][1] * R[1][j] + Ry[i][2] * R[2][j];
-        MatrixQuat(N, bo, q);
+        float nq[4];
+        MatrixQuat(N, bo, nq);
+        const float n2 = nq[0] * nq[0] + nq[1] * nq[1] + nq[2] * nq[2] + nq[3] * nq[3];
+        if (!(n2 > 0.5f && n2 < 1.5f))   // NaN or not a rotation: leave the car as it is
+            return false;
+        const float inv = 1.f / std::sqrt(n2);
+        for (int i = 0; i < 4; ++i) q[i] = nq[i] * inv;
         return true;
     }
 
@@ -754,6 +762,10 @@ namespace
                 a.tpPending = true;
                 a.accepting = true;
                 a.acceptAt = now + 3.0;
+                a.retryLeft = 3;
+                a.verifyAt = a.backAt = 0;
+                if (races[idx].points.size() >= 2) { const mp::Vec3 q = races[idx].points[1]; a.awayPos[0] = q.x; a.awayPos[1] = q.y + 1.0f; a.awayPos[2] = q.z; }
+                else { a.awayPos[0] = p.x + 30.f; a.awayPos[1] = p.y + 1.0f; a.awayPos[2] = p.z; }
                 a.standIns.clear();
                 a.roster.clear();
                 game::ResetOpponentCount();
@@ -766,6 +778,28 @@ namespace
         {
             a.accepting = false;
             g_acceptPending = true;
+            a.verifyAt = now + 12.0;
+        }
+        // The game did not take the accept (the event never started): the car leaves the trigger and comes back, then the accept is posted again.
+        if (a.verifyAt && now >= a.verifyAt)
+        {
+            a.verifyAt = 0;
+            if (!g_hostEvent.load() && a.retryLeft > 0)
+            {
+                --a.retryLeft;
+                for (int i = 0; i < 3; ++i) { a.savedTp[i] = a.tpPos[i]; a.tpPos[i] = a.awayPos[i]; }
+                a.tpPending = true;
+                a.backAt = now + 4.0;
+                fprintf(stderr, "[host] the event did not start: the car leaves the trigger and comes back (%d tries left)\n", a.retryLeft);
+            }
+        }
+        if (a.backAt && now >= a.backAt && !a.tpPending)
+        {
+            a.backAt = 0;
+            for (int i = 0; i < 3; ++i) a.tpPos[i] = a.savedTp[i];
+            a.tpPending = true;
+            a.accepting = true;
+            a.acceptAt = now + 3.0;
         }
         if (a.eventOverPending)
         {

@@ -266,7 +266,7 @@ namespace mp
             if (held.erase(id))
                 SendBarrier();
             race.Remove(id);
-            if (id == hostId) hostId = 0;
+            if (id == hostId) { hostId = 0; race.HostEventOver(NowMs(), true); }   // the host game left: its event is over
             Writer w(Msg::PlayerLeave); w.u8(id);
             Broadcast(kChanEvent, w, true);
         }
