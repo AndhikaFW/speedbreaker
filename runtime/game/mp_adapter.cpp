@@ -216,6 +216,8 @@ namespace
         bool gridPending = false;
         float gridPos[3] = {}, gridDir[2] = {};
         int gridKey = -1;
+        bool frozen = false, holdSet = false, goSent = false;   // frozen: the car is held on the grid until the start
+        float holdPos[3] = {};
         int axisVotes[2][6] = {};
         float tpPos[3] = {};   // open-world mode: the others are vehicles made in the world, no race start barrier
         std::set<uint32_t> parked;        // pool vehicles held out of the way (world mode)
@@ -417,12 +419,20 @@ namespace
             {
                 Phys ph = ReadPhys(base, pb);
                 LearnForward(a, ph);
+                if (a.frozen && !a.gridPending)
+                {
+                    // The countdown: the car stays where it is (the grid slot), still.
+                    if (!a.holdSet) { for (int i = 0; i < 3; ++i) a.holdPos[i] = ph.pos[i]; a.holdSet = true; }
+                    for (int i = 0; i < 3; ++i) { ph.pos[i] = a.holdPos[i]; ph.vel[i] = 0; ph.ang[i] = 0; }
+                    WritePhys(base, pb, ph);
+                }
                 if (a.gridPending)
                 {
                     a.gridPending = false;
                     for (int i = 0; i < 3; ++i) { ph.pos[i] = a.gridPos[i]; ph.vel[i] = 0; ph.ang[i] = 0; }
                     const bool turned = FaceCar(a, ph.q, a.gridDir[0], a.gridDir[1]);
                     WritePhys(base, pb, ph);
+                    a.holdSet = false;
                     fprintf(stderr, "[mp] start grid: the car is at %.1f %.1f %.1f, %s\n", double(a.gridPos[0]), double(a.gridPos[1]), double(a.gridPos[2]), turned ? "facing the course" : "heading not known yet (it is learned by driving)");
                 }
             }
@@ -575,7 +585,7 @@ namespace
             if (r.id == me) my = &r;
 
         // A race (or the game's event) is starting and this player is in it: it goes to its place on the grid behind the start line, facing the first checkpoint.
-        if (!a.host && my && v.race >= 0 && size_t(v.race) < races.size() && (v.phase == mp::RacePhase::Countdown || v.phase == mp::RacePhase::HostEvent))
+        if (!a.host && my && v.race >= 0 && size_t(v.race) < races.size() && (v.phase == mp::RacePhase::Countdown || v.phase == mp::RacePhase::HostCountdown))
         {
             const int key = v.race * 8 + int(v.phase);
             const mp::RaceDef& d = races[size_t(v.race)];
@@ -601,6 +611,10 @@ namespace
         }
         else if (v.phase == mp::RacePhase::Idle)
             a.gridKey = -1;
+        {
+            const bool hold = my && (v.phase == mp::RacePhase::Countdown || v.phase == mp::RacePhase::HostCountdown) && !a.host;
+            if (hold != a.frozen) { a.frozen = hold; a.holdSet = false; }
+        }
 
         if (v.phase == mp::RacePhase::Idle || v.race < 0 || size_t(v.race) >= races.size())
         {
@@ -642,6 +656,11 @@ namespace
                 if (!my) h.banner = "";
                 break;
             }
+            case mp::RacePhase::HostCountdown:
+                addStart();
+                h.banner = my ? "GET READY" : std::string();
+                h.lines.push_back(my ? "Get ready. The game's event is about to start." : "An event is about to start.");
+                break;
             case mp::RacePhase::Countdown:
                 addStart();
                 h.banner = my ? std::to_string((v.timeMs + 999) / 1000) : std::string();
@@ -649,7 +668,7 @@ namespace
                 break;
             default:
             {
-                if (v.phase == mp::RacePhase::Running && v.timeMs < 1500 && my) h.banner = "GO!";
+                if ((v.phase == mp::RacePhase::Running || v.phase == mp::RacePhase::HostEvent) && v.timeMs < 1500 && my) h.banner = "GO!";
                 if (v.phase == mp::RacePhase::Finished) h.banner = my && my->finished ? "FINISHED" : "";
                 char b[160];
                 if (my && v.phase == mp::RacePhase::Running && !my->finished)
@@ -756,6 +775,15 @@ namespace
         }
         // The game simulates the AI cars far from the player in a simplified way (they follow the road at a fixed height: seen as floating cars on the other machines), so the host's own
         // car (the event's "player", which nobody drives) follows the lead NPC, 12 m behind it, while the event runs. NFSMW_HOST_FOLLOW=0 turns it off.
+        if (!a.goSent)
+            for (const mp::Npc& n : out)
+                if (n.id == 0 && n.state.vel[0] * n.state.vel[0] + n.state.vel[2] * n.state.vel[2] > 16.f)
+                {
+                    a.goSent = true;
+                    a.net->SendEventGo();   // the game's racers are away: its countdown is over, the players may go
+                    fprintf(stderr, "[host] the game's racers are released: go\n");
+                    break;
+                }
         static const bool follow = !std::getenv("NFSMW_HOST_FOLLOW") || std::atoi(std::getenv("NFSMW_HOST_FOLLOW")) != 0;
         if (follow && !a.tpPending && now - a.lastFollow > 0.5)
             for (const mp::Npc& n : out)
@@ -801,6 +829,7 @@ namespace
                 a.accepting = true;
                 a.acceptAt = now + 3.0;
                 a.retryLeft = 3;
+                a.goSent = false;
                 a.verifyAt = a.backAt = 0;
                 if (races[idx].points.size() >= 2) { const mp::Vec3 q = races[idx].points[1]; a.awayPos[0] = q.x; a.awayPos[1] = q.y + 1.0f; a.awayPos[2] = q.z; }
                 else { a.awayPos[0] = p.x + 30.f; a.awayPos[1] = p.y + 1.0f; a.awayPos[2] = p.z; }
@@ -839,6 +868,25 @@ namespace
             a.tpPending = true;
             a.accepting = true;
             a.acceptAt = now + 3.0;
+        }
+        // The game's own event cannot be left from a headless game (its results screens need a player), so the host game ends with the server's event and the loop of host_run.sh starts a
+        // fresh one: NFSMW_HOST_RESTART=1.
+        static const bool restart = std::getenv("NFSMW_HOST_RESTART") != nullptr;
+        if (restart)
+        {
+            const mp::RaceView rv = a.net->CurrentRace();
+            static double inEvent = 0, outSince = 0;
+            if (rv.phase == mp::RacePhase::HostEvent) { inEvent = now; outSince = 0; }
+            else if (inEvent > 0)
+            {
+                if (outSince == 0) outSince = now;
+                if (now - outSince > 3.0)
+                {
+                    fprintf(stderr, "[host] the server's event is over: the host game ends and starts again\n");
+                    fflush(stderr);
+                    std::_Exit(0);
+                }
+            }
         }
         if (a.eventOverPending)
         {

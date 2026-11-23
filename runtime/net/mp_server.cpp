@@ -226,6 +226,11 @@ namespace mp
                 hostId = pl->id;
                 fprintf(stderr, "[mp-server] %s (%u) is the host game\n", pl->name.c_str(), pl->id);
             }
+            else if (t == Msg::EventGo)
+            {
+                if (pl->id == hostId)
+                    race.HostGo(NowMs());
+            }
             else if (t == Msg::EventOver)
             {
                 if (pl->id == hostId)

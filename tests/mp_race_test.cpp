@@ -103,7 +103,9 @@ int main()
         hm.onHostStart = [&](int idx, const std::vector<uint8_t>& ids) { ++calls; got = ids; assert(idx == 0); };
         uint32_t t3 = 0;
         for (int i = 0; i < 60; ++i) { hm.Report(1, { 5, 0, 5 }, 0.f, t3); hm.Report(2, { -5, 0, 3 }, 0.f, t3); t3 += 33; hm.Tick(t3); }
-        assert(calls == 1 && got.size() == 2 && hm.Phase() == RacePhase::HostEvent);
+        assert(calls == 1 && got.size() == 2 && hm.Phase() == RacePhase::HostCountdown);
+        hm.HostGo(t3);
+        assert(hm.Phase() == RacePhase::HostEvent);
         for (int i = 0; i < 60; ++i) { hm.Report(1, { 5, 0, 5 }, 0.f, t3); t3 += 33; hm.Tick(t3); }
         assert(calls == 1 && hm.Phase() == RacePhase::HostEvent);   // nothing else happens while the host runs it
         hm.HostEventOver(t3);   // the host's own event ended: the players still driving keep going
@@ -118,6 +120,8 @@ int main()
         fm.gatherMs = 1000; fm.holdStillMs = 200;
         uint32_t t4 = 0;
         for (int i = 0; i < 60; ++i) { fm.Report(1, { 5, 0, 5 }, 0.f, t4); t4 += 33; fm.Tick(t4); }
+        assert(fm.Phase() == RacePhase::HostCountdown);
+        fm.HostGo(t4);
         assert(fm.Phase() == RacePhase::HostEvent);
         const Vec3 course[] = { { 100, 0, 0 }, { 200, 0, 0 }, { 200, 0, 100 }, { 200, 0, 200 }, { 100, 0, 200 }, { 0, 0, 200 } };
         for (const Vec3& c : course) { t4 += 500; fm.Report(1, c, 30.f, t4); fm.Tick(t4); }

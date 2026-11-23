@@ -22,7 +22,7 @@ namespace mp
         std::vector<Vec3> points;      // [0] the start marker (and the line the laps end on), then the checkpoints in order
     };
 
-    enum class RacePhase : uint8_t { Idle = 0, Gathering = 1, Countdown = 2, Running = 3, Finished = 4, HostEvent = 5 };
+    enum class RacePhase : uint8_t { Idle = 0, Gathering = 1, Countdown = 2, Running = 3, Finished = 4, HostEvent = 5, HostCountdown = 6 };   // HostCountdown: handed to the host, its racers not released yet; HostEvent: running
 
     struct RacerView
     {
@@ -49,12 +49,13 @@ namespace mp
     {
     public:
         // Timings (ms).
-        uint32_t gatherMs = 15000, countdownMs = 5000, finishedHoldMs = 20000, holdStillMs = 1500;
+        uint32_t gatherMs = 15000, countdownMs = 5000, finishedHoldMs = 45000, holdStillMs = 1500;
         float stillSpeed = 3.0f;       // m/s: "stopped" in the start marker
 
         // Called when the players of a host event are gathered: the race index and the participants. The host game starts the event.
         std::function<void(int, const std::vector<uint8_t>&)> onHostStart;
         // The host game says its event is over (or the server gives up on it).
+        void HostGo(uint32_t nowMs);   // the host's racers are released: the event runs
         void HostEventOver(uint32_t nowMs, bool force = false);   // soft: the host's event ended, the players still racing get two more minutes
 
         void SetRaces(std::vector<RaceDef> races) { races_ = std::move(races); }

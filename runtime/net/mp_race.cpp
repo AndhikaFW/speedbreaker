@@ -160,7 +160,7 @@ namespace mp
                 // The game's own event: no countdown or rules here; the host game starts it with these players and runs it.
                 std::vector<uint8_t> ids;
                 for (const auto& [id, r] : players_) if (r.joined) ids.push_back(id);
-                phase_ = RacePhase::HostEvent;
+                phase_ = RacePhase::HostCountdown;
                 hostDoneAt_ = 0;
                 phaseStart_ = nowMs;
                 goAt_ = nowMs;
@@ -174,6 +174,9 @@ namespace mp
                 goAt_ = nowMs + countdownMs;
                 ++version_;
             }
+            break;
+        case RacePhase::HostCountdown:
+            if (nowMs - phaseStart_ > 60000) HostGo(nowMs);   // a host that never says go does not hold the players for ever
             break;
         case RacePhase::HostEvent:
         {
@@ -233,9 +236,18 @@ namespace mp
         }
     }
 
+    void RaceManager::HostGo(uint32_t nowMs)
+    {
+        if (phase_ != RacePhase::HostCountdown) return;
+        phase_ = RacePhase::HostEvent;
+        phaseStart_ = nowMs;
+        goAt_ = nowMs;
+        ++version_;
+    }
+
     void RaceManager::HostEventOver(uint32_t nowMs, bool force)
     {
-        if (phase_ != RacePhase::HostEvent) return;
+        if (phase_ != RacePhase::HostEvent && phase_ != RacePhase::HostCountdown) return;
         if (!force) { if (!hostDoneAt_) hostDoneAt_ = nowMs ? nowMs : 1; return; }
         hostDoneAt_ = 0;
         phase_ = RacePhase::Finished;

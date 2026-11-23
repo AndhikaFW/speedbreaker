@@ -10,7 +10,7 @@
 namespace mp
 {
     constexpr uint16_t kDefaultPort = 27960;
-    constexpr uint32_t kProtocolVersion = 8;
+    constexpr uint32_t kProtocolVersion = 9;
     constexpr int kMaxPlayers = 16;
     constexpr int kChanState = 0;   // unreliable, latest wins
     constexpr int kChanEvent = 1;   // reliable, ordered
@@ -36,6 +36,7 @@ namespace mp
         HostHello,      // C->S reliable: this game is the host game (it runs the events of the game itself); the server sends it EventStart
         EventStart,     // S->host reliable: start the host event with this index in the race list (its first point is the trigger) with these players: u8 race, u8 n, n x u8 player id
         EventOver,      // host->S reliable: the event the host ran is over
+        EventGo,        // host->S reliable: the game's own racers are released (its countdown is over): the players may go
         Go,             // S->C reliable: the server released the start: the slowest world clock (f32), and in how many ms (from receipt, round trip allowed for) that clock's game starts (u32)
     };
 

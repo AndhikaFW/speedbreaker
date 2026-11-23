@@ -358,6 +358,12 @@ namespace mp
         Writer w(Msg::EventOver);
         m->Send(kChanEvent, w, true);
     }
+    void Client::SendEventGo()
+    {
+        if (!m->welcome) return;
+        Writer w(Msg::EventGo);
+        m->Send(kChanEvent, w, true);
+    }
     RaceView Client::CurrentRace() const
     {
         std::lock_guard<std::mutex> g(m->raceMutex);
@@ -365,7 +371,7 @@ namespace mp
         const uint32_t dt = m->Now() - m->raceViewAt;
         if (v.phase == RacePhase::Gathering || v.phase == RacePhase::Countdown)
             v.timeMs = v.timeMs > dt ? v.timeMs - dt : 0;
-        else if (v.phase == RacePhase::Running)
+        else if (v.phase == RacePhase::Running || v.phase == RacePhase::HostEvent)
             v.timeMs += dt;
         return v;
     }
