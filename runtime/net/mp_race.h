@@ -55,7 +55,7 @@ namespace mp
         // Called when the players of a host event are gathered: the race index and the participants. The host game starts the event.
         std::function<void(int, const std::vector<uint8_t>&)> onHostStart;
         // The host game says its event is over (or the server gives up on it).
-        void HostEventOver(uint32_t nowMs);
+        void HostEventOver(uint32_t nowMs, bool force = false);   // soft: the host's event ended, the players still racing get two more minutes
 
         void SetRaces(std::vector<RaceDef> races) { races_ = std::move(races); }
         const std::vector<RaceDef>& Races() const { return races_; }
@@ -91,5 +91,6 @@ namespace mp
         int race_ = -1;
         uint32_t phaseStart_ = 0, goAt_ = 0, version_ = 1;
         int finishedCount_ = 0;
+        uint32_t hostDoneAt_ = 0;
     };
 }

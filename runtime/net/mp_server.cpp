@@ -278,7 +278,7 @@ namespace mp
                     if (hostId == 0 || it == players.end())
                     {
                         fprintf(stderr, "[mp-server] event %d: no host game, the event is dropped\n", idx);
-                        race.HostEventOver(NowMs());
+                        race.HostEventOver(NowMs(), true);
                         return;
                     }
                     Writer w(Msg::EventStart);

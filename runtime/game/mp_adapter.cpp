@@ -209,6 +209,12 @@ namespace
         double lastNpc = 0;
         bool helloSent = false, accepting = false, tpPending = false, eventOverPending = false;
         double acceptAt = 0;
+        // The start grid: when a race (or the game's event) starts, the local car is put behind the start line facing the course. Which body axis is "forward" and the quaternion's
+        // component order are learned from the car's own driving (its velocity in its own frame is one axis, in the right order only).
+        bool gridPending = false;
+        float gridPos[3] = {}, gridDir[2] = {};
+        int gridKey = -1;
+        int axisVotes[2][6] = {};
         float tpPos[3] = {};   // open-world mode: the others are vehicles made in the world, no race start barrier
         std::set<uint32_t> parked;        // pool vehicles held out of the way (world mode)
         std::set<uint8_t> worldPending;   // players whose vehicle is being made
@@ -331,8 +337,87 @@ namespace
 {
     // If `obj` stands in for a remote player, write that player's state into it. Done before the game's step as well as after it: the game finds contacts
     // from the pose it starts the step with, so the remote car is where its player is when it is hit, and the step's own drift is undone afterwards.
+
+    // Rotation matrix of a quaternion in the given component order (0: x y z w, 1: w x y z), row-major.
+    void QuatMatrix(const float* q, int order, float R[3][3])
+    {
+        float x, y, z, w;
+        if (order == 0) { x = q[0]; y = q[1]; z = q[2]; w = q[3]; } else { w = q[0]; x = q[1]; y = q[2]; z = q[3]; }
+        R[0][0] = 1 - 2 * (y * y + z * z); R[0][1] = 2 * (x * y - z * w); R[0][2] = 2 * (x * z + y * w);
+        R[1][0] = 2 * (x * y + z * w); R[1][1] = 1 - 2 * (x * x + z * z); R[1][2] = 2 * (y * z - x * w);
+        R[2][0] = 2 * (x * z - y * w); R[2][1] = 2 * (y * z + x * w); R[2][2] = 1 - 2 * (x * x + y * y);
+    }
+
+    void MatrixQuat(const float R[3][3], int order, float* q)
+    {
+        float x, y, z, w;
+        const float tr = R[0][0] + R[1][1] + R[2][2];
+        if (tr > 0) { const float t = std::sqrt(tr + 1) * 2; w = t / 4; x = (R[2][1] - R[1][2]) / t; y = (R[0][2] - R[2][0]) / t; z = (R[1][0] - R[0][1]) / t; }
+        else if (R[0][0] > R[1][1] && R[0][0] > R[2][2]) { const float t = std::sqrt(1 + R[0][0] - R[1][1] - R[2][2]) * 2; x = t / 4; w = (R[2][1] - R[1][2]) / t; y = (R[0][1] + R[1][0]) / t; z = (R[0][2] + R[2][0]) / t; }
+        else if (R[1][1] > R[2][2]) { const float t = std::sqrt(1 + R[1][1] - R[0][0] - R[2][2]) * 2; y = t / 4; w = (R[0][2] - R[2][0]) / t; x = (R[0][1] + R[1][0]) / t; z = (R[1][2] + R[2][1]) / t; }
+        else { const float t = std::sqrt(1 + R[2][2] - R[0][0] - R[1][1]) * 2; z = t / 4; w = (R[1][0] - R[0][1]) / t; x = (R[0][2] + R[2][0]) / t; y = (R[1][2] + R[2][1]) / t; }
+        if (order == 0) { q[0] = x; q[1] = y; q[2] = z; q[3] = w; } else { q[0] = w; q[1] = x; q[2] = y; q[3] = z; }
+    }
+
+    // Learn the car's forward axis while it drives: the velocity in the car's own frame (R^T v) is a single axis for the right component order.
+    void LearnForward(Adapter& a, const Phys& ph)
+    {
+        const float sp = std::sqrt(ph.vel[0] * ph.vel[0] + ph.vel[1] * ph.vel[1] + ph.vel[2] * ph.vel[2]);
+        if (sp < 10.f)
+            return;
+        for (int o = 0; o < 2; ++o)
+        {
+            float R[3][3];
+            QuatMatrix(ph.q, o, R);
+            float u[3];
+            for (int k = 0; k < 3; ++k) u[k] = (R[0][k] * ph.vel[0] + R[1][k] * ph.vel[1] + R[2][k] * ph.vel[2]) / sp;
+            for (int k = 0; k < 3; ++k)
+                if (std::fabs(u[k]) > 0.97f && k != 1)
+                    ++a.axisVotes[o][k * 2 + (u[k] < 0)];
+        }
+    }
+
+    // Turn the car (quaternion q, order o) about the vertical so its forward axis points along dir (x, z); false when the forward axis is not known yet.
+    bool FaceCar(const Adapter& a, float* q, float dx, float dz)
+    {
+        int bo = -1, bk = -1, best = 3;
+        for (int o = 0; o < 2; ++o)
+            for (int k = 0; k < 6; ++k)
+                if (a.axisVotes[o][k] > best) { best = a.axisVotes[o][k]; bo = o; bk = k; }
+        if (bo < 0)
+            return false;
+        float R[3][3];
+        QuatMatrix(q, bo, R);
+        const float sgn = (bk & 1) ? -1.f : 1.f;
+        float fx = sgn * R[0][bk / 2], fz = sgn * R[2][bk / 2];
+        const float l = std::sqrt(fx * fx + fz * fz), dl = std::sqrt(dx * dx + dz * dz);
+        if (l < 1e-3f || dl < 1e-3f)
+            return false;
+        fx /= l; fz /= l; dx /= dl; dz /= dl;
+        const float c = fx * dx + fz * dz, sn = fz * dx - fx * dz;
+        const float Ry[3][3] = { { c, 0, sn }, { 0, 1, 0 }, { -sn, 0, c } };
+        float N[3][3];
+        for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) N[i][j] = Ry[i][0] * R[0][j] + Ry[i][1] * R[1][j] + Ry[i][2] * R[2][j];
+        MatrixQuat(N, bo, q);
+        return true;
+    }
+
     void ApplyRemote(Adapter& a, uint8_t* base, uint32_t obj)
     {
+        if (a.localObj && obj == a.localObj)
+            if (const uint32_t pb = PhysBody(base, obj))
+            {
+                Phys ph = ReadPhys(base, pb);
+                LearnForward(a, ph);
+                if (a.gridPending)
+                {
+                    a.gridPending = false;
+                    for (int i = 0; i < 3; ++i) { ph.pos[i] = a.gridPos[i]; ph.vel[i] = 0; ph.ang[i] = 0; }
+                    const bool turned = FaceCar(a, ph.q, a.gridDir[0], a.gridDir[1]);
+                    WritePhys(base, pb, ph);
+                    fprintf(stderr, "[mp] start grid: the car is at %.1f %.1f %.1f, %s\n", double(a.gridPos[0]), double(a.gridPos[1]), double(a.gridPos[2]), turned ? "facing the course" : "heading not known yet (it is learned by driving)");
+                }
+            }
         if (a.tpPending && a.localObj && obj == a.localObj)
             if (const uint32_t pb = PhysBody(base, obj))
             {
@@ -394,8 +479,21 @@ namespace
                 continue;
             const uint32_t pb = PhysBody(base, obj);
             mp::CarState c;
-            if (!pb || !a.net->RemoteCar(id, a.net->NowMs(), c))
+            if (!pb)
                 return;
+            if (!a.net->RemoteCar(id, a.net->NowMs(), c))
+            {
+                // An event's NPC that no longer arrives (the event is over) must not hang in the air where it was last seen: put it away like the pool's parked cars.
+                if (id >= mp::kNpcIdBase)
+                {
+                    Phys ph = ReadPhys(base, pb);
+                    ph.pos[0] = 0; ph.pos[1] = -600.f; ph.pos[2] = 0;
+                    ph.vel[0] = ph.vel[1] = ph.vel[2] = 0;
+                    ph.ang[0] = ph.ang[1] = ph.ang[2] = 0;
+                    WritePhys(base, pb, ph);
+                }
+                return;
+            }
             Phys out;
             for (int i = 0; i < 4; ++i) out.q[i] = c.rot[i];
             for (int i = 0; i < 3; ++i) { out.pos[i] = c.pos[i]; out.vel[i] = c.vel[i]; out.ang[i] = c.angVel[i]; }
@@ -467,6 +565,32 @@ namespace
         const mp::RacerView* my = nullptr;
         for (const mp::RacerView& r : v.racers)
             if (r.id == me) my = &r;
+
+        // A race (or the game's event) is starting and this player is in it: it goes to its place on the grid behind the start line, facing the first checkpoint.
+        if (!a.host && my && v.race >= 0 && size_t(v.race) < races.size() && (v.phase == mp::RacePhase::Countdown || v.phase == mp::RacePhase::HostEvent))
+        {
+            const int key = v.race * 8 + int(v.phase);
+            const mp::RaceDef& d = races[size_t(v.race)];
+            if (a.gridKey != key && d.points.size() >= 2)
+            {
+                a.gridKey = key;
+                float dx = d.points[1].x - d.points[0].x, dz = d.points[1].z - d.points[0].z;
+                const float l = std::sqrt(dx * dx + dz * dz);
+                if (l > 1.f)
+                {
+                    dx /= l; dz /= l;
+                    const int slot = int(my->place) - 1;
+                    const float back = 5.f + 6.f * float(slot / 2), side = (slot % 2 ? 1.f : -1.f) * 2.5f;
+                    a.gridPos[0] = d.points[0].x - dx * back - dz * side;
+                    a.gridPos[1] = d.points[0].y + 0.4f;
+                    a.gridPos[2] = d.points[0].z - dz * back + dx * side;
+                    a.gridDir[0] = dx; a.gridDir[1] = dz;
+                    a.gridPending = true;
+                }
+            }
+        }
+        else if (v.phase == mp::RacePhase::Idle)
+            a.gridKey = -1;
 
         if (v.phase == mp::RacePhase::Idle || v.race < 0 || size_t(v.race) >= races.size())
         {

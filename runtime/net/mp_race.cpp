@@ -83,7 +83,7 @@ namespace mp
             r.still = false;
 
         // Racing: checkpoints in order, the finish line after the last one.
-        if (phase_ == RacePhase::Running && r.joined && !r.finished && had)
+        if ((phase_ == RacePhase::Running || phase_ == RacePhase::HostEvent) && r.joined && !r.finished && had)
         {
             const RaceDef& def = races_[size_t(race_)];
             const int n = int(def.points.size());
@@ -92,7 +92,13 @@ namespace mp
                 const Vec3& target = def.points[size_t(r.next % n)];
                 if (SegDist(before, pos, target) <= def.radius)
                 {
-                    if (r.next == 0 || r.next % n == 0)
+                    if (def.hostEvent && r.next == n - 1)
+                    {
+                        // The game's events are point to point: the last point is the finish line.
+                        ++r.lap;
+                        Finish(id, r, nowMs - goAt_);
+                    }
+                    else if (r.next == 0 || r.next % n == 0)
                     {
                         ++r.lap;
                         r.next = 1;
@@ -155,6 +161,7 @@ namespace mp
                 std::vector<uint8_t> ids;
                 for (const auto& [id, r] : players_) if (r.joined) ids.push_back(id);
                 phase_ = RacePhase::HostEvent;
+                hostDoneAt_ = 0;
                 phaseStart_ = nowMs;
                 goAt_ = nowMs;
                 ++version_;
@@ -169,8 +176,19 @@ namespace mp
             }
             break;
         case RacePhase::HostEvent:
-            if (nowMs - phaseStart_ > 20u * 60u * 1000u) HostEventOver(nowMs);   // a host that never answers does not hold the marker for ever
+        {
+            // The players race the game's course on their own machines (the server counts their points) while the host runs the event with them as stand-ins. The event ends when every
+            // player has finished, or 60 s after the first finish; the host's own end (its NPC racers finishing) only starts a 2 minute limit for the players still driving.
+            bool any = false, all = true;
+            uint32_t firstFinish = 0xFFFFFFFFu;
+            for (const auto& [id, r] : players_)
+                if (r.joined) { any = true; if (!r.finished) all = false; else firstFinish = std::min(firstFinish, r.finishMs); }
+            const bool afterFirst = firstFinish != 0xFFFFFFFFu && nowMs - goAt_ > firstFinish + 60000;
+            const bool hostLate = hostDoneAt_ && nowMs - hostDoneAt_ > 120000;
+            if (!any || all || afterFirst || hostLate || nowMs - phaseStart_ > 20u * 60u * 1000u)
+                HostEventOver(nowMs, true);   // a host that never answers does not hold the marker for ever
             break;
+        }
         case RacePhase::Countdown:
             if (int32_t(nowMs - goAt_) >= 0)
             {
@@ -215,9 +233,11 @@ namespace mp
         }
     }
 
-    void RaceManager::HostEventOver(uint32_t nowMs)
+    void RaceManager::HostEventOver(uint32_t nowMs, bool force)
     {
         if (phase_ != RacePhase::HostEvent) return;
+        if (!force) { if (!hostDoneAt_) hostDoneAt_ = nowMs ? nowMs : 1; return; }
+        hostDoneAt_ = 0;
         phase_ = RacePhase::Finished;
         phaseStart_ = nowMs;
         ++version_;
@@ -242,7 +262,7 @@ namespace mp
             if (!r.joined) continue;
             RacerView rv;
             rv.id = id; rv.lap = uint8_t(r.lap); rv.next = uint8_t(r.next); rv.finished = r.finished; rv.finishMs = r.finishMs;
-            float key = r.finished ? 1.0e6f - float(r.place) : (race_ >= 0 && (phase_ == RacePhase::Running || phase_ == RacePhase::Finished) ? Progress(r) : 0.f);
+            float key = r.finished ? 1.0e6f - float(r.place) : (race_ >= 0 && (phase_ == RacePhase::Running || phase_ == RacePhase::HostEvent || phase_ == RacePhase::Finished) ? Progress(r) : 0.f);
             order.push_back({ key, rv });
         }
         std::stable_sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
