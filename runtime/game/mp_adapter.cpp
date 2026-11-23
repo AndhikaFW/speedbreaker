@@ -815,7 +815,8 @@ namespace
             a.helloSent = false;
             return;
         }
-        if (!a.helloSent) { a.net->SendHostHello(); a.helloSent = true; }
+        if (!a.helloSent && a.localObj) { a.net->SendHostHello(); a.helloSent = true; }   // only once it is in the world: the server hands events to a host that can run them
+        if (!a.helloSent) return;
         uint8_t idx = 0;
         std::vector<uint8_t> ids;
         if (a.net->TakeEventStart(idx, ids))
