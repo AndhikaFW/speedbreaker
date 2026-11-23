@@ -206,7 +206,7 @@ namespace
         double lastHud = 0;
         bool world = mpcfg::Load().world || std::getenv("NFSMW_MP_WORLD_LOGIC") != nullptr;
         bool host = std::getenv("NFSMW_MP_HOST") != nullptr;   // the host game: sends the AI racers of the event it runs
-        double lastNpc = 0;
+        double lastNpc = 0, lastFollow = 0;
         bool helloSent = false, accepting = false, tpPending = false, eventOverPending = false;
         double acceptAt = 0, verifyAt = 0, backAt = 0;
         int retryLeft = 0;
@@ -588,7 +588,9 @@ namespace
                 {
                     dx /= l; dz /= l;
                     const int slot = int(my->place) - 1;
-                    const float back = 5.f + 6.f * float(slot / 2), side = (slot % 2 ? 1.f : -1.f) * 2.5f;
+                    // The game's own grid (measured from its racers' start): the player's slot is 11 m behind the start marker, 1.5 m to one side; its AI racers stand in two rows 3 m and
+                    // 10 m behind the marker. The first human takes the player's slot, the others the rows behind it, a row every 7 m.
+                    const float back = 11.f + 7.f * float((slot + 1) / 2), side = slot == 0 ? 1.5f : (slot % 2 ? -1.5f : 1.5f);
                     a.gridPos[0] = d.points[0].x - dx * back - dz * side;
                     a.gridPos[1] = d.points[0].y + 0.4f;
                     a.gridPos[2] = d.points[0].z - dz * back + dx * side;
@@ -734,6 +736,42 @@ namespace
             n.state.raceClock = LoadF(base, 0x82A153B8);
             out.push_back(n);
         }
+        // NFSMW_RECORD_PATH=<file>: the first NPC racer's path during the event (a point every 30 m, body axes) as "point x y z" lines: the course of the game's event, for the server's races file
+        // (the file is emptied when an event starts).
+        if (const char* rec = std::getenv("NFSMW_RECORD_PATH"))
+        {
+            static float lx = 1e9f, lz = 0;
+            for (const mp::Npc& n : out)
+                if (n.id == 0)
+                {
+                    const float dx = n.state.pos[0] - lx, dz = n.state.pos[2] - lz;
+                    if (dx * dx + dz * dz > 30.f * 30.f)
+                    {
+                        if (FILE* fp = fopen(rec, "a")) { fprintf(fp, "point %.1f %.1f %.1f\n", double(n.state.pos[0]), double(n.state.pos[1]), double(n.state.pos[2])); fclose(fp); }
+                        lx = n.state.pos[0]; lz = n.state.pos[2];
+                    }
+                    break;
+                }
+            if (out.empty()) lx = 1e9f;
+        }
+        // The game simulates the AI cars far from the player in a simplified way (they follow the road at a fixed height: seen as floating cars on the other machines), so the host's own
+        // car (the event's "player", which nobody drives) follows the lead NPC, 12 m behind it, while the event runs. NFSMW_HOST_FOLLOW=0 turns it off.
+        static const bool follow = !std::getenv("NFSMW_HOST_FOLLOW") || std::atoi(std::getenv("NFSMW_HOST_FOLLOW")) != 0;
+        if (follow && !a.tpPending && now - a.lastFollow > 0.5)
+            for (const mp::Npc& n : out)
+                if (n.id == 0)
+                {
+                    const float sp = std::sqrt(n.state.vel[0] * n.state.vel[0] + n.state.vel[2] * n.state.vel[2]);
+                    if (sp > 8.f)
+                    {
+                        a.lastFollow = now;
+                        a.tpPos[0] = n.state.pos[0] - n.state.vel[0] / sp * 12.f;
+                        a.tpPos[1] = n.state.pos[1] + 0.5f;
+                        a.tpPos[2] = n.state.pos[2] - n.state.vel[2] / sp * 12.f;
+                        a.tpPending = true;
+                    }
+                    break;
+                }
         for (auto it = ids.begin(); it != ids.end();)
             it = now - it->second.second > 2.0 ? ids.erase(it) : std::next(it);
         a.net->SendNpcs(out);
@@ -766,6 +804,7 @@ namespace
                 a.verifyAt = a.backAt = 0;
                 if (races[idx].points.size() >= 2) { const mp::Vec3 q = races[idx].points[1]; a.awayPos[0] = q.x; a.awayPos[1] = q.y + 1.0f; a.awayPos[2] = q.z; }
                 else { a.awayPos[0] = p.x + 30.f; a.awayPos[1] = p.y + 1.0f; a.awayPos[2] = p.z; }
+                if (const char* rec = std::getenv("NFSMW_RECORD_PATH")) { if (FILE* fp = fopen(rec, "w")) fclose(fp); }
                 a.standIns.clear();
                 a.roster.clear();
                 game::ResetOpponentCount();
